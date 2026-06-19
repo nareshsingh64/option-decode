@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --terminal-bg: 245 247 251;
+  --terminal-panel: 255 255 255;
+  --terminal-input: 248 250 252;
+  --terminal-line: 203 213 225;
+  --terminal-text: 15 23 42;
+  --terminal-muted: 100 116 139;
+  --terminal-blue: 37 99 235;
+  --terminal-emerald: 22 163 74;
+  --terminal-amber: 217 119 6;
+  --terminal-red: 220 38 38;
+  background: rgb(var(--terminal-bg));
+  color: rgb(var(--terminal-text));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --terminal-bg: 5 7 13;
+    --terminal-panel: 11 16 32;
+    --terminal-input: 7 11 20;
+    --terminal-line: 27 39 65;
+    --terminal-text: 230 238 252;
+    --terminal-muted: 142 160 190;
+    --terminal-blue: 47 129 247;
+    --terminal-emerald: 34 197 94;
+    --terminal-amber: 245 158 11;
+    --terminal-red: 239 68 68;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: rgb(var(--terminal-bg));
+  color: rgb(var(--terminal-text));
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.market-ticker-track {
+  animation: market-ticker-scroll 34s linear infinite;
+}
+
+.market-ticker-track:hover {
+  animation-play-state: paused;
+}
+
+@keyframes market-ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .market-ticker-track {
+    animation: none;
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@option-decode/analytics": ["packages/analytics/src/index.ts"],
+      "@option-decode/config": ["packages/config/src/index.ts"],
+      "@option-decode/db": ["packages/db/src/index.ts"],
+      "@option-decode/dhan": ["packages/dhan/src/index.ts"],
+      "@option-decode/trading": ["packages/trading/src/index.ts"],
+      "@option-decode/types": ["packages/types/src/index.ts"]
+    }
+  }
+}

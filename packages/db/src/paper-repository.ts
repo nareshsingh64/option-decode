@@ -1,0 +1,687 @@
+import type { OptionType } from "@option-decode/types";
+import type { PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { prisma } from "./index.js";
+import { getStoredFnoLotSize } from "./lot-size-repository.js";
+
+const DEMO_USER_EMAIL = "paper.demo@optiondecode.local";
+
+export interface PaperOrderInput {
+  underlyingSymbol: string;
+  expiry: string;
+  action: "BUY" | "SELL";
+  optionType: OptionType;
+  strikePrice: number;
+  lots: number;
+  requestedPrice: number;
+  stopLoss: number;
+  trailingStop?: boolean;
+  trailDistance?: number;
+  targetPrice: number;
+  strategyName: string;
+  reasonText?: string;
+}
+
+export interface PaperSummary {
+  userId: string;
+  orders: PaperOrderDto[];
+  openPositions: PaperPositionDto[];
+  closedTrades: PaperTradeDto[];
+  stats: {
+    openPositions: number;
+    filledOrders: number;
+    pendingOrders: number;
+    realizedPnl: number;
+    markToMarketPnl: number;
+  };
+}
+
+export interface PaperOrderDto {
+  id: string;
+  underlyingSymbol: string;
+  expiry: string;
+  action: string;
+  optionType: OptionType;
+  strikePrice: number;
+  lots: number;
+  lotSize: number;
+  quantity: number;
+  requestedPrice: number;
+  filledPrice?: number;
+  currentPrice?: number;
+  stopLoss: number;
+  trailingStop: boolean;
+  trailDistance: number;
+  targetPrice: number;
+  status: string;
+  strategyName: string;
+  reasonText?: string;
+  createdAt: string;
+}
+
+export interface PaperPositionDto {
+  id: string;
+  orderId: string;
+  underlyingSymbol: string;
+  expiry: string;
+  action: string;
+  optionType: OptionType;
+  strikePrice: number;
+  lots: number;
+  lotSize: number;
+  quantity: number;
+  entryPrice: number;
+  currentPrice: number;
+  stopLoss: number;
+  trailingStop: boolean;
+  trailDistance: number;
+  bestPrice: number;
+  targetPrice: number;
+  status: string;
+  unrealizedPnl: number;
+  openedAt: string;
+}
+
+export interface PaperTradeDto {
+  id: string;
+  positionId: string;
+  underlyingSymbol: string;
+  expiry: string;
+  action: string;
+  optionType: OptionType;
+  strikePrice: number;
+  entryPrice: number;
+  exitPrice: number;
+  stopLoss: number;
+  targetPrice: number;
+  lots: number;
+  lotSize: number;
+  quantity: number;
+  grossPnl: number;
+  charges: number;
+  netPnl: number;
+  exitReason: string;
+  openedAt: string;
+  closedAt: string;
+}
+
+export async function getPaperSummary(client: PrismaClient = prisma): Promise<PaperSummary> {
+  const user = await getOrCreateDemoUser(client);
+  await refreshPendingPaperOrders(user.id, client);
+  await refreshOpenPositionPrices(user.id, client);
+
+  const [orders, openPositions, closedTrades] = await Promise.all([
+    client.paperOrder.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 8
+    }),
+    client.paperPosition.findMany({
+      where: { userId: user.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" },
+      take: 8
+    }),
+    client.paperTrade.findMany({
+      where: {
+        position: {
+          userId: user.id
+        }
+      },
+      include: {
+        position: {
+          select: {
+            underlyingSymbol: true,
+            expiryLabel: true,
+            action: true,
+            optionType: true,
+            strikePrice: true,
+            entryPrice: true,
+            stopLoss: true,
+            targetPrice: true,
+            openedAt: true
+          }
+        }
+      },
+      orderBy: { closedAt: "desc" },
+      take: 8
+    })
+  ]);
+
+  const orderDtos = await Promise.all(orders.map((order) => mapOrder(order, client)));
+  const positionDtos = await Promise.all(openPositions.map((position) => mapPosition(position, client)));
+  const tradeDtos = await Promise.all(closedTrades.map((trade) => mapTrade(trade, client)));
+
+  return {
+    userId: user.id,
+    orders: orderDtos,
+    openPositions: positionDtos,
+    closedTrades: tradeDtos,
+    stats: {
+      openPositions: positionDtos.length,
+      filledOrders: orderDtos.filter((order) => order.status === "FILLED").length,
+      pendingOrders: orderDtos.filter((order) => order.status === "PENDING").length,
+      realizedPnl: tradeDtos.reduce((total, trade) => total + trade.netPnl, 0),
+      markToMarketPnl: positionDtos.reduce((total, position) => total + position.unrealizedPnl, 0)
+    }
+  };
+}
+
+export async function placePaperOrder(input: PaperOrderInput, client: PrismaClient = prisma): Promise<PaperSummary> {
+  const user = await getOrCreateDemoUser(client);
+  const now = new Date();
+  const tradingDate = new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
+  const lotSize = await getPaperLotSize(input.underlyingSymbol, input.expiry, client);
+  const quantity = input.lots * lotSize;
+  const trailingStop = input.trailingStop ?? true;
+  const requestedPrice = normalizeTradablePrice(input.requestedPrice);
+  const trailDistance = normalizeTradablePrice(input.trailDistance ?? Math.abs(requestedPrice - input.stopLoss));
+  const initialStopLoss = trailingStop ? getTrailingStopLoss(input.action, requestedPrice, trailDistance) : normalizeTradablePrice(input.stopLoss);
+  const targetPrice = normalizeTradablePrice(input.targetPrice);
+
+  await client.paperOrder.create({
+    data: {
+      userId: user.id,
+      tradingDate,
+      underlyingSymbol: input.underlyingSymbol,
+      expiryLabel: input.expiry,
+      action: input.action,
+      optionType: input.optionType,
+      strikePrice: input.strikePrice,
+      quantity,
+      requestedPrice,
+      filledPrice: null,
+      stopLoss: initialStopLoss,
+      trailingStop,
+      trailDistance,
+      targetPrice,
+      status: "PENDING",
+      strategyName: input.strategyName,
+      reasonText: input.reasonText
+    }
+  });
+
+  return getPaperSummary(client);
+}
+
+export async function closePaperPosition(positionId: string, exitReason = "MANUAL", client: PrismaClient = prisma): Promise<PaperSummary> {
+  const user = await getOrCreateDemoUser(client);
+  await refreshOpenPositionPrices(user.id, client);
+
+  const position = await client.paperPosition.findFirst({
+    where: {
+      id: positionId,
+      userId: user.id,
+      status: "OPEN"
+    }
+  });
+
+  if (!position) {
+    throw new Error("Open paper position was not found.");
+  }
+
+  await closePositionRecord(position, exitReason, client);
+
+  return getPaperSummary(client);
+}
+
+export async function updatePaperPositionRisk(positionId: string, stopLoss: number, targetPrice: number, trailDistance?: number, client: PrismaClient = prisma): Promise<PaperSummary> {
+  const user = await getOrCreateDemoUser(client);
+  const position = await client.paperPosition.findFirst({
+    where: {
+      id: positionId,
+      userId: user.id,
+      status: "OPEN"
+    }
+  });
+
+  if (!position) {
+    throw new Error("Open paper position was not found.");
+  }
+
+  const entryPrice = position.entryPrice.toNumber();
+  const currentPrice = position.currentPrice.toNumber();
+  const nextTrailDistance = normalizeTradablePrice(trailDistance ?? Math.abs(entryPrice - stopLoss));
+  const nextTargetPrice = normalizeTradablePrice(targetPrice);
+  const bestPrice = position.bestPrice?.toNumber() ?? currentPrice;
+  const nextBestPrice = position.action === "BUY" ? Math.max(bestPrice, currentPrice, entryPrice) : Math.min(bestPrice, currentPrice, entryPrice);
+  const nextStopLoss = getTrailingStopLoss(position.action, nextBestPrice, nextTrailDistance);
+
+  if (position.action === "BUY" && nextStopLoss >= entryPrice) {
+    throw new Error("Stop loss must be below entry price for BUY positions.");
+  }
+  if (position.action === "BUY" && nextTargetPrice <= entryPrice) {
+    throw new Error("Target must be above entry price for BUY positions.");
+  }
+  if (position.action === "SELL" && nextStopLoss <= entryPrice) {
+    throw new Error("Stop loss must be above entry price for SELL positions.");
+  }
+  if (position.action === "SELL" && nextTargetPrice >= entryPrice) {
+    throw new Error("Target must be below entry price for SELL positions.");
+  }
+
+  await client.paperPosition.update({
+    where: { id: position.id },
+    data: {
+      stopLoss: nextStopLoss,
+      trailingStop: true,
+      trailDistance: nextTrailDistance,
+      bestPrice: nextBestPrice,
+      targetPrice: nextTargetPrice
+    }
+  });
+
+  return getPaperSummary(client);
+}
+
+async function getOrCreateDemoUser(client: PrismaClient) {
+  return client.user.upsert({
+    where: { email: DEMO_USER_EMAIL },
+    update: {},
+    create: {
+      email: DEMO_USER_EMAIL,
+      passwordHash: "demo-paper-user",
+      displayName: "Paper Demo",
+      role: "TRIAL",
+      emailVerified: true
+    }
+  });
+}
+
+async function refreshPendingPaperOrders(userId: string, client: PrismaClient) {
+  const pendingOrders = await client.paperOrder.findMany({
+    where: {
+      userId,
+      status: "PENDING"
+    },
+    orderBy: { createdAt: "asc" }
+  });
+
+  await Promise.all(
+    pendingOrders.map(async (order) => {
+      const latestTick = await client.optionContractTick.findFirst({
+        where: {
+          underlyingSymbol: order.underlyingSymbol,
+          expiryLabel: order.expiryLabel,
+          optionType: order.optionType,
+          strikePrice: order.strikePrice
+        },
+        orderBy: { tickTime: "desc" }
+      });
+
+      const latestPrice = latestTick?.lastPrice?.toNumber();
+      if (latestPrice === undefined || !shouldFillPaperOrder(order.action, order.requestedPrice.toNumber(), latestPrice)) {
+        return;
+      }
+
+      const filledPrice = normalizeTradablePrice(order.requestedPrice.toNumber());
+      const trailDistance = normalizeTradablePrice(order.trailDistance?.toNumber() ?? Math.abs(filledPrice - order.stopLoss.toNumber()));
+      const stopLoss = order.trailingStop ? getTrailingStopLoss(order.action, filledPrice, trailDistance) : normalizeTradablePrice(order.stopLoss.toNumber());
+      const targetPrice = normalizeTradablePrice(order.targetPrice.toNumber());
+      const now = new Date();
+
+      await client.$transaction(async (tx) => {
+        const currentOrder = await tx.paperOrder.findUnique({
+          where: { id: order.id },
+          select: { status: true }
+        });
+
+        if (currentOrder?.status !== "PENDING") {
+          return;
+        }
+
+        await tx.paperOrder.update({
+          where: { id: order.id },
+          data: {
+            status: "FILLED",
+            filledPrice,
+            stopLoss,
+            trailDistance,
+            targetPrice
+          }
+        });
+
+        await tx.paperPosition.create({
+          data: {
+            userId,
+            orderId: order.id,
+            tradingDate: order.tradingDate,
+            underlyingSymbol: order.underlyingSymbol,
+            expiryLabel: order.expiryLabel,
+            action: order.action,
+            optionType: order.optionType,
+            strikePrice: order.strikePrice,
+            quantity: order.quantity,
+            entryPrice: filledPrice,
+            currentPrice: filledPrice,
+            stopLoss,
+            trailingStop: order.trailingStop,
+            trailDistance,
+            bestPrice: filledPrice,
+            targetPrice,
+            status: "OPEN",
+            realizedPnl: 0,
+            openedAt: now
+          }
+        });
+      });
+    })
+  );
+}
+
+async function refreshOpenPositionPrices(userId: string, client: PrismaClient) {
+  const positions = await client.paperPosition.findMany({
+    where: {
+      userId,
+      status: "OPEN"
+    }
+  });
+
+  await Promise.all(
+    positions.map(async (position) => {
+      const latestTick = await client.optionContractTick.findFirst({
+        where: {
+          underlyingSymbol: position.underlyingSymbol,
+          expiryLabel: position.expiryLabel,
+          optionType: position.optionType,
+          strikePrice: position.strikePrice
+        },
+        orderBy: { tickTime: "desc" }
+      });
+
+      if (!latestTick?.lastPrice) {
+        return;
+      }
+
+      const latestPrice = latestTick.lastPrice.toNumber();
+      const currentStopLoss = position.stopLoss.toNumber();
+      const targetPrice = position.targetPrice.toNumber();
+      const isBuy = position.action === "BUY";
+      const trailDistance = normalizeTradablePrice(position.trailDistance?.toNumber() ?? Math.abs(position.entryPrice.toNumber() - currentStopLoss));
+      const currentBestPrice = position.bestPrice?.toNumber() ?? position.entryPrice.toNumber();
+      const nextBestPrice = isBuy ? Math.max(currentBestPrice, latestPrice) : Math.min(currentBestPrice, latestPrice);
+      const nextStopLoss = position.trailingStop ? getTrailingStopLoss(position.action, nextBestPrice, trailDistance) : currentStopLoss;
+      const stopLoss = position.trailingStop ? (isBuy ? Math.max(currentStopLoss, nextStopLoss) : Math.min(currentStopLoss, nextStopLoss)) : currentStopLoss;
+      const hitStop = isBuy ? latestPrice <= stopLoss : latestPrice >= stopLoss;
+      const hitTarget = isBuy ? latestPrice >= targetPrice : latestPrice <= targetPrice;
+
+      await client.paperPosition.update({
+        where: { id: position.id },
+        data: {
+          currentPrice: latestPrice,
+          stopLoss: normalizeTradablePrice(stopLoss),
+          trailDistance,
+          bestPrice: nextBestPrice
+        }
+      });
+
+      if (hitStop || hitTarget) {
+        const updatedPosition = await client.paperPosition.findUnique({
+          where: { id: position.id }
+        });
+
+        if (updatedPosition?.status === "OPEN") {
+          await closePositionRecord(updatedPosition, hitTarget ? "TARGET" : "STOP_LOSS", client);
+        }
+      }
+    })
+  );
+}
+
+async function closePositionRecord(
+  position: {
+    id: string;
+    entryPrice: Prisma.Decimal;
+    currentPrice: Prisma.Decimal;
+    quantity: number;
+    action: string;
+  },
+  exitReason: string,
+  client: PrismaClient
+) {
+  const entryPrice = position.entryPrice.toNumber();
+  const exitPrice = position.currentPrice.toNumber();
+  const direction = position.action === "BUY" ? 1 : -1;
+  const grossPnl = (exitPrice - entryPrice) * position.quantity * direction;
+  const charges = Math.max(1, Math.abs(exitPrice * position.quantity) * 0.0005);
+  const netPnl = grossPnl - charges;
+  const now = new Date();
+
+  await client.$transaction(async (tx) => {
+    await tx.paperPosition.update({
+      where: { id: position.id },
+      data: {
+        status: "CLOSED",
+        realizedPnl: netPnl,
+        closedAt: now,
+        exitReason
+      }
+    });
+
+    await tx.paperTrade.create({
+      data: {
+        positionId: position.id,
+        entryPrice,
+        exitPrice,
+        quantity: position.quantity,
+        grossPnl,
+        charges,
+        netPnl,
+        exitReason,
+        closedAt: now
+      }
+    });
+  });
+}
+
+async function mapOrder(
+  order: {
+  id: string;
+  underlyingSymbol: string;
+  expiryLabel: string;
+  action: string;
+  optionType: OptionType;
+  strikePrice: Prisma.Decimal;
+  quantity: number;
+  requestedPrice: Prisma.Decimal;
+  filledPrice: Prisma.Decimal | null;
+  stopLoss: Prisma.Decimal;
+  trailingStop: boolean;
+  trailDistance: Prisma.Decimal | null;
+  targetPrice: Prisma.Decimal;
+  status: string;
+  strategyName: string;
+  reasonText: string | null;
+  createdAt: Date;
+},
+  client: PrismaClient
+): Promise<PaperOrderDto> {
+  const lotSize = await getPaperLotSize(order.underlyingSymbol, order.expiryLabel, client);
+  const latestPrice = await getLatestPaperOrderPrice(order, client);
+  return {
+    id: order.id,
+    underlyingSymbol: order.underlyingSymbol,
+    expiry: order.expiryLabel,
+    action: order.action,
+    optionType: order.optionType,
+    strikePrice: order.strikePrice.toNumber(),
+    lots: lotsFromQuantity(order.quantity, lotSize),
+    lotSize,
+    quantity: order.quantity,
+    requestedPrice: normalizeTradablePrice(order.requestedPrice.toNumber()),
+    filledPrice: order.filledPrice ? normalizeTradablePrice(order.filledPrice.toNumber()) : undefined,
+    currentPrice: latestPrice === undefined ? undefined : normalizeTradablePrice(latestPrice),
+    stopLoss: normalizeTradablePrice(order.stopLoss.toNumber()),
+    trailingStop: order.trailingStop,
+    trailDistance: normalizeTradablePrice(order.trailDistance?.toNumber() ?? Math.abs(order.requestedPrice.toNumber() - order.stopLoss.toNumber())),
+    targetPrice: normalizeTradablePrice(order.targetPrice.toNumber()),
+    status: order.status,
+    strategyName: order.strategyName,
+    reasonText: order.reasonText ?? undefined,
+    createdAt: order.createdAt.toISOString()
+  };
+}
+
+async function mapPosition(
+  position: {
+  id: string;
+  orderId: string;
+  underlyingSymbol: string;
+  expiryLabel: string;
+  action: string;
+  optionType: OptionType;
+  strikePrice: Prisma.Decimal;
+  quantity: number;
+  entryPrice: Prisma.Decimal;
+  currentPrice: Prisma.Decimal;
+  stopLoss: Prisma.Decimal;
+  trailingStop: boolean;
+  trailDistance: Prisma.Decimal | null;
+  bestPrice: Prisma.Decimal | null;
+  targetPrice: Prisma.Decimal;
+  status: string;
+  openedAt: Date;
+},
+  client: PrismaClient
+): Promise<PaperPositionDto> {
+  const entryPrice = position.entryPrice.toNumber();
+  const currentPrice = position.currentPrice.toNumber();
+  const direction = position.action === "BUY" ? 1 : -1;
+  const lotSize = await getPaperLotSize(position.underlyingSymbol, position.expiryLabel, client);
+
+  return {
+    id: position.id,
+    orderId: position.orderId,
+    underlyingSymbol: position.underlyingSymbol,
+    expiry: position.expiryLabel,
+    action: position.action,
+    optionType: position.optionType,
+    strikePrice: position.strikePrice.toNumber(),
+    lots: lotsFromQuantity(position.quantity, lotSize),
+    lotSize,
+    quantity: position.quantity,
+    entryPrice,
+    currentPrice,
+    stopLoss: normalizeTradablePrice(position.stopLoss.toNumber()),
+    trailingStop: position.trailingStop,
+    trailDistance: normalizeTradablePrice(position.trailDistance?.toNumber() ?? Math.abs(entryPrice - position.stopLoss.toNumber())),
+    bestPrice: position.bestPrice?.toNumber() ?? currentPrice,
+    targetPrice: normalizeTradablePrice(position.targetPrice.toNumber()),
+    status: position.status,
+    unrealizedPnl: (currentPrice - entryPrice) * position.quantity * direction,
+    openedAt: position.openedAt.toISOString()
+  };
+}
+
+async function mapTrade(
+  trade: {
+  id: string;
+  positionId: string;
+  exitPrice: Prisma.Decimal;
+  quantity: number;
+  grossPnl: Prisma.Decimal;
+  charges: Prisma.Decimal;
+  netPnl: Prisma.Decimal;
+  exitReason: string;
+  closedAt: Date;
+  position: {
+    underlyingSymbol: string;
+    expiryLabel: string;
+    action: string;
+    optionType: OptionType;
+    strikePrice: Prisma.Decimal;
+    entryPrice: Prisma.Decimal;
+    stopLoss: Prisma.Decimal;
+    targetPrice: Prisma.Decimal;
+    openedAt: Date;
+  };
+},
+  client: PrismaClient
+): Promise<PaperTradeDto> {
+  const lotSize = await getPaperLotSize(trade.position.underlyingSymbol, trade.position.expiryLabel, client);
+  return {
+    id: trade.id,
+    positionId: trade.positionId,
+    underlyingSymbol: trade.position.underlyingSymbol,
+    expiry: trade.position.expiryLabel,
+    action: trade.position.action,
+    optionType: trade.position.optionType,
+    strikePrice: trade.position.strikePrice.toNumber(),
+    entryPrice: trade.position.entryPrice.toNumber(),
+    exitPrice: trade.exitPrice.toNumber(),
+    stopLoss: normalizeTradablePrice(trade.position.stopLoss.toNumber()),
+    targetPrice: normalizeTradablePrice(trade.position.targetPrice.toNumber()),
+    lots: lotsFromQuantity(trade.quantity, lotSize),
+    lotSize,
+    quantity: trade.quantity,
+    grossPnl: trade.grossPnl.toNumber(),
+    charges: trade.charges.toNumber(),
+    netPnl: trade.netPnl.toNumber(),
+    exitReason: trade.exitReason,
+    openedAt: trade.position.openedAt.toISOString(),
+    closedAt: trade.closedAt.toISOString()
+  };
+}
+
+async function getPaperLotSize(underlyingSymbol: string, expiry: string, client: PrismaClient) {
+  return (await getStoredFnoLotSize(underlyingSymbol, expiry, client)) ?? getFallbackLotSizeForUnderlying(underlyingSymbol);
+}
+
+async function getLatestPaperOrderPrice(
+  order: {
+    underlyingSymbol: string;
+    expiryLabel: string;
+    optionType: OptionType;
+    strikePrice: Prisma.Decimal;
+  },
+  client: PrismaClient
+) {
+  const latestTick = await client.optionContractTick.findFirst({
+    where: {
+      underlyingSymbol: order.underlyingSymbol,
+      expiryLabel: order.expiryLabel,
+      optionType: order.optionType,
+      strikePrice: order.strikePrice
+    },
+    orderBy: { tickTime: "desc" }
+  });
+
+  return latestTick?.lastPrice?.toNumber();
+}
+
+function getFallbackLotSizeForUnderlying(underlyingSymbol: string) {
+  const lotSizes: Record<string, number> = {
+    NIFTY: 65,
+    BANKNIFTY: 30,
+    FINNIFTY: 60,
+    MIDCPNIFTY: 120,
+    NIFTYNXT50: 25,
+    SENSEX: 20,
+    BANKEX: 30,
+    CRUDEOIL: 100,
+    NATURALGAS: 1250,
+    COPPER: 2500,
+    SILVER: 30
+  };
+  return lotSizes[underlyingSymbol.toUpperCase()] ?? 1;
+}
+
+function lotsFromQuantity(quantity: number, lotSize: number) {
+  return Math.max(1, Math.round(quantity / lotSize));
+}
+
+function getTrailingStopLoss(action: string, referencePrice: number, trailDistance: number) {
+  const rawStopLoss = action === "BUY" ? Math.max(0, referencePrice - trailDistance) : referencePrice + trailDistance;
+  return normalizeTradablePrice(rawStopLoss);
+}
+
+function shouldFillPaperOrder(action: string, entryPrice: number, latestPrice: number) {
+  return action === "BUY" ? latestPrice <= entryPrice : latestPrice >= entryPrice;
+}
+
+function normalizeTradablePrice(value: number, tickSize = 0.05) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Number((Math.ceil((value - 1e-9) / tickSize) * tickSize).toFixed(2));
+}

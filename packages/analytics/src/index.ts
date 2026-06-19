@@ -1,0 +1,113 @@
+import type { MarketAlert, OptionChainSnapshot, OptionContractTick, PressureScore, PressureZone } from "@option-decode/types";
+
+function pressureValue(tick: OptionContractTick): number {
+  const oi = toLots(tick.openInterest, tick);
+  const oiChange = toLots(tick.changeInOpenInterest, tick);
+  const volume = toLots(tick.volume, tick);
+
+  return oi + oiChange * 1.5 + volume * 0.25;
+}
+
+function topZones(ticks: OptionContractTick[], label: "support" | "resistance"): PressureZone[] {
+  return ticks
+    .map((tick) => ({
+      strikePrice: tick.strikePrice,
+      score: Math.round(pressureValue(tick)),
+      reason: `${tick.optionType} ${label} pressure from OI, OI change, and volume in lots`
+    }))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5);
+}
+
+export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureScore {
+  const peTicks = snapshot.ticks.filter((tick) => tick.optionType === "PE");
+  const ceTicks = snapshot.ticks.filter((tick) => tick.optionType === "CE");
+  const pePressure = peTicks.reduce((total, tick) => total + pressureValue(tick), 0);
+  const cePressure = ceTicks.reduce((total, tick) => total + pressureValue(tick), 0);
+  const total = Math.max(pePressure + cePressure, 1);
+  const totalPeOi = peTicks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
+  const totalCeOi = ceTicks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
+
+  return {
+    bullishPressure: Math.round((pePressure / total) * 100),
+    bearishPressure: Math.round((cePressure / total) * 100),
+    supportZones: topZones(peTicks, "support"),
+    resistanceZones: topZones(ceTicks, "resistance"),
+    pcr: totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : undefined
+  };
+}
+
+function toLots(value: number | undefined, tick: OptionContractTick): number {
+  const lotSize = tick.lotSize && tick.lotSize > 0 ? tick.lotSize : 1;
+  return (value ?? 0) / lotSize;
+}
+
+export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date()): MarketAlert[] {
+  const createdAt = now.toISOString();
+  const alerts: MarketAlert[] = [];
+  const nearestResistance = pressure.resistanceZones[0];
+  const nearestSupport = pressure.supportZones[0];
+  const resistanceDistance = nearestResistance ? Math.abs(nearestResistance.strikePrice - snapshot.spotPrice) : undefined;
+  const supportDistance = nearestSupport ? Math.abs(snapshot.spotPrice - nearestSupport.strikePrice) : undefined;
+
+  if (pressure.bearishPressure >= 55 && nearestResistance) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bearish-pressure`,
+      severity: pressure.bearishPressure >= 62 ? "critical" : "warning",
+      title: "Resistance pressure active",
+      message: `CE pressure is ${pressure.bearishPressure}% with strongest resistance near ${formatStrike(nearestResistance.strikePrice)}.`,
+      metric: "bearishPressure",
+      createdAt
+    });
+  }
+
+  if (pressure.bullishPressure >= 55 && nearestSupport) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bullish-pressure`,
+      severity: pressure.bullishPressure >= 62 ? "critical" : "warning",
+      title: "Support pressure active",
+      message: `PE support is ${pressure.bullishPressure}% with strongest support near ${formatStrike(nearestSupport.strikePrice)}.`,
+      metric: "bullishPressure",
+      createdAt
+    });
+  }
+
+  if (pressure.pcr !== undefined && (pressure.pcr >= 1.15 || pressure.pcr <= 0.85)) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-pcr-bias`,
+      severity: pressure.pcr >= 1.25 || pressure.pcr <= 0.75 ? "critical" : "warning",
+      title: "PCR bias detected",
+      message: `PCR is ${pressure.pcr.toFixed(2)}, showing ${pressure.pcr > 1 ? "put-side support" : "call-side resistance"} bias.`,
+      metric: "pcr",
+      createdAt
+    });
+  }
+
+  if (resistanceDistance !== undefined && resistanceDistance <= 100 && nearestResistance) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-resistance`,
+      severity: "info",
+      title: "CMP near resistance",
+      message: `Spot is within ${formatStrike(resistanceDistance)} points of resistance at ${formatStrike(nearestResistance.strikePrice)}.`,
+      metric: "resistanceDistance",
+      createdAt
+    });
+  }
+
+  if (supportDistance !== undefined && supportDistance <= 100 && nearestSupport) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-support`,
+      severity: "info",
+      title: "CMP near support",
+      message: `Spot is within ${formatStrike(supportDistance)} points of support at ${formatStrike(nearestSupport.strikePrice)}.`,
+      metric: "supportDistance",
+      createdAt
+    });
+  }
+
+  return alerts.slice(0, 5);
+}
+
+function formatStrike(value: number) {
+  return value.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}

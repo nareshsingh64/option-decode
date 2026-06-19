@@ -1,0 +1,123 @@
+services:
+  web:
+    image: node:22-alpine
+    profiles: ["app"]
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/web dev"
+    environment:
+      NODE_ENV: development
+      API_URL: http://api:4000
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+    depends_on:
+      api:
+        condition: service_started
+
+  api:
+    image: node:22-alpine
+    profiles: ["app"]
+    env_file:
+      - .env.local
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/api dev"
+    environment:
+      NODE_ENV: development
+      APP_PUBLIC_URL: http://localhost:3000
+      API_PORT: 4000
+      DATABASE_URL: mysql://option_decode:option_decode@mysql:3306/option_decode
+      REDIS_URL: redis://redis:6379/0
+      SESSION_SECRET: change-me-before-production
+      JWT_SECRET: change-me-before-production
+      MARKET_TIMEZONE: Asia/Kolkata
+      SNAPSHOT_INTERVAL_MS: 30000
+    ports:
+      - "4000:4000"
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: node:22-alpine
+    profiles: ["app"]
+    env_file:
+      - .env.local
+    working_dir: /workspace
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/worker dev"
+    environment:
+      NODE_ENV: development
+      APP_PUBLIC_URL: http://localhost:3000
+      API_PORT: 4000
+      DATABASE_URL: mysql://option_decode:option_decode@mysql:3306/option_decode
+      REDIS_URL: redis://redis:6379/0
+      SESSION_SECRET: change-me-before-production
+      JWT_SECRET: change-me-before-production
+      MARKET_TIMEZONE: Asia/Kolkata
+      SNAPSHOT_INTERVAL_MS: 30000
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    command: ["--mysql-native-password=ON"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: option_decode
+      MYSQL_USER: option_decode
+      MYSQL_PASSWORD: option_decode
+    ports:
+      - "3308:3306"
+    volumes:
+      - option_decode_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - option_decode_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  option_decode_node_modules:
+  option_decode_pnpm_store:
+  option_decode_mysql:
+  option_decode_redis:
