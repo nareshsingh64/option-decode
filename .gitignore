@@ -4,5 +4,8 @@ node_modules
 dist
 .env
 .env.local
+.env.production
 coverage
 *.log
+nginx/certs/*.crt
+nginx/certs/*.key

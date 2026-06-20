@@ -15,10 +15,10 @@ export default function LandingPage() {
               OPTION DECODE
             </a>
             <nav className="flex items-center gap-2 text-sm font-semibold">
-              <a className="rounded border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur transition hover:border-white/45 hover:bg-white/15" href="/app?view=account&auth=login">
+              <a className="rounded border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur transition hover:border-white/45 hover:bg-white/15" href="/login">
                 Login
               </a>
-              <a className="rounded border border-emerald-400 bg-emerald-400 px-4 py-2 text-slate-950 transition hover:opacity-90" href="/app?view=account&auth=register">
+              <a className="rounded border border-emerald-400 bg-emerald-400 px-4 py-2 text-slate-950 transition hover:opacity-90" href="/register">
                 Register
               </a>
             </nav>
@@ -32,11 +32,11 @@ export default function LandingPage() {
                 Read option-chain pressure, strike movement score, market breadth, replay snapshots, and paper trades from one focused command center built for Indian index, equity derivative, and commodity markets.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
-                <a className="inline-flex h-12 items-center gap-2 rounded border border-emerald-400 bg-emerald-400 px-5 text-sm font-semibold text-slate-950 transition hover:opacity-90" href="/app?view=account&auth=register">
+                <a className="inline-flex h-12 items-center gap-2 rounded border border-emerald-400 bg-emerald-400 px-5 text-sm font-semibold text-slate-950 transition hover:opacity-90" href="/register">
                   Create account
                   <ArrowRight size={17} />
                 </a>
-                <a className="inline-flex h-12 items-center gap-2 rounded border border-white/25 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur transition hover:border-white/50 hover:bg-white/15" href="/app?view=account&auth=login">
+                <a className="inline-flex h-12 items-center gap-2 rounded border border-white/25 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur transition hover:border-white/50 hover:bg-white/15" href="/login">
                   Login to app
                   <LockKeyhole size={17} />
                 </a>

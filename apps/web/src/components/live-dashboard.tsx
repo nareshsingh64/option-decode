@@ -81,7 +81,7 @@ interface Watchlist {
   updatedAt: string;
 }
 
-interface AuthUser {
+export interface AuthUser {
   id: string;
   email: string;
   displayName?: string;
@@ -215,6 +215,7 @@ interface LiveDashboardProps {
     auth?: string;
   };
   initialView?: DashboardView;
+  onAuthUserChange?: (user: AuthUser | null) => void;
 }
 
 export type DashboardView = "dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
@@ -224,7 +225,7 @@ type VisibleStrikeMode = "vix" | "atm";
 
 const REFRESH_SECONDS = 30;
 
-export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard" }: LiveDashboardProps) {
+export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
   const [lastRefresh, setLastRefresh] = useState(initialOverview.snapshot.snapshotTime);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -400,10 +401,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     try {
       const payload = await fetchAuthUser();
       setAuthUser(payload.user);
+      onAuthUserChange?.(payload.user);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Unable to load account");
+      onAuthUserChange?.(null);
     }
-  }, []);
+  }, [onAuthUserChange]);
 
   const refreshAdminOverview = useCallback(async () => {
     try {
@@ -661,6 +664,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         displayName: authDisplayName
       });
       setAuthUser(payload.user);
+      onAuthUserChange?.(payload.user);
       setAuthPassword("");
       setAuthMessage(authMode === "register" ? "Trial account created." : "Signed in.");
     } catch (error) {
@@ -677,6 +681,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     try {
       await logoutAuthUser();
       setAuthUser(null);
+      onAuthUserChange?.(null);
       setAuthMessage("Signed out.");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Unable to sign out");

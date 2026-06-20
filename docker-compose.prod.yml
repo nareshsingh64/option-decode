@@ -1,0 +1,139 @@
+services:
+  web:
+    image: node:22-alpine
+    profiles: ["app"]
+    working_dir: /workspace
+    env_file:
+      - .env.production
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      pnpm install --frozen-lockfile --store-dir .pnpm-store &&
+      pnpm --filter @option-decode/web build &&
+      pnpm --filter @option-decode/web start"
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:4000
+      NEXT_PUBLIC_API_URL: ${APP_PUBLIC_URL}
+    expose:
+      - "3000"
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+      - option_decode_next:/workspace/apps/web/.next
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  api:
+    image: node:22-alpine
+    profiles: ["app"]
+    working_dir: /workspace
+    env_file:
+      - .env.production
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      pnpm install --frozen-lockfile --store-dir .pnpm-store &&
+      pnpm --filter @option-decode/db db:generate &&
+      pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
+      pnpm --filter @option-decode/api exec tsx src/server.ts"
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    expose:
+      - "4000"
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: node:22-alpine
+    profiles: ["app"]
+    working_dir: /workspace
+    env_file:
+      - .env.production
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      pnpm install --frozen-lockfile --store-dir .pnpm-store &&
+      pnpm --filter @option-decode/db db:generate &&
+      pnpm --filter @option-decode/worker exec tsx src/worker.ts"
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["app"]
+    depends_on:
+      - web
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    command: ["--mysql-native-password=ON"]
+    env_file:
+      - .env.production
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - option_decode_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - option_decode_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  option_decode_node_modules:
+  option_decode_pnpm_store:
+  option_decode_next:
+  option_decode_mysql:
+  option_decode_redis:
+
