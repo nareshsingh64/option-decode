@@ -57,7 +57,7 @@ The browser will show a warning because this is self-signed. This is expected.
 docker compose -f docker-compose.prod.yml --profile app up -d
 ```
 
-First start can take several minutes because it installs dependencies, builds Next.js, generates Prisma client, and applies migrations.
+First start can take several minutes because it installs full workspace dependencies, builds Next.js, generates Prisma client, and applies migrations.
 
 Check status:
 
@@ -141,4 +141,3 @@ docker compose -f docker-compose.prod.yml --profile app down
 ```
 
 Do not use `-v` unless you intentionally want to delete MySQL/Redis volumes.
-
