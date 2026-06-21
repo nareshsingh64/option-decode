@@ -160,6 +160,8 @@ interface PaperOrder {
   status: string;
   strategyName: string;
   createdAt: string;
+  ownerEmail?: string;
+  ownerName?: string;
 }
 
 interface PaperPosition {
@@ -182,6 +184,8 @@ interface PaperPosition {
   unrealizedPnl: number;
   status: string;
   openedAt: string;
+  ownerEmail?: string;
+  ownerName?: string;
 }
 
 interface PaperTrade {
@@ -205,6 +209,8 @@ interface PaperTrade {
   exitReason: string;
   openedAt: string;
   closedAt: string;
+  ownerEmail?: string;
+  ownerName?: string;
 }
 
 interface LiveDashboardProps {
@@ -1235,7 +1241,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "option-chain" ? (
-      <section className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.32fr)]">
+      <section className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
             <div>
@@ -1257,48 +1263,48 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <span>Auto-refresh 30s</span>
             </div>
           </div>
-          <div className="grid gap-3 border-b border-terminal-line p-4 md:grid-cols-4">
+          <div className="grid gap-3 border-b border-terminal-line p-3 md:grid-cols-4">
             <SignalCell label="CE Open Interest" value={formatLarge(chainStats.totalCeOi, numberFormatMode)} detail={formatSignedLarge(chainStats.totalCeChange, numberFormatMode)} tone="red" />
             <SignalCell label="PE Open Interest" value={formatLarge(chainStats.totalPeOi, numberFormatMode)} detail={formatSignedLarge(chainStats.totalPeChange, numberFormatMode)} tone="green" />
             <SignalCell label="OI Breadth" value={chainStats.breadth} detail={`PCR ${overview.pressure.pcr?.toFixed(2) ?? "--"}`} tone="blue" />
             <SignalCell label="Max OI Strike" value={chainStats.maxOiStrikeText} detail={chainStats.maxOiSide} tone="blue" />
           </div>
           <div className="max-w-full overflow-x-auto">
-            <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <table className="w-full min-w-[980px] border-collapse text-xs xl:text-sm">
               <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
-                  <th className="px-4 py-3 text-left">CE IV/Δ</th>
-                  <th className="px-4 py-3 text-left">CE OI</th>
-                  <th className="px-4 py-3 text-left">CE Chg</th>
-                  <th className="px-4 py-3 text-left">CE Vol</th>
-                  <th className="px-4 py-3 text-left">CE LTP</th>
-                  <th className="px-4 py-3 text-center">Strike</th>
-                  <th className="px-4 py-3 text-right">PE LTP</th>
-                  <th className="px-4 py-3 text-right">PE Vol</th>
-                  <th className="px-4 py-3 text-right">PE Chg</th>
-                  <th className="px-4 py-3 text-right">PE OI</th>
-                  <th className="px-4 py-3 text-right">PE IV/Δ</th>
+                  <th className="px-2 py-3 text-left">CE IV/Δ</th>
+                  <th className="px-2 py-3 text-left">CE OI</th>
+                  <th className="px-2 py-3 text-left">CE Chg</th>
+                  <th className="px-2 py-3 text-left">CE Vol</th>
+                  <th className="px-2 py-3 text-left">CE LTP</th>
+                  <th className="px-2 py-3 text-center">Strike</th>
+                  <th className="px-2 py-3 text-right">PE LTP</th>
+                  <th className="px-2 py-3 text-right">PE Vol</th>
+                  <th className="px-2 py-3 text-right">PE Chg</th>
+                  <th className="px-2 py-3 text-right">PE OI</th>
+                  <th className="px-2 py-3 text-right">PE IV/Δ</th>
                 </tr>
               </thead>
               <tbody>
                 {chainRows.map((row) => (
                   <tr key={row.strike} className={row.strike === overview.snapshot.atmStrike ? "border-y border-terminal-blue/70 bg-terminal-blue/10" : "border-t border-terminal-line/80"}>
-                    <td className="px-4 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                    <td className="px-4 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left")}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                    <td className="px-4 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
-                    <td className="px-4 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
-                    <td className="px-4 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
+                    <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
+                    <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left")}</td>
+                    <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
+                    <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
+                    <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
+                    <td className="px-2 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
                   </tr>
                 ))}
                 {!chainRows.length ? (
                   <tr>
-                    <td colSpan={11} className="px-4 py-8 text-center text-terminal-muted">
+                    <td colSpan={11} className="px-2 py-8 text-center text-terminal-muted">
                       No strikes available inside the current VIX range.
                     </td>
                   </tr>
@@ -1308,7 +1314,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           </div>
         </div>
 
-        <div className="grid gap-4">
+        <div className="grid gap-3">
           <TerminalPanel title={`${overview.snapshot.underlyingSymbol} Option Chain - Top Strikes`}>
             <div className="grid gap-1">
               {topStrikeRows.map((row) => (
@@ -1472,6 +1478,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                             <td className="px-3 py-3">
                               <div className="font-semibold">{order.underlyingSymbol} {formatStrike(order.strikePrice)} {order.optionType}</div>
                               <div className="text-xs text-terminal-muted">{order.expiry} / {order.action}</div>
+                              {order.ownerEmail ? <div className="text-xs text-terminal-blue">{order.ownerName ?? order.ownerEmail}</div> : null}
                             </td>
                             <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(order.lots, order.lotSize, order.quantity)}</td>
                             <td className="px-3 py-3 text-right font-semibold text-terminal-text">{formatPrice(order.requestedPrice)}</td>
@@ -1529,6 +1536,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                             <td className="px-3 py-3">
                               <div className="font-semibold">{position.underlyingSymbol} {formatStrike(position.strikePrice)} {position.optionType}</div>
                               <div className="text-xs text-terminal-muted">{position.expiry} / {position.action}</div>
+                              {position.ownerEmail ? <div className="text-xs text-terminal-blue">{position.ownerName ?? position.ownerEmail}</div> : null}
                             </td>
                             <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(position.lots, position.lotSize, position.quantity)}</td>
                             <td className="px-3 py-3 text-right">{formatPrice(position.entryPrice)}</td>
@@ -1591,6 +1599,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                           <td className="px-3 py-3">
                             <div className="font-semibold">{trade.underlyingSymbol} {formatStrike(trade.strikePrice)} {trade.optionType}</div>
                             <div className="text-xs text-terminal-muted">{trade.expiry} / {trade.action}</div>
+                            {trade.ownerEmail ? <div className="text-xs text-terminal-blue">{trade.ownerName ?? trade.ownerEmail}</div> : null}
                           </td>
                           <td className="px-3 py-3 text-terminal-muted">{trade.exitReason}</td>
                           <td className="px-3 py-3 text-right text-xs text-terminal-muted">{formatIstShortDateTime(trade.openedAt)}</td>
@@ -1631,6 +1640,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                           <td className="px-3 py-3">
                             <div className="font-semibold">{order.underlyingSymbol} {formatStrike(order.strikePrice)} {order.optionType}</div>
                             <div className="text-xs text-terminal-muted">{order.expiry} / {formatIstShortDateTime(order.createdAt)}</div>
+                            {order.ownerEmail ? <div className="text-xs text-terminal-blue">{order.ownerName ?? order.ownerEmail}</div> : null}
                           </td>
                           <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(order.lots, order.lotSize, order.quantity)}</td>
                           <td className="px-3 py-3 text-right">{formatPrice(order.filledPrice ?? order.requestedPrice)}</td>
@@ -1833,7 +1843,8 @@ function buildClientViewHref(view: DashboardView, underlying: string, expiry: st
 async function fetchPaperSummary(): Promise<PaperSummary> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/paper/summary`, {
-    cache: "no-store"
+    cache: "no-store",
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error(`Paper summary failed with HTTP ${response.status}`);
@@ -1999,6 +2010,7 @@ async function placePaperOrder(payload: {
     headers: {
       "content-type": "application/json"
     },
+    credentials: "include",
     body: JSON.stringify(payload)
   });
 
@@ -2017,6 +2029,7 @@ async function closePaperPosition(positionId: string): Promise<PaperSummary> {
     headers: {
       "content-type": "application/json"
     },
+    credentials: "include",
     body: JSON.stringify({ exitReason: "MANUAL" })
   });
 
@@ -2035,6 +2048,7 @@ async function updatePaperPositionRisk(positionId: string, stopLoss: number, tar
     headers: {
       "content-type": "application/json"
     },
+    credentials: "include",
     body: JSON.stringify({ stopLoss, trailDistance, targetPrice })
   });
 

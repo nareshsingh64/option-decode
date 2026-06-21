@@ -236,7 +236,14 @@ app.get<{
   };
 });
 
-app.get("/api/paper/summary", async () => getPaperSummary());
+app.get("/api/paper/summary", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  return getPaperSummary(user);
+});
 
 app.get("/api/watchlist/default", async () => getDefaultWatchlist());
 
@@ -285,6 +292,11 @@ const paperOrderSchema = z.object({
 });
 
 app.post("/api/paper/orders", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
   const parsed = paperOrderSchema.safeParse(request.body);
   if (!parsed.success) {
     return reply.status(400).send({
@@ -312,7 +324,7 @@ app.post("/api/paper/orders", async (request, reply) => {
     return reply.status(400).send({ message: "Target must be below entry price for SELL orders." });
   }
 
-  return placePaperOrder(parsed.data);
+  return placePaperOrder(parsed.data, user);
 });
 
 const closePositionSchema = z.object({
@@ -324,13 +336,18 @@ app.post<{
     id: string;
   };
 }>("/api/paper/positions/:id/close", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
   const parsed = closePositionSchema.safeParse(request.body ?? {});
   if (!parsed.success) {
     return reply.status(400).send({ message: "Invalid close request" });
   }
 
   try {
-    return await closePaperPosition(request.params.id, parsed.data.exitReason);
+    return await closePaperPosition(request.params.id, user, parsed.data.exitReason);
   } catch (error) {
     return reply.status(404).send({ message: error instanceof Error ? error.message : "Unable to close paper position" });
   }
@@ -347,13 +364,18 @@ app.patch<{
     id: string;
   };
 }>("/api/paper/positions/:id/risk", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
   const parsed = positionRiskSchema.safeParse(request.body ?? {});
   if (!parsed.success) {
     return reply.status(400).send({ message: "Invalid position risk request" });
   }
 
   try {
-    return await updatePaperPositionRisk(request.params.id, parsed.data.stopLoss, parsed.data.targetPrice, parsed.data.trailDistance);
+    return await updatePaperPositionRisk(request.params.id, user, parsed.data.stopLoss, parsed.data.targetPrice, parsed.data.trailDistance);
   } catch (error) {
     return reply.status(400).send({ message: error instanceof Error ? error.message : "Unable to update position risk" });
   }
@@ -368,6 +390,11 @@ async function requireAdminUser(cookieHeader: string | undefined) {
   const userId = getSessionUserId(cookieHeader, config.SESSION_SECRET);
   const user = userId ? await getAuthUserById(userId) : null;
   return user?.role === "ADMIN" ? user : null;
+}
+
+async function getRequestUser(cookieHeader: string | undefined) {
+  const userId = getSessionUserId(cookieHeader, config.SESSION_SECRET);
+  return userId ? getAuthUserById(userId) : null;
 }
 
 async function getExpiriesOrEmpty(underlyingSymbol: string) {
