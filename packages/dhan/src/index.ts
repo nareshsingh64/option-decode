@@ -199,10 +199,33 @@ export class DhanClient {
     return toNumber(payload[segment]?.[String(securityId)]?.last_price);
   }
 
+  async getLtpQuotes(underlyings: UnderlyingDefinition[]): Promise<Map<string, DhanOhlcQuote>> {
+    const grouped = underlyings.reduce<Record<string, number[]>>((groups, underlying) => {
+      addQuoteSecurityIds(groups, underlying);
+      return groups;
+    }, {});
+
+    const payload = await this.postDhan<DhanLtpResponse>("/v2/marketfeed/ltp", grouped);
+    const quotes = new Map<string, DhanOhlcQuote>();
+
+    for (const underlying of underlyings) {
+      const primarySecurityId = underlying.quoteSecurityId ?? underlying.securityId;
+      const primarySegment = underlying.quoteSegment ?? underlying.segment;
+      const fallbackRaw = payload[underlying.segment]?.[String(underlying.securityId)];
+      const primaryRaw = payload[primarySegment]?.[String(primarySecurityId)];
+      const raw = selectQuotePayload(primaryRaw, fallbackRaw);
+      quotes.set(underlying.key, {
+        securityId: raw === primaryRaw ? primarySecurityId : underlying.securityId,
+        lastPrice: toNumber(raw?.last_price)
+      });
+    }
+
+    return quotes;
+  }
+
   async getOhlcQuotes(underlyings: UnderlyingDefinition[]): Promise<Map<string, DhanOhlcQuote>> {
     const grouped = underlyings.reduce<Record<string, number[]>>((groups, underlying) => {
-      const quoteSegment = underlying.quoteSegment ?? underlying.segment;
-      groups[quoteSegment] = [...(groups[quoteSegment] ?? []), underlying.quoteSecurityId ?? underlying.securityId];
+      addQuoteSecurityIds(groups, underlying);
       return groups;
     }, {});
 
@@ -210,11 +233,13 @@ export class DhanClient {
     const quotes = new Map<string, DhanOhlcQuote>();
 
     for (const underlying of underlyings) {
-      const securityId = underlying.quoteSecurityId ?? underlying.securityId;
-      const quoteSegment = underlying.quoteSegment ?? underlying.segment;
-      const raw = payload[quoteSegment]?.[String(securityId)];
+      const primarySecurityId = underlying.quoteSecurityId ?? underlying.securityId;
+      const primarySegment = underlying.quoteSegment ?? underlying.segment;
+      const fallbackRaw = payload[underlying.segment]?.[String(underlying.securityId)];
+      const primaryRaw = payload[primarySegment]?.[String(primarySecurityId)];
+      const raw = selectQuotePayload(primaryRaw, fallbackRaw);
       quotes.set(underlying.key, {
-        securityId,
+        securityId: raw === primaryRaw ? primarySecurityId : underlying.securityId,
         lastPrice: toNumber(raw?.last_price),
         previousClose: toNumber(raw?.ohlc?.close)
       });
@@ -268,6 +293,24 @@ export class DhanClient {
 
     return unwrapDhanPayload(decoded) as T;
   }
+}
+
+function addQuoteSecurityIds(groups: Record<string, number[]>, underlying: UnderlyingDefinition) {
+  const primarySegment = underlying.quoteSegment ?? underlying.segment;
+  const primarySecurityId = underlying.quoteSecurityId ?? underlying.securityId;
+  groups[primarySegment] = addUniqueNumber(groups[primarySegment] ?? [], primarySecurityId);
+
+  if (primarySegment !== underlying.segment || primarySecurityId !== underlying.securityId) {
+    groups[underlying.segment] = addUniqueNumber(groups[underlying.segment] ?? [], underlying.securityId);
+  }
+}
+
+function addUniqueNumber(values: number[], value: number) {
+  return values.includes(value) ? values : [...values, value];
+}
+
+function selectQuotePayload<T extends { last_price?: unknown }>(primary: T | undefined, fallback: T | undefined): T | undefined {
+  return toNumber(primary?.last_price) !== undefined ? primary : fallback ?? primary;
 }
 
 interface DhanOptionChainResponse {

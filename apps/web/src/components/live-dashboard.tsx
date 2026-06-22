@@ -224,6 +224,7 @@ interface LiveDashboardProps {
   };
   initialView?: DashboardView;
   onAuthUserChange?: (user: AuthUser | null) => void;
+  onMarketSelectionChange?: (params: { underlying: string; expiry: string }) => void;
 }
 
 export type DashboardView = "dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
@@ -234,7 +235,7 @@ type VisibleStrikeMode = "vix" | "atm";
 const REFRESH_SECONDS = 30;
 const FAST_REFRESH_SECONDS = 5;
 
-export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange }: LiveDashboardProps) {
+export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onMarketSelectionChange }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
   const [lastRefresh, setLastRefresh] = useState(initialOverview.snapshot.snapshotTime);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -289,6 +290,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     underlying: initialOverview.selectedUnderlying,
     expiry: initialOverview.selectedExpiry
   });
+  const tickerSymbolsRef = useRef(initialOverview.ticker?.map((item) => item.symbol) ?? [initialOverview.selectedUnderlying]);
   const isRefreshingRef = useRef(false);
   const isFastRefreshingRef = useRef(false);
   const isPaperRefreshingRef = useRef(false);
@@ -353,6 +355,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       underlying: initialOverview.selectedUnderlying,
       expiry: initialOverview.selectedExpiry
     };
+    tickerSymbolsRef.current = initialOverview.ticker?.map((item) => item.symbol) ?? [initialOverview.selectedUnderlying];
     setOrderStrike(String(initialOverview.snapshot.atmStrike));
     setReplayOverview(null);
     setReplaySnapshots([]);
@@ -383,6 +386,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       const { underlying, expiry } = selectionRef.current;
       const nextOverview = await fetchMarketOverview(underlying, expiry);
       setOverview(nextOverview);
+      tickerSymbolsRef.current = nextOverview.ticker?.map((item) => item.symbol) ?? [nextOverview.selectedUnderlying];
       setLastRefresh(new Date().toISOString());
       setSecondsToRefresh(REFRESH_SECONDS);
     } catch (error) {
@@ -392,6 +396,41 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setIsRefreshing(false);
     }
   }, []);
+
+  const loadMarketSelection = useCallback(async (underlying: string, expiry = "") => {
+    if (isRefreshingRef.current) {
+      return;
+    }
+
+    const nextUnderlying = underlying.trim().toUpperCase();
+    if (!nextUnderlying) {
+      return;
+    }
+
+    isRefreshingRef.current = true;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      const nextOverview = await fetchMarketOverview(nextUnderlying, expiry.trim());
+      setOverview(nextOverview);
+      tickerSymbolsRef.current = nextOverview.ticker?.map((item) => item.symbol) ?? [nextOverview.selectedUnderlying];
+      setLastRefresh(new Date().toISOString());
+      setSecondsToRefresh(REFRESH_SECONDS);
+      selectionRef.current = {
+        underlying: nextOverview.selectedUnderlying,
+        expiry: nextOverview.selectedExpiry
+      };
+      onMarketSelectionChange?.({
+        underlying: nextOverview.selectedUnderlying,
+        expiry: nextOverview.selectedExpiry
+      });
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "Unable to load selected market");
+    } finally {
+      isRefreshingRef.current = false;
+      setIsRefreshing(false);
+    }
+  }, [onMarketSelectionChange]);
 
   const refreshPaperSummary = useCallback(async () => {
     if (isPaperRefreshingRef.current) {
@@ -416,12 +455,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 
     isFastRefreshingRef.current = true;
     try {
-      const payload = await fetchMarketTicker();
+      const payload = await fetchMarketTicker(tickerSymbolsRef.current);
       setOverview((currentOverview) => ({
         ...currentOverview,
         indiaVix: payload.indiaVix ?? currentOverview.indiaVix,
         ticker: payload.ticker
       }));
+      tickerSymbolsRef.current = payload.ticker?.map((item) => item.symbol) ?? tickerSymbolsRef.current;
     } catch {
       // Keep the last ticker on transient quote refresh failures.
     } finally {
@@ -727,6 +767,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   };
 
+  const handleMarketControlSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    await loadMarketSelection(String(formData.get("underlying") ?? ""), String(formData.get("expiry") ?? ""));
+  };
+
   const handleUpdatePositionRisk = async (positionId: string) => {
     const draft = positionRiskDrafts[positionId];
     if (!draft) {
@@ -874,14 +920,14 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <button className="grid h-10 w-10 place-items-center rounded border border-terminal-blue bg-terminal-blue text-white transition hover:opacity-90" type="button" onClick={() => {
                 const symbol = newWatchSymbol.trim().toUpperCase();
                 if (symbol) {
-                  window.location.href = buildClientViewHref(initialView, symbol, "");
+                  void loadMarketSelection(symbol);
                 }
               }} aria-label="Open watchlist symbol">
                 <Play size={15} />
               </button>
             </div>
           </div>
-          <form className="flex flex-wrap gap-3" action="/app">
+          <form key={`${overview.selectedUnderlying}-${overview.selectedExpiry}`} className="flex flex-wrap gap-3" onSubmit={handleMarketControlSubmit}>
             <input name="view" type="hidden" value={initialView} />
             <label className="grid gap-1 text-xs uppercase text-terminal-muted">
               Symbol
@@ -1998,9 +2044,15 @@ async function fetchMarketOverview(underlying: string, expiry: string): Promise<
   return response.json() as Promise<MarketOverview>;
 }
 
-async function fetchMarketTicker(): Promise<Pick<MarketOverview, "indiaVix" | "ticker">> {
+async function fetchMarketTicker(symbols?: string[]): Promise<Pick<MarketOverview, "indiaVix" | "ticker">> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-  const response = await fetch(`${apiUrl}/api/market/ticker`, {
+  const search = new URLSearchParams();
+  const normalizedSymbols = [...new Set((symbols ?? []).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+  if (normalizedSymbols.length) {
+    search.set("symbols", normalizedSymbols.join(","));
+  }
+  const query = search.size ? `?${search.toString()}` : "";
+  const response = await fetch(`${apiUrl}/api/market/ticker${query}`, {
     cache: "no-store"
   });
   if (!response.ok) {

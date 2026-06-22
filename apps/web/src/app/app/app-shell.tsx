@@ -34,6 +34,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   const router = useRouter();
   const [authUser, setAuthUser] = useState<AuthUser | null>(initialAuthUser);
   const [activeView, setActiveView] = useState(requestedView);
+  const [currentParams, setCurrentParams] = useState(initialParams);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const navItems = useMemo(() => protectedNavItems.filter(([view]) => view !== "admin" || authUser?.role === "ADMIN"), [authUser?.role]);
 
@@ -41,10 +42,23 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
     setActiveView(requestedView);
   }, [requestedView]);
 
+  useEffect(() => {
+    setCurrentParams(initialParams);
+  }, [initialParams]);
+
   const handleViewChange = useCallback((view: DashboardView) => {
     setActiveView(view);
-    window.history.pushState(null, "", buildViewHref(view, initialParams));
-  }, [initialParams]);
+    window.history.pushState(null, "", buildViewHref(view, currentParams));
+  }, [currentParams]);
+
+  const handleMarketSelectionChange = useCallback((params: { underlying: string; expiry: string }) => {
+    setCurrentParams((current) => ({
+      ...current,
+      underlying: params.underlying,
+      expiry: params.expiry
+    }));
+    window.history.pushState(null, "", buildViewHref(activeView, params));
+  }, [activeView]);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -61,7 +75,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   const nav = useMemo(
     () =>
       navItems.map(([view, label, Icon]) => (
-        <a key={view} className={`flex min-h-10 items-center gap-3 rounded px-3 py-2 transition hover:bg-white/5 hover:text-terminal-text ${activeView === view ? "bg-terminal-blue/15 text-terminal-blue" : ""}`} href={buildViewHref(view, initialParams)} onClick={(event) => {
+        <a key={view} className={`flex min-h-10 items-center gap-3 rounded px-3 py-2 transition hover:bg-white/5 hover:text-terminal-text ${activeView === view ? "bg-terminal-blue/15 text-terminal-blue" : ""}`} href={buildViewHref(view, currentParams)} onClick={(event) => {
           event.preventDefault();
           handleViewChange(view);
         }}>
@@ -70,7 +84,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
           {view === "alerts" && initialOverview.alerts.length ? <span className="rounded-full bg-terminal-red px-2 py-0.5 text-[0.65rem] font-semibold text-white">{initialOverview.alerts.length}</span> : null}
         </a>
       )),
-    [activeView, handleViewChange, initialOverview.alerts.length, initialParams, navItems]
+    [activeView, currentParams, handleViewChange, initialOverview.alerts.length, navItems]
   );
 
   return (
@@ -82,14 +96,14 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
             <h1 className="mt-1 text-2xl font-semibold text-terminal-text sm:text-3xl">Decode Market Pressure Before You Trade</h1>
           </div>
           <div className="flex items-center gap-2">
-            <a className="relative grid h-10 w-10 place-items-center rounded border border-terminal-line bg-terminal-panel text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" aria-label="Notifications" href={buildViewHref("alerts", initialParams)} onClick={(event) => {
+            <a className="relative grid h-10 w-10 place-items-center rounded border border-terminal-line bg-terminal-panel text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" aria-label="Notifications" href={buildViewHref("alerts", currentParams)} onClick={(event) => {
               event.preventDefault();
               handleViewChange("alerts");
             }}>
               <Bell size={18} />
               {initialOverview.alerts.length ? <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-terminal-red px-1 text-[0.65rem] font-semibold text-white">{initialOverview.alerts.length}</span> : null}
             </a>
-            <a className="rounded border border-terminal-line bg-terminal-panel px-4 py-2 text-sm font-semibold text-terminal-text transition hover:border-terminal-blue" href={buildViewHref("account", initialParams)} onClick={(event) => {
+            <a className="rounded border border-terminal-line bg-terminal-panel px-4 py-2 text-sm font-semibold text-terminal-text transition hover:border-terminal-blue" href={buildViewHref("account", currentParams)} onClick={(event) => {
               event.preventDefault();
               handleViewChange("account");
             }}>
@@ -104,7 +118,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
 
         <nav className="mt-3 flex gap-2 overflow-x-auto border-b border-terminal-line pb-3 text-sm text-terminal-muted lg:hidden" aria-label="Mobile sections">
           {navItems.map(([view, label, Icon]) => (
-            <a key={view} className={`flex shrink-0 items-center gap-2 rounded border px-3 py-2 transition ${activeView === view ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel hover:border-terminal-blue hover:text-terminal-text"}`} href={buildViewHref(view, initialParams)} onClick={(event) => {
+            <a key={view} className={`flex shrink-0 items-center gap-2 rounded border px-3 py-2 transition ${activeView === view ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel hover:border-terminal-blue hover:text-terminal-text"}`} href={buildViewHref(view, currentParams)} onClick={(event) => {
               event.preventDefault();
               handleViewChange(view);
             }}>
@@ -120,7 +134,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
             <nav className="sticky top-3 space-y-1 text-sm text-terminal-muted">{nav}</nav>
           </aside>
 
-          <LiveDashboard initialOverview={initialOverview} initialParams={initialParams} initialView={activeView} onAuthUserChange={setAuthUser} />
+          <LiveDashboard initialOverview={initialOverview} initialParams={currentParams} initialView={activeView} onAuthUserChange={setAuthUser} onMarketSelectionChange={handleMarketSelectionChange} />
         </div>
       </section>
     </main>

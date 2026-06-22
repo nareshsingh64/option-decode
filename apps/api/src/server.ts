@@ -21,15 +21,16 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
   lotSize: 1
 };
 const MARKET_AUX_CACHE_MS = 5_000;
-let marketAuxCache:
-  | {
-      expiresAt: number;
-      value: {
-        indiaVix?: number;
-        ticker: MarketTickerItem[];
-      };
-    }
-  | undefined;
+const marketAuxCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    value: {
+      indiaVix?: number;
+      ticker: MarketTickerItem[];
+    };
+  }
+>();
 
 interface MarketTickerItem {
   symbol: string;
@@ -171,7 +172,7 @@ app.get<{
 }>("/api/market/overview", async (request) => {
   const requestedUnderlying = normalizeUnderlying(request.query.underlying);
   const requestedExpiry = request.query.expiry?.trim() || undefined;
-  const marketAux = await getMarketAuxData();
+  const marketAux = await getMarketAuxData(await getTickerSymbols(requestedUnderlying));
   const spotPriceOverride = marketAux.ticker.find((item) => item.symbol === requestedUnderlying)?.spotPrice;
   const snapshot = await getLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry, spotPriceOverride);
   const pressure = calculatePressureScore(snapshot);
@@ -191,8 +192,12 @@ app.get<{
   };
 });
 
-app.get("/api/market/ticker", async () => {
-  const marketAux = await getMarketAuxData();
+app.get<{
+  Querystring: {
+    symbols?: string;
+  };
+}>("/api/market/ticker", async (request) => {
+  const marketAux = await getMarketAuxData(parseTickerSymbols(request.query.symbols));
   return {
     indiaVix: marketAux.indiaVix,
     ticker: marketAux.ticker
@@ -517,31 +522,67 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
   }
 }
 
-async function getMarketAuxData() {
-  const now = Date.now();
-  if (marketAuxCache && marketAuxCache.expiresAt > now) {
-    return marketAuxCache.value;
+async function getTickerSymbols(selectedUnderlying?: string) {
+  const watchlist = await getDefaultWatchlist().catch(() => null);
+  return normalizeTickerSymbols([selectedUnderlying, ...(watchlist?.symbols ?? [])]);
+}
+
+function parseTickerSymbols(symbols?: string) {
+  if (!symbols) {
+    return undefined;
   }
 
-  const value = await getFreshMarketAuxData();
-  marketAuxCache = {
+  return normalizeTickerSymbols(symbols.split(","));
+}
+
+function normalizeTickerSymbols(symbols: Array<string | undefined>) {
+  const normalized = symbols.map((symbol) => normalizeUnderlyingKey(symbol)).filter((symbol) => tickerUnderlyings.includes(symbol));
+  return normalized.length ? [...new Set(normalized)] : undefined;
+}
+
+async function getMarketAuxData(symbols?: string[]) {
+  const requestedSymbols = normalizeTickerSymbols(symbols ?? tickerUnderlyings) ?? tickerUnderlyings;
+  const cacheKey = requestedSymbols.slice().sort().join(",");
+  const now = Date.now();
+  const cached = marketAuxCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const value = await getFreshMarketAuxData(requestedSymbols);
+  marketAuxCache.set(cacheKey, {
     expiresAt: now + MARKET_AUX_CACHE_MS,
     value
-  };
+  });
   return value;
 }
 
-async function getFreshMarketAuxData() {
-  const definitions = tickerUnderlyings.map((symbol) => getUnderlyingDefinition(symbol)).filter((definition): definition is NonNullable<typeof definition> => Boolean(definition));
+async function getFreshMarketAuxData(symbols: string[]) {
+  const definitions = symbols.map((symbol) => getUnderlyingDefinition(symbol)).filter((definition): definition is NonNullable<typeof definition> => Boolean(definition));
 
   try {
-    const quotes = await dhan.getOhlcQuotes([...definitions, INDIA_VIX_UNDERLYING]);
+    const quoteUnderlyings = [...definitions, INDIA_VIX_UNDERLYING];
+    const [ltpResult, ohlcResult] = await Promise.allSettled([dhan.getLtpQuotes(quoteUnderlyings), dhan.getOhlcQuotes(quoteUnderlyings)]);
+    const ltpQuotes = ltpResult.status === "fulfilled" ? ltpResult.value : new Map<string, { lastPrice?: number }>();
+    const ohlcQuotes = ohlcResult.status === "fulfilled" ? ohlcResult.value : new Map<string, { lastPrice?: number; previousClose?: number }>();
+    if (ltpResult.status === "rejected") {
+      app.log.warn({ error: ltpResult.reason }, "Unable to fetch market LTP from Dhan");
+    }
+    if (ohlcResult.status === "rejected") {
+      app.log.warn({ error: ohlcResult.reason }, "Unable to fetch market OHLC from Dhan");
+    }
+    if (ltpResult.status === "rejected" && ohlcResult.status === "rejected") {
+      throw ltpResult.reason;
+    }
+
     const ticker = await Promise.all(definitions.map(async (definition) => {
-      const quote = quotes.get(definition.key);
+      const ltpQuote = ltpQuotes.get(definition.key);
+      const ohlcQuote = ohlcQuotes.get(definition.key);
       const storedChange = await getLatestSpotChange(definition.key).catch(() => null);
       const useStoredLastFeed = shouldUseStoredTickerFeed(definition);
-      const spotPrice = useStoredLastFeed ? storedChange?.spotPrice ?? quote?.lastPrice : quote?.lastPrice ?? storedChange?.spotPrice;
-      const previousClose = useStoredLastFeed ? storedChange?.previousClose ?? quote?.previousClose : quote?.previousClose ?? storedChange?.previousClose;
+      const liveSpotPrice = ltpQuote?.lastPrice ?? ohlcQuote?.lastPrice;
+      const spotPrice = useStoredLastFeed ? storedChange?.spotPrice ?? liveSpotPrice : liveSpotPrice ?? storedChange?.spotPrice;
+      const previousClose = useStoredLastFeed ? storedChange?.previousClose ?? ohlcQuote?.previousClose : ohlcQuote?.previousClose ?? storedChange?.previousClose;
       const change = spotPrice !== undefined && previousClose !== undefined ? spotPrice - previousClose : storedChange?.change;
       return {
         symbol: definition.key,
@@ -555,7 +596,7 @@ async function getFreshMarketAuxData() {
     }));
 
     return {
-      indiaVix: quotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice,
+      indiaVix: ltpQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice ?? ohlcQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice,
       ticker
     };
   } catch (error) {
