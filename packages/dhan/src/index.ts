@@ -19,12 +19,26 @@ export interface DhanOhlcQuote {
   previousClose?: number;
 }
 
+interface CommodityFutureQuote {
+  securityId: number;
+  expiryDate: string;
+}
+
 export class DhanApiError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DhanApiError";
   }
 }
+
+const DHAN_SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv";
+const COMMODITY_QUOTE_CACHE_MS = 6 * 60 * 60 * 1000;
+let commodityFutureQuoteCache:
+  | {
+      expiresAt: number;
+      quotes: Map<string, CommodityFutureQuote>;
+    }
+  | undefined;
 
 export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
   NIFTY: {
@@ -199,6 +213,25 @@ export class DhanClient {
     return toNumber(payload[segment]?.[String(securityId)]?.last_price);
   }
 
+  async resolveQuoteUnderlyings(underlyings: UnderlyingDefinition[]): Promise<UnderlyingDefinition[]> {
+    const mcxUnderlyings = underlyings.filter((underlying) => underlying.segment === "MCX_COMM");
+    if (!mcxUnderlyings.length) {
+      return underlyings;
+    }
+
+    const quotes = await getCommodityFutureQuotes();
+    return underlyings.map((underlying) => {
+      const quote = quotes.get(underlying.key);
+      return quote
+        ? {
+            ...underlying,
+            quoteSecurityId: quote.securityId,
+            quoteSegment: underlying.segment
+          }
+        : underlying;
+    });
+  }
+
   async getLtpQuotes(underlyings: UnderlyingDefinition[]): Promise<Map<string, DhanOhlcQuote>> {
     const grouped = underlyings.reduce<Record<string, number[]>>((groups, underlying) => {
       addQuoteSecurityIds(groups, underlying);
@@ -293,6 +326,95 @@ export class DhanClient {
 
     return unwrapDhanPayload(decoded) as T;
   }
+}
+
+async function getCommodityFutureQuotes() {
+  const now = Date.now();
+  if (commodityFutureQuoteCache && commodityFutureQuoteCache.expiresAt > now) {
+    return commodityFutureQuoteCache.quotes;
+  }
+
+  const response = await fetch(DHAN_SCRIP_MASTER_URL);
+  if (!response.ok) {
+    throw new DhanApiError(`Dhan scrip master failed: HTTP ${response.status}`);
+  }
+
+  const csv = await response.text();
+  const quotes = parseCommodityFutureQuotes(csv);
+  commodityFutureQuoteCache = {
+    expiresAt: now + COMMODITY_QUOTE_CACHE_MS,
+    quotes
+  };
+  return quotes;
+}
+
+function parseCommodityFutureQuotes(csv: string) {
+  const lines = csv.split(/\r?\n/).filter(Boolean);
+  const header = splitCsvLine(lines[0] ?? "");
+  const columnIndex = new Map(header.map((column, index) => [column, index]));
+  const requiredColumns = ["EXCH_ID", "SECURITY_ID", "INSTRUMENT_TYPE", "UNDERLYING_SYMBOL", "SM_EXPIRY_DATE"];
+  if (requiredColumns.some((column) => !columnIndex.has(column))) {
+    throw new DhanApiError("Dhan scrip master is missing required columns.");
+  }
+  const exchangeIndex = columnIndex.get("EXCH_ID")!;
+  const securityIdIndex = columnIndex.get("SECURITY_ID")!;
+  const instrumentTypeIndex = columnIndex.get("INSTRUMENT_TYPE")!;
+  const underlyingSymbolIndex = columnIndex.get("UNDERLYING_SYMBOL")!;
+  const expiryDateIndex = columnIndex.get("SM_EXPIRY_DATE")!;
+
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const quotes = new Map<string, CommodityFutureQuote>();
+
+  for (const line of lines.slice(1)) {
+    const columns = splitCsvLine(line);
+    if (columns[exchangeIndex] !== "MCX" || columns[instrumentTypeIndex] !== "FUTCOM") {
+      continue;
+    }
+
+    const symbol = normalizeUnderlyingKey(columns[underlyingSymbolIndex]);
+    if (!UNDERLYINGS[symbol]) {
+      continue;
+    }
+
+    const expiryDate = columns[expiryDateIndex];
+    const expiryTime = Date.parse(`${expiryDate}T00:00:00.000Z`);
+    const securityId = Number(columns[securityIdIndex]);
+    if (!Number.isFinite(expiryTime) || !Number.isFinite(securityId) || expiryTime < today.getTime()) {
+      continue;
+    }
+
+    const existing = quotes.get(symbol);
+    if (!existing || expiryDate < existing.expiryDate) {
+      quotes.set(symbol, {
+        securityId,
+        expiryDate
+      });
+    }
+  }
+
+  return quotes;
+}
+
+function splitCsvLine(line: string) {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "\"") {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current);
+  return values;
 }
 
 function addQuoteSecurityIds(groups: Record<string, number[]>, underlying: UnderlyingDefinition) {

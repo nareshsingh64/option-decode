@@ -79,7 +79,8 @@ async function captureOnce() {
 }
 
 async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
-  const quoteUnderlyings = underlyings.filter((underlying) => underlying.quoteSecurityId);
+  const resolvedUnderlyings = await dhan.resolveQuoteUnderlyings(underlyings);
+  const quoteUnderlyings = resolvedUnderlyings.filter((underlying) => underlying.quoteSecurityId);
   if (!quoteUnderlyings.length) {
     return new Map<string, number>();
   }

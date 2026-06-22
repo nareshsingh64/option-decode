@@ -561,7 +561,8 @@ async function getFreshMarketAuxData(symbols: string[]) {
   const definitions = symbols.map((symbol) => getUnderlyingDefinition(symbol)).filter((definition): definition is NonNullable<typeof definition> => Boolean(definition));
 
   try {
-    const quoteUnderlyings = [...definitions, INDIA_VIX_UNDERLYING];
+    const quoteDefinitions = await dhan.resolveQuoteUnderlyings(definitions);
+    const quoteUnderlyings = [...quoteDefinitions, INDIA_VIX_UNDERLYING];
     const [ltpResult, ohlcResult] = await Promise.allSettled([dhan.getLtpQuotes(quoteUnderlyings), dhan.getOhlcQuotes(quoteUnderlyings)]);
     const ltpQuotes = ltpResult.status === "fulfilled" ? ltpResult.value : new Map<string, { lastPrice?: number }>();
     const ohlcQuotes = ohlcResult.status === "fulfilled" ? ohlcResult.value : new Map<string, { lastPrice?: number; previousClose?: number }>();
@@ -575,7 +576,7 @@ async function getFreshMarketAuxData(symbols: string[]) {
       throw ltpResult.reason;
     }
 
-    const ticker = await Promise.all(definitions.map(async (definition) => {
+    const ticker = await Promise.all(quoteDefinitions.map(async (definition) => {
       const ltpQuote = ltpQuotes.get(definition.key);
       const ohlcQuote = ohlcQuotes.get(definition.key);
       const storedChange = await getLatestSpotChange(definition.key).catch(() => null);

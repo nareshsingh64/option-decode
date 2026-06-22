@@ -280,7 +280,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [isOrderTargetEdited, setIsOrderTargetEdited] = useState(false);
   const [positionRiskDrafts, setPositionRiskDrafts] = useState<Record<string, { stopLoss: string; trailDistance: string; targetPrice: string }>>({});
   const [updatingRiskPositionId, setUpdatingRiskPositionId] = useState<string | null>(null);
-  const [pendingOrderDrafts, setPendingOrderDrafts] = useState<Record<string, { lots: string; requestedPrice: string; trailDistance: string; targetPrice: string }>>({});
+  const [pendingOrderDrafts, setPendingOrderDrafts] = useState<Record<string, { lots: string; requestedPrice: string; stopLoss: string; targetPrice: string }>>({});
   const [updatingPendingOrderId, setUpdatingPendingOrderId] = useState<string | null>(null);
   const [cancelingPendingOrderId, setCancelingPendingOrderId] = useState<string | null>(null);
   const [numberFormatMode, setNumberFormatMode] = useState<NumberFormatMode>("indian");
@@ -646,10 +646,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const orderLotSize = orderTick?.lotSize && orderTick.lotSize > 0 ? orderTick.lotSize : getLotSizeForUnderlying(overview.snapshot.underlyingSymbol);
   const orderQuantity = Number(orderLots || 0) * orderLotSize;
   const defaultTrailDistance = getDefaultTrailDistanceForEntry(orderEntryPrice);
-  const orderTrailDistanceValue = normalizeTradablePrice(Number(orderStopLoss || defaultTrailDistance));
-  const defaultStopLoss = getTrailingStopLoss(orderAction, orderEntryPrice, orderTrailDistanceValue);
+  const defaultStopLoss = getTrailingStopLoss(orderAction, orderEntryPrice, defaultTrailDistance);
   const defaultTarget = getDefaultTargetPrice(orderAction, orderEntryPrice);
-  const orderStopLossValue = defaultStopLoss;
+  const orderStopLossValue = normalizeTradablePrice(Number(orderStopLoss || defaultStopLoss));
+  const orderTrailDistanceValue = normalizeTradablePrice(Math.abs(orderEntryPrice - orderStopLossValue));
   const orderTargetValue = normalizeTradablePrice(Number(orderTarget || defaultTarget));
   const estimatedRisk = orderAction === "BUY" ? Math.max(0, (orderEntryPrice - orderStopLossValue) * orderQuantity) : Math.max(0, (orderStopLossValue - orderEntryPrice) * orderQuantity);
   const estimatedReward = orderAction === "BUY" ? Math.max(0, (orderTargetValue - orderEntryPrice) * orderQuantity) : Math.max(0, (orderEntryPrice - orderTargetValue) * orderQuantity);
@@ -667,12 +667,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       return;
     }
     if (!isOrderStopLossEdited) {
-      setOrderStopLoss(formatTradablePrice(defaultTrailDistance));
+      setOrderStopLoss(formatTradablePrice(defaultStopLoss));
     }
     if (!isOrderTargetEdited) {
       setOrderTarget(formatTradablePrice(defaultTarget));
     }
-  }, [defaultTarget, defaultTrailDistance, isOrderStopLossEdited, isOrderTargetEdited, orderEntryPrice]);
+  }, [defaultStopLoss, defaultTarget, isOrderStopLossEdited, isOrderTargetEdited, orderEntryPrice]);
 
   useEffect(() => {
     setOrderEntry(marketEntryPrice > 0 ? formatTradablePrice(marketEntryPrice) : "");
@@ -729,12 +729,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     const draft = pendingOrderDrafts[orderId] ?? {
       lots: String(order.lots),
       requestedPrice: formatTradablePrice(order.requestedPrice),
-      trailDistance: formatTradablePrice(order.trailDistance),
+      stopLoss: formatTradablePrice(order.stopLoss),
       targetPrice: formatTradablePrice(order.targetPrice)
     };
     const requestedPrice = normalizeTradablePrice(Number(draft.requestedPrice || order.requestedPrice));
-    const trailDistance = normalizeTradablePrice(Number(draft.trailDistance || order.trailDistance));
-    const stopLoss = getTrailingStopLoss(order.action, requestedPrice, trailDistance);
+    const stopLoss = normalizeTradablePrice(Number(draft.stopLoss || order.stopLoss));
+    const trailDistance = normalizeTradablePrice(Math.abs(requestedPrice - stopLoss));
     const targetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
 
     setUpdatingPendingOrderId(orderId);
@@ -1536,7 +1536,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         <th className="px-3 py-3 text-left">Type</th>
                         <th className="px-3 py-3 text-left">Strike</th>
                         <th className="px-3 py-3 text-right">Entry</th>
-                        <th className="px-3 py-3 text-right">Trail SL</th>
+                        <th className="px-3 py-3 text-right">SL</th>
                         <th className="px-3 py-3 text-right">Target</th>
                         <th className="px-3 py-3 text-right">Contracts</th>
                         <th className="px-3 py-3 text-right">Qty</th>
@@ -1582,7 +1582,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                             setIsOrderStopLossEdited(true);
                             setOrderStopLoss(event.target.value);
                           }} onBlur={() => setOrderStopLoss((value) => (value ? formatTradablePrice(Number(value)) : value))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
-                          <div className="mt-1 text-xs text-terminal-muted">SL {formatPrice(orderStopLossValue)}</div>
+                          <div className="mt-1 text-xs text-terminal-muted">Trail {formatPrice(orderTrailDistanceValue)}</div>
                         </td>
                         <td className="px-3 py-3 text-right">
                           <input value={orderTarget} onChange={(event) => {
@@ -1620,7 +1620,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         <th className="px-3 py-3 text-right">Entry</th>
                         <th className="px-3 py-3 text-right">Current LTP</th>
                         <th className="px-3 py-3 text-right">Trigger</th>
-                        <th className="px-3 py-3 text-right">Trail SL</th>
+                        <th className="px-3 py-3 text-right">SL</th>
                         <th className="px-3 py-3 text-right">Target</th>
                         <th className="px-3 py-3 text-right">Placed</th>
                         <th className="px-3 py-3 text-right">Status</th>
@@ -1632,13 +1632,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         const draft = pendingOrderDrafts[order.id] ?? {
                           lots: String(order.lots),
                           requestedPrice: formatTradablePrice(order.requestedPrice),
-                          trailDistance: formatTradablePrice(order.trailDistance),
+                          stopLoss: formatTradablePrice(order.stopLoss),
                           targetPrice: formatTradablePrice(order.targetPrice)
                         };
                         const draftLots = Math.max(1, Math.floor(Number(draft.lots || order.lots)));
                         const draftEntry = normalizeTradablePrice(Number(draft.requestedPrice || order.requestedPrice));
-                        const draftTrailDistance = normalizeTradablePrice(Number(draft.trailDistance || order.trailDistance));
-                        const draftStopLoss = getTrailingStopLoss(order.action, draftEntry, draftTrailDistance);
+                        const draftStopLoss = normalizeTradablePrice(Number(draft.stopLoss || order.stopLoss));
+                        const draftTrailDistance = normalizeTradablePrice(Math.abs(draftEntry - draftStopLoss));
                         const draftTargetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
                         const draftQuantity = draftLots * order.lotSize;
                         const currentPrice = order.currentPrice;
@@ -1664,7 +1664,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                                   [order.id]: {
                                     ...currentDraft,
                                     requestedPrice: currentDraft.requestedPrice ? formatTradablePrice(Number(currentDraft.requestedPrice)) : currentDraft.requestedPrice,
-                                    trailDistance: nextEntry > 0 ? formatTradablePrice(getDefaultTrailDistanceForEntry(nextEntry)) : currentDraft.trailDistance,
+                                    stopLoss: nextEntry > 0 ? formatTradablePrice(getTrailingStopLoss(order.action, nextEntry, getDefaultTrailDistanceForEntry(nextEntry))) : currentDraft.stopLoss,
                                     targetPrice: nextEntry > 0 ? formatTradablePrice(getDefaultTargetPrice(order.action, nextEntry)) : currentDraft.targetPrice
                                   }
                                 };
@@ -1676,7 +1676,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                                   [order.id]: {
                                     ...draft,
                                     requestedPrice: nextEntryText,
-                                    trailDistance: nextEntry > 0 ? formatTradablePrice(getDefaultTrailDistanceForEntry(nextEntry)) : draft.trailDistance,
+                                    stopLoss: nextEntry > 0 ? formatTradablePrice(getTrailingStopLoss(order.action, nextEntry, getDefaultTrailDistanceForEntry(nextEntry))) : draft.stopLoss,
                                     targetPrice: nextEntry > 0 ? formatTradablePrice(getDefaultTargetPrice(order.action, nextEntry)) : draft.targetPrice
                                   }
                                 };
@@ -1685,8 +1685,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                             <td className={`px-3 py-3 text-right font-semibold ${willFill ? "text-terminal-emerald" : "text-terminal-blue"}`}>{formatPrice(currentPrice)}</td>
                             <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP >= Entry" : "LTP <= Entry"}</td>
                             <td className="px-3 py-3 text-right">
-                              <input value={draft.trailDistance} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: draft.trailDistance ? formatTradablePrice(Number(draft.trailDistance)) : draft.trailDistance } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
-                              <div className="mt-1 text-xs text-terminal-muted">SL {formatPrice(draftStopLoss)}</div>
+                              <input value={draft.stopLoss} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, stopLoss: draft.stopLoss ? formatTradablePrice(Number(draft.stopLoss)) : draft.stopLoss } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, stopLoss: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                              <div className="mt-1 text-xs text-terminal-muted">Trail {formatPrice(draftTrailDistance)}</div>
                             </td>
                             <td className="px-3 py-3 text-right">
                               <input value={draft.targetPrice} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, targetPrice: draft.targetPrice ? formatTradablePrice(Number(draft.targetPrice)) : draft.targetPrice } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, targetPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
