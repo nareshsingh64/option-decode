@@ -4,6 +4,7 @@ export interface DhanClientOptions {
   baseUrl: string;
   clientId: string;
   accessToken: string;
+  requestTimeoutMs?: number;
 }
 
 export interface DhanOptionChainRequest {
@@ -237,10 +238,20 @@ export class DhanClient {
     }
     assertAccessTokenIsUsable(this.options.accessToken);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.options.requestTimeoutMs ?? 4_000);
     const response = await fetch(`${this.options.baseUrl}${path}`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: controller.signal
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new DhanApiError(`Dhan request ${path} timed out.`);
+      }
+      throw error;
+    }).finally(() => {
+      clearTimeout(timeout);
     });
 
     const responseText = await response.text();

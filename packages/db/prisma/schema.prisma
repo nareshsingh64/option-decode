@@ -185,6 +185,7 @@ model OptionContractTick {
 
   @@index([tradingDate, underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
   @@index([underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
+  @@index([underlyingSymbol, expiryLabel, tradingDate, optionType, strikePrice, tickTime])
   @@index([tickTime])
 }
 
@@ -257,6 +258,7 @@ model PaperOrder {
   @@index([userId, tradingDate, status])
   @@index([userId, createdAt])
   @@index([tradingDate, underlyingSymbol, status])
+  @@index([status, createdAt])
 }
 
 model PaperPosition {
@@ -289,6 +291,7 @@ model PaperPosition {
   @@index([userId, tradingDate, status])
   @@index([userId, status, openedAt])
   @@index([tradingDate, underlyingSymbol, status])
+  @@index([status, openedAt])
 }
 
 model PaperTrade {

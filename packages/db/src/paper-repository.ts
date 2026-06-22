@@ -435,6 +435,17 @@ async function refreshOpenPositionPrices(userId: string | undefined, client: Pri
       status: "OPEN"
     }
   });
+  const scoreSignalCache = new Map<string, Promise<number>>();
+  const getCachedScoreSignal = (underlyingSymbol: string, expiryLabel: string) => {
+    const key = `${underlyingSymbol}:${expiryLabel}`;
+    const existing = scoreSignalCache.get(key);
+    if (existing) {
+      return existing;
+    }
+    const pending = getAtmWindowScoreSignal(underlyingSymbol, expiryLabel, client);
+    scoreSignalCache.set(key, pending);
+    return pending;
+  };
 
   await Promise.all(
     positions.map(async (position) => {
@@ -459,7 +470,7 @@ async function refreshOpenPositionPrices(userId: string | undefined, client: Pri
       const trailDistance = normalizeTradablePrice(position.trailDistance?.toNumber() ?? Math.abs(position.entryPrice.toNumber() - currentStopLoss));
       const currentBestPrice = position.bestPrice?.toNumber() ?? position.entryPrice.toNumber();
       const nextBestPrice = isBuy ? Math.max(currentBestPrice, latestPrice) : Math.min(currentBestPrice, latestPrice);
-      const scoreSignal = position.trailingStop ? await getAtmWindowScoreSignal(position.underlyingSymbol, position.expiryLabel, client) : 0;
+      const scoreSignal = position.trailingStop ? await getCachedScoreSignal(position.underlyingSymbol, position.expiryLabel) : 0;
       const nextStopLoss = position.trailingStop ? getDynamicTrailingStopLoss(position.action, position.optionType, position.entryPrice.toNumber(), latestPrice, targetPrice, nextBestPrice, trailDistance, scoreSignal) : currentStopLoss;
       const stopLoss = position.trailingStop ? (isBuy ? Math.max(currentStopLoss, nextStopLoss) : Math.min(currentStopLoss, nextStopLoss)) : currentStopLoss;
       const hitStop = isBuy ? latestPrice <= stopLoss : latestPrice >= stopLoss;
