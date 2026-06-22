@@ -5,7 +5,7 @@ import { calculatePressureScore, generateMarketAlerts } from "@option-decode/ana
 import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, placePaperOrder, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
-import type { UnderlyingDefinition } from "@option-decode/types";
+import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 
 const config = loadConfig();
@@ -21,6 +21,9 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
   lotSize: 1
 };
 const MARKET_AUX_CACHE_MS = 5_000;
+const MARKET_SNAPSHOT_CACHE_MS = 10_000;
+const MARKET_EXPIRIES_CACHE_MS = 10_000;
+const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
 const marketAuxCache = new Map<
   string,
   {
@@ -31,6 +34,9 @@ const marketAuxCache = new Map<
     };
   }
 >();
+const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
+const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
+const tickerSymbolsCache = new Map<string, HotCacheEntry<string[] | undefined>>();
 
 interface MarketTickerItem {
   symbol: string;
@@ -41,6 +47,13 @@ interface MarketTickerItem {
   change?: number;
   changePercent?: number;
 }
+
+interface HotCacheEntry<T> {
+  expiresAt: number;
+  value?: T;
+  promise?: Promise<T>;
+}
+
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
   clientId: config.DHAN_CLIENT_ID,
@@ -175,8 +188,8 @@ app.get<{
   const tickerSymbolsPromise = getTickerSymbols(requestedUnderlying);
   const [marketAux, snapshot, expiries] = await Promise.all([
     tickerSymbolsPromise.then((symbols) => getMarketAuxData(symbols)),
-    getLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry),
-    getExpiriesOrEmpty(requestedUnderlying)
+    getCachedLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry),
+    getCachedExpiriesOrEmpty(requestedUnderlying)
   ]);
   const pressure = calculatePressureScore(snapshot);
   const alerts = generateMarketAlerts(snapshot, pressure);
@@ -212,7 +225,7 @@ app.get<{
   };
 }>("/api/market/expiries", async (request) => {
   const requestedUnderlying = normalizeUnderlying(request.query.underlying);
-  const expiries = await getExpiriesOrEmpty(requestedUnderlying);
+  const expiries = await getCachedExpiriesOrEmpty(requestedUnderlying);
 
   return {
     underlying: requestedUnderlying,
@@ -288,6 +301,8 @@ app.put("/api/watchlist/default", async (request, reply) => {
     });
   }
 
+  tickerSymbolsCache.clear();
+  marketAuxCache.clear();
   return updateDefaultWatchlist(parsed.data.symbols.map(normalizeUnderlyingKey));
 });
 
@@ -487,6 +502,10 @@ function validatePaperOrderRisk(action: string, requestedPrice: number, stopLoss
   return null;
 }
 
+async function getCachedExpiriesOrEmpty(underlyingSymbol: string) {
+  return getHotCacheValue(expiriesCache, underlyingSymbol, MARKET_EXPIRIES_CACHE_MS, () => getExpiriesOrEmpty(underlyingSymbol));
+}
+
 async function getExpiriesOrEmpty(underlyingSymbol: string) {
   try {
     const storedExpiries = await listStoredExpiries(underlyingSymbol);
@@ -500,6 +519,11 @@ async function getExpiriesOrEmpty(underlyingSymbol: string) {
     app.log.warn({ error, underlyingSymbol }, "Unable to list stored expiries");
     return [];
   }
+}
+
+async function getCachedLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string) {
+  const cacheKey = `${underlyingSymbol}:${expiry ?? ""}`;
+  return getHotCacheValue(marketSnapshotCache, cacheKey, MARKET_SNAPSHOT_CACHE_MS, () => getLatestSnapshotOrDemo(underlyingSymbol, expiry));
 }
 
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {
@@ -525,8 +549,12 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
 }
 
 async function getTickerSymbols(selectedUnderlying?: string) {
-  const watchlist = await getDefaultWatchlist().catch(() => null);
-  return normalizeTickerSymbols([selectedUnderlying, ...(watchlist?.symbols ?? [])]);
+  const selectedSymbol = normalizeUnderlyingKey(selectedUnderlying);
+  const cacheKey = selectedSymbol || "default";
+  return getHotCacheValue(tickerSymbolsCache, cacheKey, WATCHLIST_SYMBOLS_CACHE_MS, async () => {
+    const watchlist = await getDefaultWatchlist().catch(() => null);
+    return normalizeTickerSymbols([selectedUnderlying, ...(watchlist?.symbols ?? [])]);
+  });
 }
 
 function parseTickerSymbols(symbols?: string) {
@@ -557,6 +585,36 @@ async function getMarketAuxData(symbols?: string[]) {
     value
   });
   return value;
+}
+
+async function getHotCacheValue<T>(cache: Map<string, HotCacheEntry<T>>, key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const cached = cache.get(key);
+  if (cached?.value !== undefined && cached.expiresAt > now) {
+    return cached.value;
+  }
+  if (cached?.promise) {
+    return cached.promise;
+  }
+
+  const pending = load()
+    .then((value) => {
+      cache.set(key, {
+        expiresAt: Date.now() + ttlMs,
+        value
+      });
+      return value;
+    })
+    .catch((error) => {
+      cache.delete(key);
+      throw error;
+    });
+
+  cache.set(key, {
+    expiresAt: now + ttlMs,
+    promise: pending
+  });
+  return pending;
 }
 
 async function getFreshMarketAuxData(symbols: string[]) {
