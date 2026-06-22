@@ -33,7 +33,6 @@ export function AuthForm({ mode }: AuthFormProps) {
         displayName
       });
       router.replace("/app?view=dashboard");
-      router.refresh();
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : "Unable to complete account request");
     } finally {
