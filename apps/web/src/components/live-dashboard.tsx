@@ -586,10 +586,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const orderEntryPrice = normalizeTradablePrice(Number(orderEntry || marketEntryPrice));
   const orderLotSize = orderTick?.lotSize && orderTick.lotSize > 0 ? orderTick.lotSize : getLotSizeForUnderlying(overview.snapshot.underlyingSymbol);
   const orderQuantity = Number(orderLots || 0) * orderLotSize;
-  const defaultTrailDistance = normalizeTradablePrice(orderEntryPrice * 0.18);
+  const defaultTrailDistance = getDefaultTrailDistanceForEntry(orderEntryPrice);
   const orderTrailDistanceValue = normalizeTradablePrice(Number(orderStopLoss || defaultTrailDistance));
   const defaultStopLoss = getTrailingStopLoss(orderAction, orderEntryPrice, orderTrailDistanceValue);
-  const defaultTarget = normalizeTradablePrice(orderAction === "BUY" ? orderEntryPrice * 1.35 : Math.max(0, orderEntryPrice * 0.65));
+  const defaultTarget = getDefaultTargetPrice(orderAction, orderEntryPrice);
   const orderStopLossValue = defaultStopLoss;
   const orderTargetValue = normalizeTradablePrice(Number(orderTarget || defaultTarget));
   const estimatedRisk = orderAction === "BUY" ? Math.max(0, (orderEntryPrice - orderStopLossValue) * orderQuantity) : Math.max(0, (orderStopLossValue - orderEntryPrice) * orderQuantity);
@@ -1587,7 +1587,31 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                             </td>
                             <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(draftLots, order.lotSize, draftQuantity)}</td>
                             <td className="px-3 py-3 text-right">
-                              <input value={draft.requestedPrice} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, requestedPrice: draft.requestedPrice ? formatTradablePrice(Number(draft.requestedPrice)) : draft.requestedPrice } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, requestedPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                              <input value={draft.requestedPrice} onBlur={() => setPendingOrderDrafts((drafts) => {
+                                const currentDraft = drafts[order.id] ?? draft;
+                                const nextEntry = normalizeTradablePrice(Number(currentDraft.requestedPrice || order.requestedPrice));
+                                return {
+                                  ...drafts,
+                                  [order.id]: {
+                                    ...currentDraft,
+                                    requestedPrice: currentDraft.requestedPrice ? formatTradablePrice(Number(currentDraft.requestedPrice)) : currentDraft.requestedPrice,
+                                    trailDistance: nextEntry > 0 ? formatTradablePrice(getDefaultTrailDistanceForEntry(nextEntry)) : currentDraft.trailDistance,
+                                    targetPrice: nextEntry > 0 ? formatTradablePrice(getDefaultTargetPrice(order.action, nextEntry)) : currentDraft.targetPrice
+                                  }
+                                };
+                              })} onChange={(event) => setPendingOrderDrafts((drafts) => {
+                                const nextEntryText = event.target.value;
+                                const nextEntry = normalizeTradablePrice(Number(nextEntryText));
+                                return {
+                                  ...drafts,
+                                  [order.id]: {
+                                    ...draft,
+                                    requestedPrice: nextEntryText,
+                                    trailDistance: nextEntry > 0 ? formatTradablePrice(getDefaultTrailDistanceForEntry(nextEntry)) : draft.trailDistance,
+                                    targetPrice: nextEntry > 0 ? formatTradablePrice(getDefaultTargetPrice(order.action, nextEntry)) : draft.targetPrice
+                                  }
+                                };
+                              })} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                             </td>
                             <td className={`px-3 py-3 text-right font-semibold ${willFill ? "text-terminal-emerald" : "text-terminal-blue"}`}>{formatPrice(currentPrice)}</td>
                             <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP <= Entry" : "LTP >= Entry"}</td>
@@ -2739,6 +2763,14 @@ function normalizeTradablePrice(value: number, tickSize = 0.05) {
 
 function formatTradablePrice(value: number, tickSize = 0.05) {
   return normalizeTradablePrice(value, tickSize).toFixed(2);
+}
+
+function getDefaultTrailDistanceForEntry(entryPrice: number) {
+  return normalizeTradablePrice(entryPrice * 0.18);
+}
+
+function getDefaultTargetPrice(action: string, entryPrice: number) {
+  return normalizeTradablePrice(action === "BUY" ? entryPrice * 1.35 : Math.max(0, entryPrice * 0.65));
 }
 
 function getTrailingStopLoss(action: string, referencePrice: number, trailDistance: number) {
