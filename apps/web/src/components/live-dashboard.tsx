@@ -2252,7 +2252,10 @@ function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: num
   if (!shouldHighlight) {
     return (
       <span className={`flex ${alignClass}`}>
-        <span className="font-medium text-terminal-text">{value}</span>
+        <span className="grid gap-0.5 text-terminal-text">
+          <span className="text-sm font-semibold leading-none text-terminal-muted">{percent}%</span>
+          <span className="text-xs font-normal leading-none">{value}</span>
+        </span>
       </span>
     );
   }
@@ -2261,8 +2264,9 @@ function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: num
 
   return (
     <span className={`flex ${alignClass}`}>
-      <span className={`grid min-w-[5rem] place-items-center rounded px-2.5 py-1.5 font-semibold ${rankClass}`}>
-        <span>{value}</span>
+      <span className={`grid min-w-[5rem] place-items-center gap-0.5 rounded px-2.5 py-1.5 ${rankClass}`}>
+        <span className="text-sm font-semibold leading-none">{percent}%</span>
+        <span className="text-xs font-normal leading-none">{value}</span>
       </span>
     </span>
   );
