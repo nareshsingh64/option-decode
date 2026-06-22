@@ -3,7 +3,7 @@
 import { Activity, Bell, CandlestickChart, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { LiveDashboard } from "../../components/live-dashboard";
 import type { AuthUser, DashboardView, MarketOverview } from "../../components/live-dashboard";
 
@@ -33,9 +33,18 @@ interface AppShellProps {
 export function AppShell({ initialOverview, initialAuthUser, initialParams, requestedView }: AppShellProps) {
   const router = useRouter();
   const [authUser, setAuthUser] = useState<AuthUser | null>(initialAuthUser);
+  const [activeView, setActiveView] = useState(requestedView);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const activeView = requestedView;
   const navItems = useMemo(() => protectedNavItems.filter(([view]) => view !== "admin" || authUser?.role === "ADMIN"), [authUser?.role]);
+
+  useEffect(() => {
+    setActiveView(requestedView);
+  }, [requestedView]);
+
+  const handleViewChange = useCallback((view: DashboardView) => {
+    setActiveView(view);
+    window.history.pushState(null, "", buildViewHref(view, initialParams));
+  }, [initialParams]);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -52,13 +61,16 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   const nav = useMemo(
     () =>
       navItems.map(([view, label, Icon]) => (
-        <a key={view} className={`flex min-h-10 items-center gap-3 rounded px-3 py-2 transition hover:bg-white/5 hover:text-terminal-text ${activeView === view ? "bg-terminal-blue/15 text-terminal-blue" : ""}`} href={buildViewHref(view, initialParams)}>
+        <a key={view} className={`flex min-h-10 items-center gap-3 rounded px-3 py-2 transition hover:bg-white/5 hover:text-terminal-text ${activeView === view ? "bg-terminal-blue/15 text-terminal-blue" : ""}`} href={buildViewHref(view, initialParams)} onClick={(event) => {
+          event.preventDefault();
+          handleViewChange(view);
+        }}>
           <Icon size={17} />
           <span className="flex-1">{label}</span>
           {view === "alerts" && initialOverview.alerts.length ? <span className="rounded-full bg-terminal-red px-2 py-0.5 text-[0.65rem] font-semibold text-white">{initialOverview.alerts.length}</span> : null}
         </a>
       )),
-    [activeView, initialOverview.alerts.length, initialParams, navItems]
+    [activeView, handleViewChange, initialOverview.alerts.length, initialParams, navItems]
   );
 
   return (
@@ -70,11 +82,17 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
             <h1 className="mt-1 text-2xl font-semibold text-terminal-text sm:text-3xl">Decode Market Pressure Before You Trade</h1>
           </div>
           <div className="flex items-center gap-2">
-            <a className="relative grid h-10 w-10 place-items-center rounded border border-terminal-line bg-terminal-panel text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" aria-label="Notifications" href={buildViewHref("alerts", initialParams)}>
+            <a className="relative grid h-10 w-10 place-items-center rounded border border-terminal-line bg-terminal-panel text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" aria-label="Notifications" href={buildViewHref("alerts", initialParams)} onClick={(event) => {
+              event.preventDefault();
+              handleViewChange("alerts");
+            }}>
               <Bell size={18} />
               {initialOverview.alerts.length ? <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-terminal-red px-1 text-[0.65rem] font-semibold text-white">{initialOverview.alerts.length}</span> : null}
             </a>
-            <a className="rounded border border-terminal-line bg-terminal-panel px-4 py-2 text-sm font-semibold text-terminal-text transition hover:border-terminal-blue" href={buildViewHref("account", initialParams)}>
+            <a className="rounded border border-terminal-line bg-terminal-panel px-4 py-2 text-sm font-semibold text-terminal-text transition hover:border-terminal-blue" href={buildViewHref("account", initialParams)} onClick={(event) => {
+              event.preventDefault();
+              handleViewChange("account");
+            }}>
               Account
             </a>
             <button className="inline-flex min-h-10 items-center gap-2 rounded border border-terminal-red/60 bg-terminal-panel px-4 py-2 text-sm font-semibold text-terminal-red transition hover:bg-terminal-red hover:text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isLoggingOut} type="button" onClick={handleLogout}>
@@ -86,7 +104,10 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
 
         <nav className="mt-3 flex gap-2 overflow-x-auto border-b border-terminal-line pb-3 text-sm text-terminal-muted lg:hidden" aria-label="Mobile sections">
           {navItems.map(([view, label, Icon]) => (
-            <a key={view} className={`flex shrink-0 items-center gap-2 rounded border px-3 py-2 transition ${activeView === view ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel hover:border-terminal-blue hover:text-terminal-text"}`} href={buildViewHref(view, initialParams)}>
+            <a key={view} className={`flex shrink-0 items-center gap-2 rounded border px-3 py-2 transition ${activeView === view ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel hover:border-terminal-blue hover:text-terminal-text"}`} href={buildViewHref(view, initialParams)} onClick={(event) => {
+              event.preventDefault();
+              handleViewChange(view);
+            }}>
               <Icon size={16} />
               <span>{label}</span>
               {view === "alerts" && initialOverview.alerts.length ? <span className="rounded-full bg-terminal-red px-1.5 py-0.5 text-[0.65rem] font-semibold text-white">{initialOverview.alerts.length}</span> : null}

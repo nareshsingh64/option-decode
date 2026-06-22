@@ -492,23 +492,39 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   useEffect(() => {
     const interval = window.setInterval(() => {
       refreshFastMarketData();
+    }, FAST_REFRESH_SECONDS * 1000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshFastMarketData]);
+
+  useEffect(() => {
+    if (initialView !== "paper") {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
       refreshPaperSummary();
     }, FAST_REFRESH_SECONDS * 1000);
 
     return () => window.clearInterval(interval);
-  }, [refreshFastMarketData, refreshPaperSummary]);
+  }, [initialView, refreshPaperSummary]);
 
   useEffect(() => {
-    refreshPaperSummary();
     refreshWatchlist();
     refreshAuthUser();
+  }, [refreshAuthUser, refreshWatchlist]);
+
+  useEffect(() => {
+    if (initialView === "paper") {
+      refreshPaperSummary();
+    }
     if (initialView === "replay") {
       refreshReplayTimeline();
     }
     if (initialView === "admin") {
       refreshAdminOverview();
     }
-  }, [initialView, refreshAdminOverview, refreshAuthUser, refreshPaperSummary, refreshReplayTimeline, refreshWatchlist]);
+  }, [initialView, refreshAdminOverview, refreshPaperSummary, refreshReplayTimeline]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
