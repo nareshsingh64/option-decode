@@ -1,6 +1,6 @@
 import { calculatePressureScore } from "@option-decode/analytics";
 import type { OptionChainSnapshot, OptionContractTick } from "@option-decode/types";
-import type { PrismaClient } from "@prisma/client";
+import type { OptionType, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./index.js";
 import { getStoredFnoLotSize } from "./lot-size-repository.js";
@@ -37,6 +37,35 @@ function getFallbackLotSizeForUnderlying(underlyingSymbol: string): number {
     SILVER: 30
   };
   return lotSizes[underlyingSymbol.toUpperCase()] ?? 1;
+}
+
+async function getPreviousTradingDayLastPrice(
+  tick: {
+    underlyingSymbol: string;
+    optionType: OptionType;
+    strikePrice: Prisma.Decimal;
+  },
+  expiryLabel: string,
+  tradingDate: Date,
+  client: DbClient
+): Promise<number | undefined> {
+  const previousTick = await client.optionContractTick.findFirst({
+    where: {
+      underlyingSymbol: tick.underlyingSymbol,
+      expiryLabel,
+      optionType: tick.optionType,
+      strikePrice: tick.strikePrice,
+      tradingDate: {
+        lt: tradingDate
+      },
+      lastPrice: {
+        not: null
+      }
+    },
+    orderBy: [{ tradingDate: "desc" }, { tickTime: "desc" }]
+  });
+
+  return toNumber(previousTick?.lastPrice);
 }
 
 function labelToDate(label: string): Date {
@@ -249,19 +278,7 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
   const ticks = await Promise.all(
     latest.ticks.map(async (tick): Promise<OptionContractTick> => {
       const lastPrice = toNumber(tick.lastPrice);
-      const previousTick = await client.optionContractTick.findFirst({
-        where: {
-          underlyingSymbol: tick.underlyingSymbol,
-          expiryLabel: latestExpiryLabel,
-          optionType: tick.optionType,
-          strikePrice: tick.strikePrice,
-          tickTime: {
-            lt: tick.tickTime
-          }
-        },
-        orderBy: { tickTime: "desc" }
-      });
-      const previousLastPrice = toNumber(previousTick?.lastPrice);
+      const previousLastPrice = await getPreviousTradingDayLastPrice(tick, latestExpiryLabel, latest.tradingDate, client);
       const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
 
       return {
@@ -351,19 +368,7 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
   const ticks = await Promise.all(
     snapshot.ticks.map(async (tick): Promise<OptionContractTick> => {
       const lastPrice = toNumber(tick.lastPrice);
-      const previousTick = await client.optionContractTick.findFirst({
-        where: {
-          underlyingSymbol: tick.underlyingSymbol,
-          expiryLabel,
-          optionType: tick.optionType,
-          strikePrice: tick.strikePrice,
-          tickTime: {
-            lt: tick.tickTime
-          }
-        },
-        orderBy: { tickTime: "desc" }
-      });
-      const previousLastPrice = toNumber(previousTick?.lastPrice);
+      const previousLastPrice = await getPreviousTradingDayLastPrice(tick, expiryLabel, snapshot.tradingDate, client);
       const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
 
       return {
