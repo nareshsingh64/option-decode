@@ -460,7 +460,7 @@ async function refreshOpenPositionPrices(userId: string | undefined, client: Pri
       const currentBestPrice = position.bestPrice?.toNumber() ?? position.entryPrice.toNumber();
       const nextBestPrice = isBuy ? Math.max(currentBestPrice, latestPrice) : Math.min(currentBestPrice, latestPrice);
       const scoreSignal = position.trailingStop ? await getAtmWindowScoreSignal(position.underlyingSymbol, position.expiryLabel, client) : 0;
-      const nextStopLoss = position.trailingStop ? getDynamicTrailingStopLoss(position.action, position.entryPrice.toNumber(), latestPrice, targetPrice, nextBestPrice, trailDistance, scoreSignal) : currentStopLoss;
+      const nextStopLoss = position.trailingStop ? getDynamicTrailingStopLoss(position.action, position.optionType, position.entryPrice.toNumber(), latestPrice, targetPrice, nextBestPrice, trailDistance, scoreSignal) : currentStopLoss;
       const stopLoss = position.trailingStop ? (isBuy ? Math.max(currentStopLoss, nextStopLoss) : Math.min(currentStopLoss, nextStopLoss)) : currentStopLoss;
       const hitStop = isBuy ? latestPrice <= stopLoss : latestPrice >= stopLoss;
       const hitTarget = isBuy ? latestPrice >= targetPrice : latestPrice <= targetPrice;
@@ -753,12 +753,12 @@ function getTrailingStopLoss(action: string, referencePrice: number, trailDistan
   return normalizeTradablePrice(rawStopLoss);
 }
 
-function getDynamicTrailingStopLoss(action: string, entryPrice: number, latestPrice: number, targetPrice: number, bestPrice: number, trailDistance: number, scoreSignal: number) {
-  if (scoreSignal < 0) {
+function getDynamicTrailingStopLoss(action: string, optionType: OptionType, entryPrice: number, latestPrice: number, targetPrice: number, bestPrice: number, trailDistance: number, scoreSignal: number) {
+  if (isTradeSignalDanger(action, optionType, scoreSignal)) {
     return normalizeTradablePrice(entryPrice);
   }
 
-  if (scoreSignal > 0) {
+  if (isTradeSignalFavorable(action, optionType, scoreSignal)) {
     const targetMove = Math.abs(targetPrice - entryPrice);
     const achievedMove = action === "BUY" ? latestPrice - entryPrice : entryPrice - latestPrice;
     const progress = targetMove > 0 ? achievedMove / targetMove : 0;
@@ -775,6 +775,24 @@ function getDynamicTrailingStopLoss(action: string, entryPrice: number, latestPr
   }
 
   return getTrailingStopLoss(action, bestPrice, trailDistance);
+}
+
+function isTradeSignalFavorable(action: string, optionType: OptionType, scoreSignal: number) {
+  if (scoreSignal === 0) {
+    return false;
+  }
+  const bullishSignal = scoreSignal > 0;
+  if (action === "BUY") {
+    return optionType === "CE" ? bullishSignal : !bullishSignal;
+  }
+  return optionType === "CE" ? !bullishSignal : bullishSignal;
+}
+
+function isTradeSignalDanger(action: string, optionType: OptionType, scoreSignal: number) {
+  if (scoreSignal === 0) {
+    return false;
+  }
+  return !isTradeSignalFavorable(action, optionType, scoreSignal);
 }
 
 async function getAtmWindowScoreSignal(underlyingSymbol: string, expiryLabel: string, client: PrismaClient) {

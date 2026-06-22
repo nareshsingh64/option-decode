@@ -19,6 +19,8 @@ interface OverviewTick {
   delta?: number;
 }
 
+type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
+
 export interface MarketOverview {
   underlyings: string[];
   expiries: string[];
@@ -580,6 +582,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const pressureSummary = useMemo(() => buildPressureSummary(overview), [overview]);
   const strikeMovementRows = useMemo(() => buildStrikeMovementRows(overview), [overview]);
   const strikeMovementSummary = useMemo(() => buildStrikeMovementSummary(strikeMovementRows), [strikeMovementRows]);
+  const tradeInterpretation = useMemo(() => buildTradeInterpretation(strikeMovementRows), [strikeMovementRows]);
   const strikeChoices = useMemo(() => buildStrikeChoices(overview), [overview]);
   const orderTick = useMemo(() => findOptionTick(overview, Number(orderStrike), orderOptionType), [orderOptionType, orderStrike, overview]);
   const marketEntryPrice = orderTick?.lastPrice ?? 0;
@@ -965,6 +968,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                   <div className="text-sm text-terminal-muted sm:text-right">
                     <p>PE {formatLarge(row.peScore, numberFormatMode)}</p>
                     <p>CE {formatLarge(row.ceScore, numberFormatMode)}</p>
+                    <p className={row.buyerMomentumScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>B {formatSignedLarge(row.buyerMomentumScore, numberFormatMode)}</p>
+                    <p className={row.sellerSafetyScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>S {formatSignedLarge(row.sellerSafetyScore, numberFormatMode)}</p>
                   </div>
                 </div>
               ))}
@@ -974,6 +979,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
               <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
               <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
+              <SummaryLine label="Buyer momentum" value={tradeInterpretation.buyerText} />
+              <SummaryLine label="Seller safety" value={tradeInterpretation.sellerText} />
               <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. The trend uses OI and LTP change to show whether that pressure is building or fading near ATM.</p>
             </div>
           </div>
@@ -1381,9 +1388,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                     <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
                     <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
                     <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                    <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left")}</td>
+                    <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
                     <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                    <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right")}</td>
+                    <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
                     <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
                     <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
                     <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
@@ -1940,9 +1947,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         <td className="px-4 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
                         <td className="px-4 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
                         <td className="px-4 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                        <td className="px-4 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left")}</td>
+                        <td className="px-4 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
                         <td className="px-4 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                        <td className="px-4 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right")}</td>
+                        <td className="px-4 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
                         <td className="px-4 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
                         <td className="px-4 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
                         <td className="px-4 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
@@ -2330,11 +2337,13 @@ function buildChainRows(overview: MarketOverview, range: VixStrikeRange, prefere
       ceLtp: pair.CE?.lastPrice,
       ceLtpChange: pair.CE?.lastPriceChange,
       ceLtpChangePercent: pair.CE?.lastPriceChangePercent,
+      ceActivity: classifyOptionActivity(pair.CE),
       ceIv: pair.CE?.impliedVolatility,
       ceDelta: pair.CE?.delta,
       peLtp: pair.PE?.lastPrice,
       peLtpChange: pair.PE?.lastPriceChange,
       peLtpChangePercent: pair.PE?.lastPriceChangePercent,
+      peActivity: classifyOptionActivity(pair.PE),
       peIv: pair.PE?.impliedVolatility,
       peDelta: pair.PE?.delta,
       peVol: formatQuantityValue(pair.PE?.volume, pair.PE, preferences),
@@ -2500,7 +2509,7 @@ function MarketTicker({ items }: { items: MarketTickerItem[] }) {
   );
 }
 
-function renderLtpStack(value?: number, change?: number, changePercent?: number, align: "left" | "right" = "left") {
+function renderLtpStack(value?: number, change?: number, changePercent?: number, align: "left" | "right" = "left", activity: OptionActivityKind = "NEUTRAL") {
   const changeClass = change === undefined ? "text-terminal-muted" : change >= 0 ? "text-terminal-emerald" : "text-terminal-red";
   const alignment = align === "right" ? "items-end" : "items-start";
 
@@ -2508,6 +2517,7 @@ function renderLtpStack(value?: number, change?: number, changePercent?: number,
     <div className={`flex flex-col gap-0.5 ${alignment}`}>
       <span className="font-semibold text-terminal-text">{formatPrice(value)}</span>
       <span className={`whitespace-nowrap text-xs ${changeClass}`}>{formatLtpChange(change, changePercent)}</span>
+      {activity !== "NEUTRAL" ? <span className={`whitespace-nowrap text-[0.65rem] font-semibold uppercase ${getActivityToneClass(activity)}`}>{getActivityLabel(activity)}</span> : null}
     </div>
   );
 }
@@ -2550,6 +2560,8 @@ function buildStrikeMovementRows(overview: MarketOverview) {
       const pe = findOptionTick(overview, strike, "PE");
       const peScore = strikePressureScore(pe);
       const ceScore = strikePressureScore(ce);
+      const buyerMomentumScore = getBuyerMomentumScore(ce) + getBuyerMomentumScore(pe);
+      const sellerSafetyScore = getSellerSafetyScore(ce) + getSellerSafetyScore(pe);
       const combinedScore = peScore + ceScore;
       const netScore = peScore - ceScore;
       const netScorePercent = combinedScore >= 10 ? Math.round((netScore / combinedScore) * 100) : 0;
@@ -2566,6 +2578,8 @@ function buildStrikeMovementRows(overview: MarketOverview) {
         distanceLabel: distance === 0 ? "ATM" : distance > 0 ? `ATM +${distance}` : `ATM ${distance}`,
         peScore,
         ceScore,
+        buyerMomentumScore,
+        sellerSafetyScore,
         netScore,
         netScorePercent,
         trendScore,
@@ -2579,6 +2593,24 @@ function buildStrikeMovementRows(overview: MarketOverview) {
       };
     })
     .sort((left, right) => right.strike - left.strike);
+}
+
+function buildTradeInterpretation(rows: ReturnType<typeof buildStrikeMovementRows>) {
+  const buyerScore = rows.reduce((sum, row) => sum + row.buyerMomentumScore, 0);
+  const sellerScore = rows.reduce((sum, row) => sum + row.sellerSafetyScore, 0);
+  return {
+    buyerScore,
+    sellerScore,
+    buyerText: formatDirectionalScore(buyerScore, "CE buy", "PE buy"),
+    sellerText: formatDirectionalScore(sellerScore, "Sell PE", "Sell CE")
+  };
+}
+
+function formatDirectionalScore(score: number, positiveLabel: string, negativeLabel: string) {
+  if (Math.abs(score) < 8) {
+    return "Neutral";
+  }
+  return `${score > 0 ? positiveLabel : negativeLabel} ${formatSignedLarge(score)}`;
 }
 
 function buildStrikeMovementSummary(rows: ReturnType<typeof buildStrikeMovementRows>) {
@@ -2616,6 +2648,102 @@ function strikeTrendScore(tick?: OverviewTick) {
   const oiTrend = toLots(tick.changeInOpenInterest, tick);
   const ltpTrend = (tick.lastPriceChangePercent ?? 0) * 2;
   return Math.round(oiTrend + ltpTrend);
+}
+
+function classifyOptionActivity(tick?: OverviewTick): OptionActivityKind {
+  if (!tick) {
+    return "NEUTRAL";
+  }
+  const oiChange = tick.changeInOpenInterest ?? 0;
+  const ltpChange = tick.lastPriceChange ?? 0;
+  if (oiChange > 0 && ltpChange > 0) {
+    return "LONG_BUILDUP";
+  }
+  if (oiChange > 0 && ltpChange < 0) {
+    return "WRITING";
+  }
+  if (oiChange < 0 && ltpChange > 0) {
+    return "SHORT_COVERING";
+  }
+  if (oiChange < 0 && ltpChange < 0) {
+    return "LONG_UNWINDING";
+  }
+  return "NEUTRAL";
+}
+
+function getActivityLabel(activity: OptionActivityKind) {
+  switch (activity) {
+    case "LONG_BUILDUP":
+      return "Long build";
+    case "WRITING":
+      return "Writing";
+    case "SHORT_COVERING":
+      return "Short cover";
+    case "LONG_UNWINDING":
+      return "Unwind";
+    default:
+      return "Neutral";
+  }
+}
+
+function getActivityToneClass(activity: OptionActivityKind) {
+  switch (activity) {
+    case "LONG_BUILDUP":
+      return "text-terminal-blue";
+    case "WRITING":
+      return "text-terminal-emerald";
+    case "SHORT_COVERING":
+      return "text-terminal-red";
+    case "LONG_UNWINDING":
+      return "text-terminal-amber";
+    default:
+      return "text-terminal-muted";
+  }
+}
+
+function optionActivityWeight(tick?: OverviewTick) {
+  if (!tick) {
+    return 0;
+  }
+  return Math.round(Math.abs(toLots(tick.changeInOpenInterest, tick)) + Math.abs(toLots(tick.volume, tick)) * 0.05 + Math.abs(tick.lastPriceChangePercent ?? 0) * 2);
+}
+
+function getBuyerMomentumScore(tick?: OverviewTick) {
+  const activity = classifyOptionActivity(tick);
+  const weight = optionActivityWeight(tick);
+  if (!tick || !weight) {
+    return 0;
+  }
+  const direction = tick.optionType === "CE" ? 1 : -1;
+  if (activity === "LONG_BUILDUP") {
+    return direction * weight;
+  }
+  if (activity === "SHORT_COVERING") {
+    return direction * Math.round(weight * 0.5);
+  }
+  if (activity === "WRITING") {
+    return -direction * Math.round(weight * 0.6);
+  }
+  return 0;
+}
+
+function getSellerSafetyScore(tick?: OverviewTick) {
+  const activity = classifyOptionActivity(tick);
+  const weight = optionActivityWeight(tick);
+  if (!tick || !weight) {
+    return 0;
+  }
+  const supportDirection = tick.optionType === "PE" ? 1 : -1;
+  if (activity === "WRITING") {
+    return supportDirection * weight;
+  }
+  if (activity === "SHORT_COVERING") {
+    return -supportDirection * weight;
+  }
+  if (activity === "LONG_BUILDUP") {
+    return -supportDirection * Math.round(weight * 0.5);
+  }
+  return 0;
 }
 
 function buildZoneRows(overview: MarketOverview) {
