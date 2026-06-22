@@ -20,6 +20,7 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
   segment: "IDX_I",
   lotSize: 1
 };
+const MARKET_AUX_CACHE_MS = 5_000;
 let marketAuxCache:
   | {
       expiresAt: number;
@@ -187,6 +188,14 @@ app.get<{
     snapshot,
     pressure,
     alerts
+  };
+});
+
+app.get("/api/market/ticker", async () => {
+  const marketAux = await getMarketAuxData();
+  return {
+    indiaVix: marketAux.indiaVix,
+    ticker: marketAux.ticker
   };
 });
 
@@ -442,7 +451,7 @@ async function getMarketAuxData() {
 
   const value = await getFreshMarketAuxData();
   marketAuxCache = {
-    expiresAt: now + 15_000,
+    expiresAt: now + MARKET_AUX_CACHE_MS,
     value
   };
   return value;

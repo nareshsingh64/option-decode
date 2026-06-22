@@ -230,6 +230,7 @@ type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
 
 const REFRESH_SECONDS = 30;
+const FAST_REFRESH_SECONDS = 5;
 
 export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
@@ -284,6 +285,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     expiry: initialOverview.selectedExpiry
   });
   const isRefreshingRef = useRef(false);
+  const isFastRefreshingRef = useRef(false);
+  const isPaperRefreshingRef = useRef(false);
   const replaySnapshotsRef = useRef<ReplaySnapshotSummary[]>([]);
   const replayIndexRef = useRef(0);
 
@@ -386,11 +389,38 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   }, []);
 
   const refreshPaperSummary = useCallback(async () => {
+    if (isPaperRefreshingRef.current) {
+      return;
+    }
+
+    isPaperRefreshingRef.current = true;
     try {
       setPaperError(null);
       setPaperSummary(await fetchPaperSummary());
     } catch (error) {
       setPaperError(error instanceof Error ? error.message : "Unable to load paper trading");
+    } finally {
+      isPaperRefreshingRef.current = false;
+    }
+  }, []);
+
+  const refreshFastMarketData = useCallback(async () => {
+    if (isFastRefreshingRef.current) {
+      return;
+    }
+
+    isFastRefreshingRef.current = true;
+    try {
+      const payload = await fetchMarketTicker();
+      setOverview((currentOverview) => ({
+        ...currentOverview,
+        indiaVix: payload.indiaVix ?? currentOverview.indiaVix,
+        ticker: payload.ticker
+      }));
+    } catch {
+      // Keep the last ticker on transient quote refresh failures.
+    } finally {
+      isFastRefreshingRef.current = false;
     }
   }, []);
 
@@ -449,11 +479,19 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   useEffect(() => {
     const interval = window.setInterval(() => {
       refreshOverview();
-      refreshPaperSummary();
     }, REFRESH_SECONDS * 1000);
 
     return () => window.clearInterval(interval);
-  }, [refreshOverview, refreshPaperSummary]);
+  }, [refreshOverview]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      refreshFastMarketData();
+      refreshPaperSummary();
+    }, FAST_REFRESH_SECONDS * 1000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshFastMarketData, refreshPaperSummary]);
 
   useEffect(() => {
     refreshPaperSummary();
@@ -1830,6 +1868,17 @@ async function fetchMarketOverview(underlying: string, expiry: string): Promise<
     throw new Error(`Market refresh failed with HTTP ${response.status}`);
   }
   return response.json() as Promise<MarketOverview>;
+}
+
+async function fetchMarketTicker(): Promise<Pick<MarketOverview, "indiaVix" | "ticker">> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/market/ticker`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`Ticker refresh failed with HTTP ${response.status}`);
+  }
+  return response.json() as Promise<Pick<MarketOverview, "indiaVix" | "ticker">>;
 }
 
 function buildClientViewHref(view: DashboardView, underlying: string, expiry: string) {
