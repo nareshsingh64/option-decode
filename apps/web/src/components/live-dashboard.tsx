@@ -461,7 +461,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         indiaVix: payload.indiaVix ?? currentOverview.indiaVix,
         ticker: mergeTickerItems(currentOverview.ticker ?? [], payload.ticker ?? [])
       }));
-      tickerSymbolsRef.current = payload.ticker?.map((item) => item.symbol) ?? tickerSymbolsRef.current;
     } catch {
       // Keep the last ticker on transient quote refresh failures.
     } finally {
@@ -2582,26 +2581,40 @@ function mergeTickerItems(currentItems: MarketTickerItem[], nextItems: MarketTic
     return currentItems;
   }
 
-  const currentBySymbol = new Map(currentItems.map((item) => [item.symbol, item]));
-  return nextItems.map((nextItem) => {
-    const currentItem = currentBySymbol.get(nextItem.symbol);
-    if (!currentItem) {
-      return nextItem;
+  const seenSymbols = new Set<string>();
+  const nextBySymbol = new Map(nextItems.map((item) => [item.symbol, item]));
+  const mergedItems = currentItems.map((currentItem) => {
+    seenSymbols.add(currentItem.symbol);
+    const nextItem = nextBySymbol.get(currentItem.symbol);
+    if (!nextItem) {
+      return currentItem;
     }
 
-    const spotPrice = isValidTickerNumber(nextItem.spotPrice) ? nextItem.spotPrice : currentItem.spotPrice;
-    const previousClose = isValidTickerNumber(nextItem.previousClose) ? nextItem.previousClose : currentItem.previousClose;
-    const change = nextItem.change ?? (spotPrice !== undefined && previousClose ? spotPrice - previousClose : currentItem.change);
-    const changePercent = nextItem.changePercent ?? (change !== undefined && previousClose ? (change / previousClose) * 100 : currentItem.changePercent);
-
-    return {
-      ...nextItem,
-      spotPrice,
-      previousClose,
-      change,
-      changePercent
-    };
+    return mergeTickerItem(currentItem, nextItem);
   });
+
+  for (const nextItem of nextItems) {
+    if (!seenSymbols.has(nextItem.symbol)) {
+      mergedItems.push(nextItem);
+    }
+  }
+
+  return mergedItems;
+}
+
+function mergeTickerItem(currentItem: MarketTickerItem, nextItem: MarketTickerItem) {
+  const spotPrice = isValidTickerNumber(nextItem.spotPrice) ? nextItem.spotPrice : currentItem.spotPrice;
+  const previousClose = isValidTickerNumber(nextItem.previousClose) ? nextItem.previousClose : currentItem.previousClose;
+  const change = nextItem.change ?? (spotPrice !== undefined && previousClose ? spotPrice - previousClose : currentItem.change);
+  const changePercent = nextItem.changePercent ?? (change !== undefined && previousClose ? (change / previousClose) * 100 : currentItem.changePercent);
+
+  return {
+    ...nextItem,
+    spotPrice,
+    previousClose,
+    change,
+    changePercent
+  };
 }
 
 function isValidTickerNumber(value: number | undefined) {
