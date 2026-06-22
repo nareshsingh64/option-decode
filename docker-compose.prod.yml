@@ -4,6 +4,8 @@ x-option-decode-app: &option-decode-app
     context: .
     dockerfile: Dockerfile
     target: app
+    args:
+      NEXT_PUBLIC_API_URL: ${APP_PUBLIC_URL}
 
 services:
 
