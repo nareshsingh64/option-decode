@@ -39,33 +39,109 @@ function getFallbackLotSizeForUnderlying(underlyingSymbol: string): number {
   return lotSizes[underlyingSymbol.toUpperCase()] ?? 1;
 }
 
-async function getPreviousTradingDayLastPrice(
-  tick: {
-    underlyingSymbol: string;
+function tickReferenceKey(tick: { optionType: OptionType; strikePrice: Prisma.Decimal }): string {
+  return `${tick.optionType}:${tick.strikePrice.toString()}`;
+}
+
+async function getLastPriceReferenceMap(
+  ticks: Array<{
     optionType: OptionType;
     strikePrice: Prisma.Decimal;
-  },
+  }>,
+  underlyingSymbol: string,
   expiryLabel: string,
   tradingDate: Date,
+  snapshotTime: Date,
   client: DbClient
-): Promise<number | undefined> {
-  const previousTick = await client.optionContractTick.findFirst({
+): Promise<Map<string, number>> {
+  const references = new Map<string, number>();
+  const strikePrices = [...new Map(ticks.map((tick) => [tick.strikePrice.toString(), tick.strikePrice])).values()];
+
+  if (!strikePrices.length) {
+    return references;
+  }
+
+  const previousSession = await client.optionChainSnapshot.findFirst({
     where: {
-      underlyingSymbol: tick.underlyingSymbol,
-      expiryLabel,
-      optionType: tick.optionType,
-      strikePrice: tick.strikePrice,
+      underlyingSymbol,
       tradingDate: {
         lt: tradingDate
       },
-      lastPrice: {
-        not: null
+      expiry: {
+        expiryLabel
       }
     },
-    orderBy: [{ tradingDate: "desc" }, { tickTime: "desc" }]
+    orderBy: [{ tradingDate: "desc" }, { snapshotTime: "desc" }],
+    select: {
+      tradingDate: true
+    }
   });
 
-  return toNumber(previousTick?.lastPrice);
+  if (previousSession) {
+    const previousTicks = await client.optionContractTick.findMany({
+      where: {
+        underlyingSymbol,
+        expiryLabel,
+        tradingDate: previousSession.tradingDate,
+        strikePrice: {
+          in: strikePrices
+        },
+        lastPrice: {
+          not: null
+        }
+      },
+      orderBy: [{ tickTime: "desc" }],
+      select: {
+        optionType: true,
+        strikePrice: true,
+        lastPrice: true
+      }
+    });
+
+    for (const tick of previousTicks) {
+      const key = tickReferenceKey(tick);
+      const lastPrice = toNumber(tick.lastPrice);
+      if (!references.has(key) && lastPrice !== undefined) {
+        references.set(key, lastPrice);
+      }
+    }
+  }
+
+  const missingReference = ticks.some((tick) => !references.has(tickReferenceKey(tick)));
+  if (missingReference) {
+    const sessionOpenTicks = await client.optionContractTick.findMany({
+      where: {
+        underlyingSymbol,
+        expiryLabel,
+        tradingDate,
+        tickTime: {
+          lte: snapshotTime
+        },
+        strikePrice: {
+          in: strikePrices
+        },
+        lastPrice: {
+          not: null
+        }
+      },
+      orderBy: [{ tickTime: "asc" }],
+      select: {
+        optionType: true,
+        strikePrice: true,
+        lastPrice: true
+      }
+    });
+
+    for (const tick of sessionOpenTicks) {
+      const key = tickReferenceKey(tick);
+      const lastPrice = toNumber(tick.lastPrice);
+      if (!references.has(key) && lastPrice !== undefined) {
+        references.set(key, lastPrice);
+      }
+    }
+  }
+
+  return references;
 }
 
 function labelToDate(label: string): Date {
@@ -275,37 +351,43 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
   const tradingDate = latest.tradingDate.toISOString().slice(0, 10);
   const latestExpiryLabel = latest.expiry.expiryLabel;
   const lotSize = await getLotSizeForExpiry(latest.underlyingSymbol, latestExpiryLabel, client);
-  const ticks = await Promise.all(
-    latest.ticks.map(async (tick): Promise<OptionContractTick> => {
-      const lastPrice = toNumber(tick.lastPrice);
-      const previousLastPrice = await getPreviousTradingDayLastPrice(tick, latestExpiryLabel, latest.tradingDate, client);
-      const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
-
-      return {
-        tradingDate,
-        tickTime: tick.tickTime.toISOString(),
-        underlyingSymbol: tick.underlyingSymbol,
-        expiry: latestExpiryLabel,
-        optionType: tick.optionType,
-        strikePrice: tick.strikePrice.toNumber(),
-        securityId: tick.securityId ?? undefined,
-        lotSize,
-        lastPrice,
-        lastPriceChange,
-        lastPriceChangePercent: lastPriceChange !== undefined && previousLastPrice ? (lastPriceChange / previousLastPrice) * 100 : undefined,
-        bidPrice: toNumber(tick.bidPrice),
-        askPrice: toNumber(tick.askPrice),
-        volume: toNumber(tick.volume),
-        openInterest: toNumber(tick.openInterest),
-        changeInOpenInterest: toNumber(tick.changeInOpenInterest),
-        impliedVolatility: toNumber(tick.impliedVolatility),
-        delta: toNumber(tick.deltaValue),
-        gamma: toNumber(tick.gammaValue),
-        theta: toNumber(tick.thetaValue),
-        vega: toNumber(tick.vegaValue)
-      };
-    })
+  const lastPriceReferences = await getLastPriceReferenceMap(
+    latest.ticks,
+    latest.underlyingSymbol,
+    latestExpiryLabel,
+    latest.tradingDate,
+    latest.snapshotTime,
+    client
   );
+  const ticks = latest.ticks.map((tick): OptionContractTick => {
+    const lastPrice = toNumber(tick.lastPrice);
+    const previousLastPrice = lastPriceReferences.get(tickReferenceKey(tick));
+    const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
+
+    return {
+      tradingDate,
+      tickTime: tick.tickTime.toISOString(),
+      underlyingSymbol: tick.underlyingSymbol,
+      expiry: latestExpiryLabel,
+      optionType: tick.optionType,
+      strikePrice: tick.strikePrice.toNumber(),
+      securityId: tick.securityId ?? undefined,
+      lotSize,
+      lastPrice,
+      lastPriceChange,
+      lastPriceChangePercent: lastPriceChange !== undefined && previousLastPrice ? (lastPriceChange / previousLastPrice) * 100 : undefined,
+      bidPrice: toNumber(tick.bidPrice),
+      askPrice: toNumber(tick.askPrice),
+      volume: toNumber(tick.volume),
+      openInterest: toNumber(tick.openInterest),
+      changeInOpenInterest: toNumber(tick.changeInOpenInterest),
+      impliedVolatility: toNumber(tick.impliedVolatility),
+      delta: toNumber(tick.deltaValue),
+      gamma: toNumber(tick.gammaValue),
+      theta: toNumber(tick.thetaValue),
+      vega: toNumber(tick.vegaValue)
+    };
+  });
 
   return {
     tradingDate,
@@ -365,37 +447,43 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
   const tradingDate = snapshot.tradingDate.toISOString().slice(0, 10);
   const expiryLabel = snapshot.expiry.expiryLabel;
   const lotSize = await getLotSizeForExpiry(snapshot.underlyingSymbol, expiryLabel, client);
-  const ticks = await Promise.all(
-    snapshot.ticks.map(async (tick): Promise<OptionContractTick> => {
-      const lastPrice = toNumber(tick.lastPrice);
-      const previousLastPrice = await getPreviousTradingDayLastPrice(tick, expiryLabel, snapshot.tradingDate, client);
-      const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
-
-      return {
-        tradingDate,
-        tickTime: tick.tickTime.toISOString(),
-        underlyingSymbol: tick.underlyingSymbol,
-        expiry: expiryLabel,
-        optionType: tick.optionType,
-        strikePrice: tick.strikePrice.toNumber(),
-        securityId: tick.securityId ?? undefined,
-        lotSize,
-        lastPrice,
-        lastPriceChange,
-        lastPriceChangePercent: lastPriceChange !== undefined && previousLastPrice ? (lastPriceChange / previousLastPrice) * 100 : undefined,
-        bidPrice: toNumber(tick.bidPrice),
-        askPrice: toNumber(tick.askPrice),
-        volume: toNumber(tick.volume),
-        openInterest: toNumber(tick.openInterest),
-        changeInOpenInterest: toNumber(tick.changeInOpenInterest),
-        impliedVolatility: toNumber(tick.impliedVolatility),
-        delta: toNumber(tick.deltaValue),
-        gamma: toNumber(tick.gammaValue),
-        theta: toNumber(tick.thetaValue),
-        vega: toNumber(tick.vegaValue)
-      };
-    })
+  const lastPriceReferences = await getLastPriceReferenceMap(
+    snapshot.ticks,
+    snapshot.underlyingSymbol,
+    expiryLabel,
+    snapshot.tradingDate,
+    snapshot.snapshotTime,
+    client
   );
+  const ticks = snapshot.ticks.map((tick): OptionContractTick => {
+    const lastPrice = toNumber(tick.lastPrice);
+    const previousLastPrice = lastPriceReferences.get(tickReferenceKey(tick));
+    const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
+
+    return {
+      tradingDate,
+      tickTime: tick.tickTime.toISOString(),
+      underlyingSymbol: tick.underlyingSymbol,
+      expiry: expiryLabel,
+      optionType: tick.optionType,
+      strikePrice: tick.strikePrice.toNumber(),
+      securityId: tick.securityId ?? undefined,
+      lotSize,
+      lastPrice,
+      lastPriceChange,
+      lastPriceChangePercent: lastPriceChange !== undefined && previousLastPrice ? (lastPriceChange / previousLastPrice) * 100 : undefined,
+      bidPrice: toNumber(tick.bidPrice),
+      askPrice: toNumber(tick.askPrice),
+      volume: toNumber(tick.volume),
+      openInterest: toNumber(tick.openInterest),
+      changeInOpenInterest: toNumber(tick.changeInOpenInterest),
+      impliedVolatility: toNumber(tick.impliedVolatility),
+      delta: toNumber(tick.deltaValue),
+      gamma: toNumber(tick.gammaValue),
+      theta: toNumber(tick.thetaValue),
+      vega: toNumber(tick.vegaValue)
+    };
+  });
 
   return {
     tradingDate,
