@@ -581,9 +581,12 @@ async function getFreshMarketAuxData(symbols: string[]) {
       const ohlcQuote = ohlcQuotes.get(definition.key);
       const storedChange = await getLatestSpotChange(definition.key).catch(() => null);
       const useStoredLastFeed = shouldUseStoredTickerFeed(definition);
-      const liveSpotPrice = ltpQuote?.lastPrice ?? ohlcQuote?.lastPrice;
-      const spotPrice = useStoredLastFeed ? storedChange?.spotPrice ?? liveSpotPrice : liveSpotPrice ?? storedChange?.spotPrice;
-      const previousClose = useStoredLastFeed ? storedChange?.previousClose ?? ohlcQuote?.previousClose : ohlcQuote?.previousClose ?? storedChange?.previousClose;
+      const liveSpotPrice = firstPositiveNumber(ltpQuote?.lastPrice, ohlcQuote?.lastPrice);
+      const livePreviousClose = firstPositiveNumber(ohlcQuote?.previousClose);
+      const storedSpotPrice = firstPositiveNumber(storedChange?.spotPrice);
+      const storedPreviousClose = firstPositiveNumber(storedChange?.previousClose);
+      const spotPrice = useStoredLastFeed ? storedSpotPrice ?? liveSpotPrice : liveSpotPrice ?? storedSpotPrice;
+      const previousClose = useStoredLastFeed ? storedPreviousClose ?? livePreviousClose : livePreviousClose ?? storedPreviousClose;
       const change = spotPrice !== undefined && previousClose !== undefined ? spotPrice - previousClose : storedChange?.change;
       return {
         symbol: definition.key,
@@ -597,7 +600,7 @@ async function getFreshMarketAuxData(symbols: string[]) {
     }));
 
     return {
-      indiaVix: ltpQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice ?? ohlcQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice,
+      indiaVix: firstPositiveNumber(ltpQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice, ohlcQuotes.get(INDIA_VIX_UNDERLYING.key)?.lastPrice),
       ticker
     };
   } catch (error) {
@@ -639,6 +642,10 @@ function shouldUseStoredTickerFeed(definition: UnderlyingDefinition) {
   }
 
   return !isMarketSessionOpen(9, 15, 15, 30);
+}
+
+function firstPositiveNumber(...values: Array<number | undefined>) {
+  return values.find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
 }
 
 function isMarketSessionOpen(startHour: number, startMinute: number, endHour: number, endMinute: number) {

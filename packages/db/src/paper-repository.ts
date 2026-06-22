@@ -872,7 +872,7 @@ const paperUserInclude = {
 };
 
 function shouldFillPaperOrder(action: string, entryPrice: number, latestPrice: number) {
-  return action === "BUY" ? latestPrice >= entryPrice : latestPrice <= entryPrice;
+  return action === "BUY" ? latestPrice <= entryPrice : latestPrice >= entryPrice;
 }
 
 function normalizeTradablePrice(value: number, tickSize = 0.05) {

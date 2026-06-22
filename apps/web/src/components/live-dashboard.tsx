@@ -459,7 +459,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setOverview((currentOverview) => ({
         ...currentOverview,
         indiaVix: payload.indiaVix ?? currentOverview.indiaVix,
-        ticker: payload.ticker
+        ticker: mergeTickerItems(currentOverview.ticker ?? [], payload.ticker ?? [])
       }));
       tickerSymbolsRef.current = payload.ticker?.map((item) => item.symbol) ?? tickerSymbolsRef.current;
     } catch {
@@ -1514,7 +1514,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 
               <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.4fr)]">
                 <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-3">
-                  <SignalCell label="Entry Trigger" value={formatPrice(orderEntryPrice)} detail={`${orderAction === "BUY" ? "BUY fills when LTP >= entry" : "SELL fills when LTP <= entry"} / LTP ${formatPrice(marketEntryPrice)}`} tone="blue" />
+                  <SignalCell label="Entry Trigger" value={formatPrice(orderEntryPrice)} detail={`${orderAction === "BUY" ? "BUY fills when LTP <= entry" : "SELL fills when LTP >= entry"} / LTP ${formatPrice(marketEntryPrice)}`} tone="blue" />
                   <SignalCell label="Risk / Reward" value={riskReward ? `1:${riskReward.toFixed(1)}` : "--"} detail={`${formatCurrency(estimatedRisk)} trail risk`} tone="green" />
                   <SignalCell label="Target Payoff" value={formatCurrency(estimatedReward)} detail={`${formatPrice(orderTargetValue)} target`} tone="green" />
                 </div>
@@ -1642,7 +1642,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         const draftTargetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
                         const draftQuantity = draftLots * order.lotSize;
                         const currentPrice = order.currentPrice;
-                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice >= draftEntry : currentPrice <= draftEntry) : false;
+                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice <= draftEntry : currentPrice >= draftEntry) : false;
 
                         return (
                           <tr key={order.id} className="border-t border-terminal-line/80">
@@ -1683,7 +1683,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                               })} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                             </td>
                             <td className={`px-3 py-3 text-right font-semibold ${willFill ? "text-terminal-emerald" : "text-terminal-blue"}`}>{formatPrice(currentPrice)}</td>
-                            <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP >= Entry" : "LTP <= Entry"}</td>
+                            <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP <= Entry" : "LTP >= Entry"}</td>
                             <td className="px-3 py-3 text-right">
                               <input value={draft.stopLoss} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, stopLoss: draft.stopLoss ? formatTradablePrice(Number(draft.stopLoss)) : draft.stopLoss } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, stopLoss: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                               <div className="mt-1 text-xs text-terminal-muted">Trail {formatPrice(draftTrailDistance)}</div>
@@ -2575,6 +2575,37 @@ function MarketTicker({ items }: { items: MarketTickerItem[] }) {
       </div>
     </section>
   );
+}
+
+function mergeTickerItems(currentItems: MarketTickerItem[], nextItems: MarketTickerItem[]) {
+  if (!nextItems.length) {
+    return currentItems;
+  }
+
+  const currentBySymbol = new Map(currentItems.map((item) => [item.symbol, item]));
+  return nextItems.map((nextItem) => {
+    const currentItem = currentBySymbol.get(nextItem.symbol);
+    if (!currentItem) {
+      return nextItem;
+    }
+
+    const spotPrice = isValidTickerNumber(nextItem.spotPrice) ? nextItem.spotPrice : currentItem.spotPrice;
+    const previousClose = isValidTickerNumber(nextItem.previousClose) ? nextItem.previousClose : currentItem.previousClose;
+    const change = nextItem.change ?? (spotPrice !== undefined && previousClose ? spotPrice - previousClose : currentItem.change);
+    const changePercent = nextItem.changePercent ?? (change !== undefined && previousClose ? (change / previousClose) * 100 : currentItem.changePercent);
+
+    return {
+      ...nextItem,
+      spotPrice,
+      previousClose,
+      change,
+      changePercent
+    };
+  });
+}
+
+function isValidTickerNumber(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function renderLtpStack(value?: number, change?: number, changePercent?: number, align: "left" | "right" = "left", activity: OptionActivityKind = "NEUTRAL") {
