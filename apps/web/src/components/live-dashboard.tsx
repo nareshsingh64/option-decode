@@ -277,6 +277,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [isOrderTargetEdited, setIsOrderTargetEdited] = useState(false);
   const [positionRiskDrafts, setPositionRiskDrafts] = useState<Record<string, { stopLoss: string; trailDistance: string; targetPrice: string }>>({});
   const [updatingRiskPositionId, setUpdatingRiskPositionId] = useState<string | null>(null);
+  const [pendingOrderDrafts, setPendingOrderDrafts] = useState<Record<string, { lots: string; requestedPrice: string; trailDistance: string; targetPrice: string }>>({});
+  const [updatingPendingOrderId, setUpdatingPendingOrderId] = useState<string | null>(null);
+  const [cancelingPendingOrderId, setCancelingPendingOrderId] = useState<string | null>(null);
   const [numberFormatMode, setNumberFormatMode] = useState<NumberFormatMode>("indian");
   const [quantityDisplayMode, setQuantityDisplayMode] = useState<QuantityDisplayMode>("lots");
   const [visibleStrikeMode, setVisibleStrikeMode] = useState<VisibleStrikeMode>("vix");
@@ -655,6 +658,53 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setPaperError(error instanceof Error ? error.message : "Unable to close paper position");
     } finally {
       setClosingPositionId(null);
+    }
+  };
+
+  const handleUpdatePendingOrder = async (orderId: string) => {
+    const order = pendingPaperOrders.find((pendingOrder) => pendingOrder.id === orderId);
+    if (!order) {
+      return;
+    }
+
+    const draft = pendingOrderDrafts[orderId] ?? {
+      lots: String(order.lots),
+      requestedPrice: formatTradablePrice(order.requestedPrice),
+      trailDistance: formatTradablePrice(order.trailDistance),
+      targetPrice: formatTradablePrice(order.targetPrice)
+    };
+    const requestedPrice = normalizeTradablePrice(Number(draft.requestedPrice || order.requestedPrice));
+    const trailDistance = normalizeTradablePrice(Number(draft.trailDistance || order.trailDistance));
+    const stopLoss = getTrailingStopLoss(order.action, requestedPrice, trailDistance);
+    const targetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
+
+    setUpdatingPendingOrderId(orderId);
+    setPaperError(null);
+    try {
+      setPaperSummary(await updatePendingPaperOrder(orderId, {
+        lots: Math.max(1, Math.floor(Number(draft.lots || order.lots))),
+        requestedPrice,
+        stopLoss,
+        trailingStop: true,
+        trailDistance,
+        targetPrice
+      }));
+    } catch (error) {
+      setPaperError(error instanceof Error ? error.message : "Unable to update pending order");
+    } finally {
+      setUpdatingPendingOrderId(null);
+    }
+  };
+
+  const handleCancelPendingOrder = async (orderId: string) => {
+    setCancelingPendingOrderId(orderId);
+    setPaperError(null);
+    try {
+      setPaperSummary(await cancelPendingPaperOrder(orderId));
+    } catch (error) {
+      setPaperError(error instanceof Error ? error.message : "Unable to cancel pending order");
+    } finally {
+      setCancelingPendingOrderId(null);
     }
   };
 
@@ -1492,10 +1542,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <div className="rounded border border-terminal-line bg-white/[0.03]">
                 <PaperSectionHeader title="Pending Orders" meta={`${pendingPaperOrders.length} waiting`} />
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1120px] border-collapse text-sm">
+                  <table className="w-full min-w-[1340px] border-collapse text-sm">
                     <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                       <tr>
                         <th className="px-3 py-3 text-left">Order</th>
+                        <th className="px-3 py-3 text-right">Contracts</th>
                         <th className="px-3 py-3 text-right">Qty</th>
                         <th className="px-3 py-3 text-right">Entry</th>
                         <th className="px-3 py-3 text-right">Current LTP</th>
@@ -1504,12 +1555,25 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         <th className="px-3 py-3 text-right">Target</th>
                         <th className="px-3 py-3 text-right">Placed</th>
                         <th className="px-3 py-3 text-right">Status</th>
+                        <th className="px-3 py-3 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pendingPaperOrders.slice(0, 8).map((order) => {
+                        const draft = pendingOrderDrafts[order.id] ?? {
+                          lots: String(order.lots),
+                          requestedPrice: formatTradablePrice(order.requestedPrice),
+                          trailDistance: formatTradablePrice(order.trailDistance),
+                          targetPrice: formatTradablePrice(order.targetPrice)
+                        };
+                        const draftLots = Math.max(1, Math.floor(Number(draft.lots || order.lots)));
+                        const draftEntry = normalizeTradablePrice(Number(draft.requestedPrice || order.requestedPrice));
+                        const draftTrailDistance = normalizeTradablePrice(Number(draft.trailDistance || order.trailDistance));
+                        const draftStopLoss = getTrailingStopLoss(order.action, draftEntry, draftTrailDistance);
+                        const draftTargetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
+                        const draftQuantity = draftLots * order.lotSize;
                         const currentPrice = order.currentPrice;
-                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice <= order.requestedPrice : currentPrice >= order.requestedPrice) : false;
+                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice <= draftEntry : currentPrice >= draftEntry) : false;
 
                         return (
                           <tr key={order.id} className="border-t border-terminal-line/80">
@@ -1518,26 +1582,43 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                               <div className="text-xs text-terminal-muted">{order.expiry} / {order.action}</div>
                               {order.ownerEmail ? <div className="text-xs text-terminal-blue">{order.ownerName ?? order.ownerEmail}</div> : null}
                             </td>
-                            <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(order.lots, order.lotSize, order.quantity)}</td>
-                            <td className="px-3 py-3 text-right font-semibold text-terminal-text">{formatPrice(order.requestedPrice)}</td>
+                            <td className="px-3 py-3 text-right">
+                              <input value={draft.lots} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, lots: event.target.value } }))} className="h-9 w-20 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm text-terminal-text outline-none focus:border-terminal-blue" min="1" step="1" type="number" />
+                            </td>
+                            <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(draftLots, order.lotSize, draftQuantity)}</td>
+                            <td className="px-3 py-3 text-right">
+                              <input value={draft.requestedPrice} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, requestedPrice: draft.requestedPrice ? formatTradablePrice(Number(draft.requestedPrice)) : draft.requestedPrice } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, requestedPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                            </td>
                             <td className={`px-3 py-3 text-right font-semibold ${willFill ? "text-terminal-emerald" : "text-terminal-blue"}`}>{formatPrice(currentPrice)}</td>
                             <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP <= Entry" : "LTP >= Entry"}</td>
                             <td className="px-3 py-3 text-right">
-                              <div className="font-semibold text-terminal-red">{formatPrice(order.trailDistance)}</div>
-                              <div className="text-xs text-terminal-muted">SL {formatPrice(order.stopLoss)}</div>
+                              <input value={draft.trailDistance} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: draft.trailDistance ? formatTradablePrice(Number(draft.trailDistance)) : draft.trailDistance } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                              <div className="mt-1 text-xs text-terminal-muted">SL {formatPrice(draftStopLoss)}</div>
                             </td>
-                            <td className="px-3 py-3 text-right text-terminal-emerald">{formatPrice(order.targetPrice)}</td>
+                            <td className="px-3 py-3 text-right">
+                              <input value={draft.targetPrice} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, targetPrice: draft.targetPrice ? formatTradablePrice(Number(draft.targetPrice)) : draft.targetPrice } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, targetPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                            </td>
                             <td className="px-3 py-3 text-right text-xs text-terminal-muted">{formatIstShortDateTime(order.createdAt)}</td>
                             <td className="px-3 py-3 text-right">
                               <span className={`rounded border px-2 py-1 text-xs font-semibold ${willFill ? "border-terminal-emerald/70 bg-terminal-emerald/10 text-terminal-emerald" : "border-terminal-amber/70 bg-terminal-amber/10 text-terminal-amber"}`}>
                                 {willFill ? "Ready" : order.status}
                               </span>
                             </td>
+                            <td className="px-3 py-3">
+                              <div className="flex justify-end gap-2">
+                                <button className="h-9 rounded border border-terminal-blue/70 bg-terminal-blue/10 px-3 text-xs font-semibold text-terminal-blue transition hover:bg-terminal-blue hover:text-white disabled:cursor-not-allowed disabled:opacity-50" disabled={updatingPendingOrderId === order.id || cancelingPendingOrderId === order.id || draftEntry <= 0 || draftTargetPrice <= 0} type="button" onClick={() => handleUpdatePendingOrder(order.id)}>
+                                  {updatingPendingOrderId === order.id ? "Saving" : "Save"}
+                                </button>
+                                <button className="h-9 rounded border border-terminal-red/70 bg-terminal-red/10 px-3 text-xs font-semibold text-terminal-red transition hover:bg-terminal-red hover:text-white disabled:cursor-not-allowed disabled:opacity-50" disabled={updatingPendingOrderId === order.id || cancelingPendingOrderId === order.id} type="button" onClick={() => handleCancelPendingOrder(order.id)}>
+                                  {cancelingPendingOrderId === order.id ? "Canceling" : "Cancel"}
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         );
                       })}
                       {paperSummary && !pendingPaperOrders.length ? (
-                        <tr><td colSpan={9} className="px-3 py-6 text-center text-terminal-muted">No pending paper orders.</td></tr>
+                        <tr><td colSpan={11} className="px-3 py-6 text-center text-terminal-muted">No pending paper orders.</td></tr>
                       ) : null}
                     </tbody>
                   </table>
@@ -2085,6 +2166,47 @@ async function closePaperPosition(positionId: string): Promise<PaperSummary> {
   if (!response.ok) {
     const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(errorBody?.message ?? `Position close failed with HTTP ${response.status}`);
+  }
+
+  return response.json() as Promise<PaperSummary>;
+}
+
+async function updatePendingPaperOrder(orderId: string, payload: {
+  lots: number;
+  requestedPrice: number;
+  stopLoss: number;
+  trailingStop: boolean;
+  trailDistance: number;
+  targetPrice: number;
+}): Promise<PaperSummary> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/paper/orders/${orderId}`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Pending order update failed with HTTP ${response.status}`);
+  }
+
+  return response.json() as Promise<PaperSummary>;
+}
+
+async function cancelPendingPaperOrder(orderId: string): Promise<PaperSummary> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/paper/orders/${orderId}/cancel`, {
+    method: "POST",
+    credentials: "include"
+  });
+
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Pending order cancel failed with HTTP ${response.status}`);
   }
 
   return response.json() as Promise<PaperSummary>;

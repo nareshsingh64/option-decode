@@ -21,6 +21,15 @@ export interface PaperOrderInput {
   reasonText?: string;
 }
 
+export interface PendingPaperOrderUpdateInput {
+  lots: number;
+  requestedPrice: number;
+  stopLoss: number;
+  trailingStop?: boolean;
+  trailDistance?: number;
+  targetPrice: number;
+}
+
 export interface PaperSummary {
   userId: string;
   orders: PaperOrderDto[];
@@ -207,6 +216,67 @@ export async function placePaperOrder(input: PaperOrderInput, user: AuthUserDto,
       status: "PENDING",
       strategyName: input.strategyName,
       reasonText: input.reasonText
+    }
+  });
+
+  return getPaperSummary(user, client);
+}
+
+export async function updatePendingPaperOrder(orderId: string, input: PendingPaperOrderUpdateInput, user: AuthUserDto, client: PrismaClient = prisma): Promise<PaperSummary> {
+  const includeAllUsers = user.role === "ADMIN";
+  const order = await client.paperOrder.findFirst({
+    where: {
+      id: orderId,
+      ...(includeAllUsers ? {} : { userId: user.id }),
+      status: "PENDING"
+    }
+  });
+
+  if (!order) {
+    throw new Error("Pending paper order was not found.");
+  }
+
+  const lotSize = await getPaperLotSize(order.underlyingSymbol, order.expiryLabel, client);
+  const quantity = input.lots * lotSize;
+  const trailingStop = input.trailingStop ?? order.trailingStop;
+  const requestedPrice = normalizeTradablePrice(input.requestedPrice);
+  const trailDistance = normalizeTradablePrice(input.trailDistance ?? Math.abs(requestedPrice - input.stopLoss));
+  const stopLoss = trailingStop ? getTrailingStopLoss(order.action, requestedPrice, trailDistance) : normalizeTradablePrice(input.stopLoss);
+  const targetPrice = normalizeTradablePrice(input.targetPrice);
+
+  await client.paperOrder.update({
+    where: { id: order.id },
+    data: {
+      quantity,
+      requestedPrice,
+      stopLoss,
+      trailingStop,
+      trailDistance,
+      targetPrice
+    }
+  });
+
+  return getPaperSummary(user, client);
+}
+
+export async function cancelPendingPaperOrder(orderId: string, user: AuthUserDto, client: PrismaClient = prisma): Promise<PaperSummary> {
+  const includeAllUsers = user.role === "ADMIN";
+  const order = await client.paperOrder.findFirst({
+    where: {
+      id: orderId,
+      ...(includeAllUsers ? {} : { userId: user.id }),
+      status: "PENDING"
+    }
+  });
+
+  if (!order) {
+    throw new Error("Pending paper order was not found.");
+  }
+
+  await client.paperOrder.update({
+    where: { id: order.id },
+    data: {
+      status: "CANCELLED"
     }
   });
 

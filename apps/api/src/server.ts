@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, closePaperPosition, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, placePaperOrder, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, placePaperOrder, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { UnderlyingDefinition } from "@option-decode/types";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
@@ -317,23 +317,77 @@ app.post("/api/paper/orders", async (request, reply) => {
     });
   }
 
-  if (parsed.data.stopLoss >= parsed.data.requestedPrice && parsed.data.action === "BUY") {
-    return reply.status(400).send({ message: "Stop loss must be below entry price for BUY orders." });
-  }
-
-  if (parsed.data.targetPrice <= parsed.data.requestedPrice && parsed.data.action === "BUY") {
-    return reply.status(400).send({ message: "Target must be above entry price for BUY orders." });
-  }
-
-  if (parsed.data.stopLoss <= parsed.data.requestedPrice && parsed.data.action === "SELL") {
-    return reply.status(400).send({ message: "Stop loss must be above entry price for SELL orders." });
-  }
-
-  if (parsed.data.targetPrice >= parsed.data.requestedPrice && parsed.data.action === "SELL") {
-    return reply.status(400).send({ message: "Target must be below entry price for SELL orders." });
+  const validationMessage = validatePaperOrderRisk(parsed.data.action, parsed.data.requestedPrice, parsed.data.stopLoss, parsed.data.targetPrice);
+  if (validationMessage) {
+    return reply.status(400).send({ message: validationMessage });
   }
 
   return placePaperOrder(parsed.data, user);
+});
+
+const pendingOrderUpdateSchema = paperOrderSchema.pick({
+  lots: true,
+  requestedPrice: true,
+  stopLoss: true,
+  trailingStop: true,
+  trailDistance: true,
+  targetPrice: true
+});
+
+app.patch<{
+  Params: {
+    id: string;
+  };
+}>("/api/paper/orders/:id", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  const parsed = pendingOrderUpdateSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({
+      message: "Invalid pending order update",
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message
+      }))
+    });
+  }
+
+  const currentSummary = await getPaperSummary(user);
+  const currentOrder = currentSummary.orders.find((order) => order.id === request.params.id && order.status === "PENDING");
+  if (!currentOrder) {
+    return reply.status(404).send({ message: "Pending paper order was not found." });
+  }
+
+  const validationMessage = validatePaperOrderRisk(currentOrder.action, parsed.data.requestedPrice, parsed.data.stopLoss, parsed.data.targetPrice);
+  if (validationMessage) {
+    return reply.status(400).send({ message: validationMessage });
+  }
+
+  try {
+    return await updatePendingPaperOrder(request.params.id, parsed.data, user);
+  } catch (error) {
+    return reply.status(404).send({ message: error instanceof Error ? error.message : "Unable to update pending paper order" });
+  }
+});
+
+app.post<{
+  Params: {
+    id: string;
+  };
+}>("/api/paper/orders/:id/cancel", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  try {
+    return await cancelPendingPaperOrder(request.params.id, user);
+  } catch (error) {
+    return reply.status(404).send({ message: error instanceof Error ? error.message : "Unable to cancel pending paper order" });
+  }
 });
 
 const closePositionSchema = z.object({
@@ -404,6 +458,26 @@ async function requireAdminUser(cookieHeader: string | undefined) {
 async function getRequestUser(cookieHeader: string | undefined) {
   const userId = getSessionUserId(cookieHeader, config.SESSION_SECRET);
   return userId ? getAuthUserById(userId) : null;
+}
+
+function validatePaperOrderRisk(action: string, requestedPrice: number, stopLoss: number, targetPrice: number) {
+  if (stopLoss >= requestedPrice && action === "BUY") {
+    return "Stop loss must be below entry price for BUY orders.";
+  }
+
+  if (targetPrice <= requestedPrice && action === "BUY") {
+    return "Target must be above entry price for BUY orders.";
+  }
+
+  if (stopLoss <= requestedPrice && action === "SELL") {
+    return "Stop loss must be above entry price for SELL orders.";
+  }
+
+  if (targetPrice >= requestedPrice && action === "SELL") {
+    return "Target must be below entry price for SELL orders.";
+  }
+
+  return null;
 }
 
 async function getExpiriesOrEmpty(underlyingSymbol: string) {
