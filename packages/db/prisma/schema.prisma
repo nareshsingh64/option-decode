@@ -157,6 +157,7 @@ model OptionChainSnapshot {
 
   @@index([tradingDate, underlyingSymbol, snapshotTime])
   @@index([underlyingSymbol, expiryId, snapshotTime])
+  @@index([underlyingSymbol, expiryId, tradingDate, snapshotTime])
   @@index([underlyingSymbol, snapshotTime])
 }
 
@@ -183,6 +184,7 @@ model OptionContractTick {
   vegaValue            Decimal?            @db.Decimal(10, 6)
   snapshot             OptionChainSnapshot @relation(fields: [snapshotId], references: [id])
 
+  @@index([snapshotId])
   @@index([tradingDate, underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
   @@index([underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
   @@index([underlyingSymbol, expiryLabel, tradingDate, optionType, strikePrice, tickTime])

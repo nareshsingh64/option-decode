@@ -49,6 +49,7 @@ async function getLastPriceReferenceMap(
     strikePrice: Prisma.Decimal;
   }>,
   underlyingSymbol: string,
+  expiryId: string,
   expiryLabel: string,
   tradingDate: Date,
   snapshotTime: Date,
@@ -64,37 +65,19 @@ async function getLastPriceReferenceMap(
   const previousSession = await client.optionChainSnapshot.findFirst({
     where: {
       underlyingSymbol,
+      expiryId,
       tradingDate: {
         lt: tradingDate
-      },
-      expiry: {
-        expiryLabel
       }
     },
     orderBy: [{ tradingDate: "desc" }, { snapshotTime: "desc" }],
     select: {
-      tradingDate: true
+      id: true
     }
   });
 
   if (previousSession) {
-    const previousTicks = await client.$queryRaw<Array<{ optionType: OptionType; strikePrice: Prisma.Decimal; lastPrice: Prisma.Decimal | null }>>`
-      SELECT optionType, strikePrice, lastPrice
-      FROM (
-        SELECT
-          optionType,
-          strikePrice,
-          lastPrice,
-          ROW_NUMBER() OVER (PARTITION BY optionType, strikePrice ORDER BY tickTime DESC) AS rowNumber
-        FROM OptionContractTick
-        WHERE underlyingSymbol = ${underlyingSymbol}
-          AND expiryLabel = ${expiryLabel}
-          AND tradingDate = ${previousSession.tradingDate}
-          AND strikePrice IN (${Prisma.join(strikePrices)})
-          AND lastPrice IS NOT NULL
-      ) rankedTicks
-      WHERE rowNumber = 1
-    `;
+    const previousTicks = await getSnapshotReferenceTicks(previousSession.id, strikePrices, client);
 
     for (const tick of previousTicks) {
       const key = tickReferenceKey(tick);
@@ -107,24 +90,21 @@ async function getLastPriceReferenceMap(
 
   const missingReference = ticks.some((tick) => !references.has(tickReferenceKey(tick)));
   if (missingReference) {
-    const sessionOpenTicks = await client.$queryRaw<Array<{ optionType: OptionType; strikePrice: Prisma.Decimal; lastPrice: Prisma.Decimal | null }>>`
-      SELECT optionType, strikePrice, lastPrice
-      FROM (
-        SELECT
-          optionType,
-          strikePrice,
-          lastPrice,
-          ROW_NUMBER() OVER (PARTITION BY optionType, strikePrice ORDER BY tickTime ASC) AS rowNumber
-        FROM OptionContractTick
-        WHERE underlyingSymbol = ${underlyingSymbol}
-          AND expiryLabel = ${expiryLabel}
-          AND tradingDate = ${tradingDate}
-          AND tickTime <= ${snapshotTime}
-          AND strikePrice IN (${Prisma.join(strikePrices)})
-          AND lastPrice IS NOT NULL
-      ) rankedTicks
-      WHERE rowNumber = 1
-    `;
+    const sessionOpenSnapshot = await client.optionChainSnapshot.findFirst({
+      where: {
+        underlyingSymbol,
+        expiryId,
+        tradingDate,
+        snapshotTime: {
+          lte: snapshotTime
+        }
+      },
+      orderBy: { snapshotTime: "asc" },
+      select: {
+        id: true
+      }
+    });
+    const sessionOpenTicks = sessionOpenSnapshot ? await getSnapshotReferenceTicks(sessionOpenSnapshot.id, strikePrices, client) : [];
 
     for (const tick of sessionOpenTicks) {
       const key = tickReferenceKey(tick);
@@ -136,6 +116,25 @@ async function getLastPriceReferenceMap(
   }
 
   return references;
+}
+
+async function getSnapshotReferenceTicks(snapshotId: string, strikePrices: Prisma.Decimal[], client: DbClient) {
+  return client.optionContractTick.findMany({
+    where: {
+      snapshotId,
+      strikePrice: {
+        in: strikePrices
+      },
+      lastPrice: {
+        not: null
+      }
+    },
+    select: {
+      optionType: true,
+      strikePrice: true,
+      lastPrice: true
+    }
+  });
 }
 
 function labelToDate(label: string): Date {
@@ -348,6 +347,7 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
   const lastPriceReferences = await getLastPriceReferenceMap(
     latest.ticks,
     latest.underlyingSymbol,
+    latest.expiryId,
     latestExpiryLabel,
     latest.tradingDate,
     latest.snapshotTime,
@@ -444,6 +444,7 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
   const lastPriceReferences = await getLastPriceReferenceMap(
     snapshot.ticks,
     snapshot.underlyingSymbol,
+    snapshot.expiryId,
     expiryLabel,
     snapshot.tradingDate,
     snapshot.snapshotTime,

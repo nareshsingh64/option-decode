@@ -172,12 +172,14 @@ app.get<{
 }>("/api/market/overview", async (request) => {
   const requestedUnderlying = normalizeUnderlying(request.query.underlying);
   const requestedExpiry = request.query.expiry?.trim() || undefined;
-  const marketAux = await getMarketAuxData(await getTickerSymbols(requestedUnderlying));
-  const spotPriceOverride = marketAux.ticker.find((item) => item.symbol === requestedUnderlying)?.spotPrice;
-  const snapshot = await getLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry, spotPriceOverride);
+  const tickerSymbolsPromise = getTickerSymbols(requestedUnderlying);
+  const [marketAux, snapshot, expiries] = await Promise.all([
+    tickerSymbolsPromise.then((symbols) => getMarketAuxData(symbols)),
+    getLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry),
+    getExpiriesOrEmpty(requestedUnderlying)
+  ]);
   const pressure = calculatePressureScore(snapshot);
   const alerts = generateMarketAlerts(snapshot, pressure);
-  const expiries = await getExpiriesOrEmpty(requestedUnderlying);
 
   return {
     underlyings: visibleUnderlyings,
