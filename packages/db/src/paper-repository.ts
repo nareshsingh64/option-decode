@@ -766,7 +766,7 @@ function getTrailingStopLoss(action: string, referencePrice: number, trailDistan
 
 function getDynamicTrailingStopLoss(action: string, optionType: OptionType, entryPrice: number, latestPrice: number, targetPrice: number, bestPrice: number, trailDistance: number, scoreSignal: number) {
   if (isTradeSignalDanger(action, optionType, scoreSignal)) {
-    return normalizeTradablePrice(entryPrice);
+    return hasMovedInFavor(action, entryPrice, latestPrice) ? normalizeTradablePrice(entryPrice) : getTrailingStopLoss(action, bestPrice, trailDistance);
   }
 
   if (isTradeSignalFavorable(action, optionType, scoreSignal)) {
@@ -804,6 +804,10 @@ function isTradeSignalDanger(action: string, optionType: OptionType, scoreSignal
     return false;
   }
   return !isTradeSignalFavorable(action, optionType, scoreSignal);
+}
+
+function hasMovedInFavor(action: string, entryPrice: number, latestPrice: number) {
+  return action === "BUY" ? latestPrice > entryPrice : latestPrice < entryPrice;
 }
 
 async function getAtmWindowScoreSignal(underlyingSymbol: string, expiryLabel: string, client: PrismaClient) {
@@ -868,7 +872,7 @@ const paperUserInclude = {
 };
 
 function shouldFillPaperOrder(action: string, entryPrice: number, latestPrice: number) {
-  return action === "BUY" ? latestPrice <= entryPrice : latestPrice >= entryPrice;
+  return action === "BUY" ? latestPrice >= entryPrice : latestPrice <= entryPrice;
 }
 
 function normalizeTradablePrice(value: number, tickSize = 0.05) {

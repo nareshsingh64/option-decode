@@ -1468,7 +1468,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 
               <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.4fr)]">
                 <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-3">
-                  <SignalCell label="Entry Trigger" value={formatPrice(orderEntryPrice)} detail={`${orderAction === "BUY" ? "BUY fills when LTP <= entry" : "SELL fills when LTP >= entry"} / LTP ${formatPrice(marketEntryPrice)}`} tone="blue" />
+                  <SignalCell label="Entry Trigger" value={formatPrice(orderEntryPrice)} detail={`${orderAction === "BUY" ? "BUY fills when LTP >= entry" : "SELL fills when LTP <= entry"} / LTP ${formatPrice(marketEntryPrice)}`} tone="blue" />
                   <SignalCell label="Risk / Reward" value={riskReward ? `1:${riskReward.toFixed(1)}` : "--"} detail={`${formatCurrency(estimatedRisk)} trail risk`} tone="green" />
                   <SignalCell label="Target Payoff" value={formatCurrency(estimatedReward)} detail={`${formatPrice(orderTargetValue)} target`} tone="green" />
                 </div>
@@ -1596,7 +1596,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                         const draftTargetPrice = normalizeTradablePrice(Number(draft.targetPrice || order.targetPrice));
                         const draftQuantity = draftLots * order.lotSize;
                         const currentPrice = order.currentPrice;
-                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice <= draftEntry : currentPrice >= draftEntry) : false;
+                        const willFill = currentPrice !== undefined ? (order.action === "BUY" ? currentPrice >= draftEntry : currentPrice <= draftEntry) : false;
 
                         return (
                           <tr key={order.id} className="border-t border-terminal-line/80">
@@ -1637,7 +1637,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                               })} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                             </td>
                             <td className={`px-3 py-3 text-right font-semibold ${willFill ? "text-terminal-emerald" : "text-terminal-blue"}`}>{formatPrice(currentPrice)}</td>
-                            <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP <= Entry" : "LTP >= Entry"}</td>
+                            <td className="px-3 py-3 text-right text-xs text-terminal-muted">{order.action === "BUY" ? "LTP >= Entry" : "LTP <= Entry"}</td>
                             <td className="px-3 py-3 text-right">
                               <input value={draft.trailDistance} onBlur={() => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: draft.trailDistance ? formatTradablePrice(Number(draft.trailDistance)) : draft.trailDistance } }))} onChange={(event) => setPendingOrderDrafts((drafts) => ({ ...drafts, [order.id]: { ...draft, trailDistance: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                               <div className="mt-1 text-xs text-terminal-muted">SL {formatPrice(draftStopLoss)}</div>
