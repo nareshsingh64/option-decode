@@ -1,4 +1,20 @@
 services:
+  deps:
+    image: node:22-alpine
+    profiles: ["app"]
+    working_dir: /workspace
+    env_file:
+      - .env.production
+    command: >
+      sh -lc "corepack enable &&
+      corepack prepare pnpm@9.15.0 --activate &&
+      NODE_ENV=development CI=true pnpm install --frozen-lockfile --store-dir .pnpm-store &&
+      pnpm --filter @option-decode/db db:generate"
+    volumes:
+      - .:/workspace
+      - option_decode_node_modules:/workspace/node_modules
+      - option_decode_pnpm_store:/workspace/.pnpm-store
+
   web:
     image: node:22-alpine
     profiles: ["app"]
@@ -8,7 +24,6 @@ services:
     command: >
       sh -lc "corepack enable &&
       corepack prepare pnpm@9.15.0 --activate &&
-      NODE_ENV=development CI=true pnpm install --force --frozen-lockfile --store-dir .pnpm-store &&
       pnpm --filter @option-decode/web build &&
       pnpm --filter @option-decode/web start"
     environment:
@@ -23,6 +38,8 @@ services:
       - option_decode_pnpm_store:/workspace/.pnpm-store
       - option_decode_next:/workspace/apps/web/.next
     depends_on:
+      deps:
+        condition: service_completed_successfully
       api:
         condition: service_started
     restart: unless-stopped
@@ -36,8 +53,6 @@ services:
     command: >
       sh -lc "corepack enable &&
       corepack prepare pnpm@9.15.0 --activate &&
-      NODE_ENV=development CI=true pnpm install --force --frozen-lockfile --store-dir .pnpm-store &&
-      pnpm --filter @option-decode/db db:generate &&
       pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
       pnpm --filter @option-decode/api exec tsx src/server.ts"
     environment:
@@ -52,6 +67,8 @@ services:
       - option_decode_node_modules:/workspace/node_modules
       - option_decode_pnpm_store:/workspace/.pnpm-store
     depends_on:
+      deps:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       redis:
@@ -67,8 +84,6 @@ services:
     command: >
       sh -lc "corepack enable &&
       corepack prepare pnpm@9.15.0 --activate &&
-      NODE_ENV=development CI=true pnpm install --force --frozen-lockfile --store-dir .pnpm-store &&
-      pnpm --filter @option-decode/db db:generate &&
       pnpm --filter @option-decode/worker exec tsx src/worker.ts"
     environment:
       NODE_ENV: production
@@ -80,6 +95,8 @@ services:
       - option_decode_node_modules:/workspace/node_modules
       - option_decode_pnpm_store:/workspace/.pnpm-store
     depends_on:
+      deps:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       redis:
