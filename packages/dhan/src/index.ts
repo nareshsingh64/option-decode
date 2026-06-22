@@ -32,9 +32,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "NIFTY",
     securityId: 13,
     segment: "IDX_I",
-    lotSize: 65,
-    quoteSecurityId: 62329,
-    quoteSegment: "NSE_FNO"
+    lotSize: 65
   },
   BANKNIFTY: {
     key: "BANKNIFTY",
@@ -42,9 +40,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "BANKNIFTY",
     securityId: 25,
     segment: "IDX_I",
-    lotSize: 30,
-    quoteSecurityId: 62326,
-    quoteSegment: "NSE_FNO"
+    lotSize: 30
   },
   FINNIFTY: {
     key: "FINNIFTY",
@@ -52,9 +48,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "FINNIFTY",
     securityId: 27,
     segment: "IDX_I",
-    lotSize: 60,
-    quoteSecurityId: 62327,
-    quoteSegment: "NSE_FNO"
+    lotSize: 60
   },
   MIDCPNIFTY: {
     key: "MIDCPNIFTY",
@@ -62,9 +56,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "MIDCPNIFTY",
     securityId: 442,
     segment: "IDX_I",
-    lotSize: 120,
-    quoteSecurityId: 62328,
-    quoteSegment: "NSE_FNO"
+    lotSize: 120
   },
   NIFTYNXT50: {
     key: "NIFTYNXT50",
@@ -72,9 +64,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "NIFTY NEXT 50",
     securityId: 38,
     segment: "IDX_I",
-    lotSize: 25,
-    quoteSecurityId: 62330,
-    quoteSegment: "NSE_FNO"
+    lotSize: 25
   },
   SENSEX: {
     key: "SENSEX",
@@ -82,9 +72,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "SENSEX",
     securityId: 51,
     segment: "IDX_I",
-    lotSize: 20,
-    quoteSecurityId: 1105863,
-    quoteSegment: "BSE_FNO"
+    lotSize: 20
   },
   BANKEX: {
     key: "BANKEX",
@@ -92,9 +80,7 @@ export const UNDERLYINGS: Record<string, UnderlyingDefinition> = {
     displayName: "BANKEX",
     securityId: 69,
     segment: "IDX_I",
-    lotSize: 30,
-    quoteSecurityId: 1107543,
-    quoteSegment: "BSE_FNO"
+    lotSize: 30
   },
   CRUDEOIL: {
     key: "CRUDEOIL",
