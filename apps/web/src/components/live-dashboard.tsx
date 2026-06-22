@@ -2247,8 +2247,9 @@ function findOptionTick(overview: MarketOverview, strikePrice: number, optionTyp
 
 function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") {
   const alignClass = side === "PE" ? "justify-end text-right" : "justify-start text-left";
+  const shouldHighlight = rank === 1 || (rank === 2 && percent >= 75);
 
-  if (!rank) {
+  if (!shouldHighlight) {
     return (
       <span className={`flex ${alignClass}`}>
         <span className="grid gap-0.5 text-terminal-text">
