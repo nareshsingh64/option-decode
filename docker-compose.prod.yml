@@ -1,59 +1,44 @@
+x-option-decode-app: &option-decode-app
+  image: option-decode-app:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: app
+
 services:
-  deps:
-    image: node:22-alpine
-    profiles: ["app"]
-    working_dir: /workspace
-    env_file:
-      - .env.production
-    command: >
-      sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
-      NODE_ENV=development CI=true pnpm install --frozen-lockfile --store-dir .pnpm-store &&
-      pnpm --filter @option-decode/db db:generate"
-    volumes:
-      - .:/workspace
-      - option_decode_node_modules:/workspace/node_modules
-      - option_decode_pnpm_store:/workspace/.pnpm-store
 
   web:
-    image: node:22-alpine
+    <<: *option-decode-app
     profiles: ["app"]
     working_dir: /workspace
     env_file:
       - .env.production
     command: >
-      sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
-      pnpm --filter @option-decode/web build &&
-      pnpm --filter @option-decode/web start"
+      sh -lc "pnpm --filter @option-decode/web start"
     environment:
       NODE_ENV: production
       API_URL: http://api:4000
       NEXT_PUBLIC_API_URL: ${APP_PUBLIC_URL}
     expose:
       - "3000"
-    volumes:
-      - .:/workspace
-      - option_decode_node_modules:/workspace/node_modules
-      - option_decode_pnpm_store:/workspace/.pnpm-store
-      - option_decode_next:/workspace/apps/web/.next
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
-      deps:
-        condition: service_completed_successfully
       api:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   api:
-    image: node:22-alpine
+    <<: *option-decode-app
     profiles: ["app"]
     working_dir: /workspace
     env_file:
       - .env.production
     command: >
-      sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
-      pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
+      sh -lc "pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
       pnpm --filter @option-decode/api exec tsx src/server.ts"
     environment:
       NODE_ENV: production
@@ -62,13 +47,12 @@ services:
       REDIS_URL: redis://redis:6379/0
     expose:
       - "4000"
-    volumes:
-      - .:/workspace
-      - option_decode_node_modules:/workspace/node_modules
-      - option_decode_pnpm_store:/workspace/.pnpm-store
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
-      deps:
-        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       redis:
@@ -76,27 +60,19 @@ services:
     restart: unless-stopped
 
   worker:
-    image: node:22-alpine
+    <<: *option-decode-app
     profiles: ["app"]
     working_dir: /workspace
     env_file:
       - .env.production
     command: >
-      sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
-      pnpm --filter @option-decode/worker exec tsx src/worker.ts"
+      sh -lc "pnpm --filter @option-decode/worker exec tsx src/worker.ts"
     environment:
       NODE_ENV: production
       API_PORT: 4000
       DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
-    volumes:
-      - .:/workspace
-      - option_decode_node_modules:/workspace/node_modules
-      - option_decode_pnpm_store:/workspace/.pnpm-store
     depends_on:
-      deps:
-        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       redis:
@@ -148,8 +124,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  option_decode_node_modules:
-  option_decode_pnpm_store:
-  option_decode_next:
   option_decode_mysql:
   option_decode_redis:

@@ -78,25 +78,23 @@ async function getLastPriceReferenceMap(
   });
 
   if (previousSession) {
-    const previousTicks = await client.optionContractTick.findMany({
-      where: {
-        underlyingSymbol,
-        expiryLabel,
-        tradingDate: previousSession.tradingDate,
-        strikePrice: {
-          in: strikePrices
-        },
-        lastPrice: {
-          not: null
-        }
-      },
-      orderBy: [{ tickTime: "desc" }],
-      select: {
-        optionType: true,
-        strikePrice: true,
-        lastPrice: true
-      }
-    });
+    const previousTicks = await client.$queryRaw<Array<{ optionType: OptionType; strikePrice: Prisma.Decimal; lastPrice: Prisma.Decimal | null }>>`
+      SELECT optionType, strikePrice, lastPrice
+      FROM (
+        SELECT
+          optionType,
+          strikePrice,
+          lastPrice,
+          ROW_NUMBER() OVER (PARTITION BY optionType, strikePrice ORDER BY tickTime DESC) AS rowNumber
+        FROM OptionContractTick
+        WHERE underlyingSymbol = ${underlyingSymbol}
+          AND expiryLabel = ${expiryLabel}
+          AND tradingDate = ${previousSession.tradingDate}
+          AND strikePrice IN (${Prisma.join(strikePrices)})
+          AND lastPrice IS NOT NULL
+      ) rankedTicks
+      WHERE rowNumber = 1
+    `;
 
     for (const tick of previousTicks) {
       const key = tickReferenceKey(tick);
@@ -109,28 +107,24 @@ async function getLastPriceReferenceMap(
 
   const missingReference = ticks.some((tick) => !references.has(tickReferenceKey(tick)));
   if (missingReference) {
-    const sessionOpenTicks = await client.optionContractTick.findMany({
-      where: {
-        underlyingSymbol,
-        expiryLabel,
-        tradingDate,
-        tickTime: {
-          lte: snapshotTime
-        },
-        strikePrice: {
-          in: strikePrices
-        },
-        lastPrice: {
-          not: null
-        }
-      },
-      orderBy: [{ tickTime: "asc" }],
-      select: {
-        optionType: true,
-        strikePrice: true,
-        lastPrice: true
-      }
-    });
+    const sessionOpenTicks = await client.$queryRaw<Array<{ optionType: OptionType; strikePrice: Prisma.Decimal; lastPrice: Prisma.Decimal | null }>>`
+      SELECT optionType, strikePrice, lastPrice
+      FROM (
+        SELECT
+          optionType,
+          strikePrice,
+          lastPrice,
+          ROW_NUMBER() OVER (PARTITION BY optionType, strikePrice ORDER BY tickTime ASC) AS rowNumber
+        FROM OptionContractTick
+        WHERE underlyingSymbol = ${underlyingSymbol}
+          AND expiryLabel = ${expiryLabel}
+          AND tradingDate = ${tradingDate}
+          AND tickTime <= ${snapshotTime}
+          AND strikePrice IN (${Prisma.join(strikePrices)})
+          AND lastPrice IS NOT NULL
+      ) rankedTicks
+      WHERE rowNumber = 1
+    `;
 
     for (const tick of sessionOpenTicks) {
       const key = tickReferenceKey(tick);
