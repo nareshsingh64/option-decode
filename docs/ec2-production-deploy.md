@@ -28,6 +28,10 @@ Set real values for:
 - `JWT_SECRET`
 - `DHAN_CLIENT_ID`
 - `DHAN_ACCESS_TOKEN`
+- `SMTP_HOST`
+- `SMTP_USER`
+- `SMTP_PASSWORD`
+- `EMAIL_FROM`
 
 Generate strong secrets:
 
@@ -59,6 +63,13 @@ docker compose --env-file .env.production -f docker-compose.prod.yml --profile a
 ```
 
 First build can take several minutes because it installs workspace dependencies, builds Next.js, and generates Prisma client inside the Docker image. After the image is built, container startup is much faster because production no longer runs `pnpm install` or `next build` during app start.
+
+Apply database migrations after pulling changes that include new Prisma migrations:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml --profile app run --rm api \
+  pnpm --filter @option-decode/db db:migrate
+```
 
 Check status:
 

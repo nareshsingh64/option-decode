@@ -38,6 +38,8 @@ model User {
   displayName    String?
   role           UserRole  @default(FREE)
   emailVerified  Boolean   @default(false)
+  disabled       Boolean   @default(false)
+  lastLoginAt    DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   subscriptions  Subscription[]
@@ -55,6 +57,19 @@ model EmailVerificationToken {
   createdAt DateTime @default(now())
 
   @@index([email, expiresAt])
+  @@index([tokenHash])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  email     String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([email, expiresAt])
+  @@index([tokenHash])
 }
 
 model Plan {

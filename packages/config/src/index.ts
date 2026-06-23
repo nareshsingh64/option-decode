@@ -15,6 +15,15 @@ const envSchema = z.object({
   MARKET_TIMEZONE: z.string().default("Asia/Kolkata"),
   FEED_UNDERLYINGS: z.string().default("NIFTY,BANKNIFTY"),
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  SMTP_HOST: z.string().trim().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .string()
+    .default("false")
+    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase())),
+  SMTP_USER: z.string().trim().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+  EMAIL_FROM: z.string().trim().default("Option Decode <no-reply@pytrade.co.in>"),
   MOCK_MARKET_FEED_ENABLED: z
     .string()
     .default("true")

@@ -1,5 +1,6 @@
 import type { UserRole } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
+import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "./index.js";
 
 export interface AuthUserDto {
@@ -8,6 +9,8 @@ export interface AuthUserDto {
   displayName?: string;
   role: UserRole;
   emailVerified: boolean;
+  disabled: boolean;
+  lastLoginAt?: string;
   plan?: {
     code: string;
     name: string;
@@ -40,13 +43,22 @@ export async function createUser(input: RegisterUserInput, client: PrismaClient 
   return getAuthUserById(user.id, client) as Promise<AuthUserDto>;
 }
 
+export async function markUserLogin(userId: string, client: PrismaClient = prisma) {
+  await client.user.update({
+    where: { id: userId },
+    data: { lastLoginAt: new Date() }
+  });
+}
+
 export async function getUserCredentialsByEmail(email: string, client: PrismaClient = prisma) {
   return client.user.findUnique({
     where: { email: email.toLowerCase() },
     select: {
       id: true,
       email: true,
-      passwordHash: true
+      passwordHash: true,
+      disabled: true,
+      emailVerified: true
     }
   });
 }
@@ -58,6 +70,91 @@ export async function getAuthUserById(userId: string, client: PrismaClient = pri
   });
 
   return user ? mapAuthUser(user) : null;
+}
+
+export async function createEmailVerificationToken(email: string, client: PrismaClient = prisma) {
+  return createOneTimeToken("email", email, 24 * 60 * 60 * 1000, client);
+}
+
+export async function verifyEmailToken(token: string, client: PrismaClient = prisma) {
+  const tokenHash = hashToken(token);
+  const now = new Date();
+  const storedToken = await client.emailVerificationToken.findFirst({
+    where: {
+      tokenHash,
+      usedAt: null,
+      expiresAt: {
+        gt: now
+      }
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  if (!storedToken) {
+    return null;
+  }
+
+  const user = await client.$transaction(async (tx) => {
+    await tx.emailVerificationToken.update({
+      where: { id: storedToken.id },
+      data: { usedAt: now }
+    });
+
+    return tx.user.update({
+      where: { email: storedToken.email.toLowerCase() },
+      data: { emailVerified: true },
+      include: activeSubscriptionInclude
+    });
+  });
+
+  return mapAuthUser(user);
+}
+
+export async function createPasswordResetToken(email: string, client: PrismaClient = prisma) {
+  const user = await client.user.findUnique({
+    where: { email: email.toLowerCase() },
+    select: { email: true, disabled: true }
+  });
+
+  if (!user || user.disabled) {
+    return null;
+  }
+
+  return createOneTimeToken("password", user.email, 60 * 60 * 1000, client);
+}
+
+export async function resetPasswordWithToken(token: string, passwordHash: string, client: PrismaClient = prisma) {
+  const tokenHash = hashToken(token);
+  const now = new Date();
+  const storedToken = await client.passwordResetToken.findFirst({
+    where: {
+      tokenHash,
+      usedAt: null,
+      expiresAt: {
+        gt: now
+      }
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  if (!storedToken) {
+    return null;
+  }
+
+  const user = await client.$transaction(async (tx) => {
+    await tx.passwordResetToken.update({
+      where: { id: storedToken.id },
+      data: { usedAt: now }
+    });
+
+    return tx.user.update({
+      where: { email: storedToken.email.toLowerCase() },
+      data: { passwordHash },
+      include: activeSubscriptionInclude
+    });
+  });
+
+  return mapAuthUser(user);
 }
 
 export async function seedDefaultPlans(client: PrismaClient = prisma) {
@@ -143,6 +240,8 @@ function mapAuthUser(user: {
   displayName: string | null;
   role: UserRole;
   emailVerified: boolean;
+  disabled: boolean;
+  lastLoginAt: Date | null;
   subscriptions: Array<{
     status: string;
     plan: {
@@ -161,6 +260,8 @@ function mapAuthUser(user: {
     displayName: user.displayName ?? undefined,
     role: user.role,
     emailVerified: user.emailVerified,
+    disabled: user.disabled,
+    lastLoginAt: user.lastLoginAt?.toISOString(),
     plan: subscription
       ? {
           code: subscription.plan.code,
@@ -172,4 +273,39 @@ function mapAuthUser(user: {
         }
       : undefined
   };
+}
+
+async function createOneTimeToken(kind: "email" | "password", email: string, ttlMs: number, client: PrismaClient) {
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + ttlMs);
+  const normalizedEmail = email.toLowerCase();
+
+  if (kind === "email") {
+    await client.emailVerificationToken.create({
+      data: {
+        email: normalizedEmail,
+        tokenHash,
+        expiresAt
+      }
+    });
+  } else {
+    await client.passwordResetToken.create({
+      data: {
+        email: normalizedEmail,
+        tokenHash,
+        expiresAt
+      }
+    });
+  }
+
+  return {
+    email: normalizedEmail,
+    token,
+    expiresAt
+  };
+}
+
+function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("base64url");
 }

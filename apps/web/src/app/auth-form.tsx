@@ -74,12 +74,19 @@ export function AuthForm({ mode }: AuthFormProps) {
 
       {error ? <p className="text-sm text-red-300">{error}</p> : null}
 
-      <p className="text-sm text-slate-300">
-        {isRegister ? "Already registered?" : "New to Option Decode?"}{" "}
-        <a className="font-semibold text-emerald-300 transition hover:text-emerald-200" href={isRegister ? "/login" : "/register"}>
-          {isRegister ? "Login" : "Register"}
-        </a>
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-slate-300">
+        <p>
+          {isRegister ? "Already registered?" : "New to Option Decode?"}{" "}
+          <a className="font-semibold text-emerald-300 transition hover:text-emerald-200" href={isRegister ? "/login" : "/register"}>
+            {isRegister ? "Login" : "Register"}
+          </a>
+        </p>
+        {!isRegister ? (
+          <a className="font-semibold text-emerald-300 transition hover:text-emerald-200" href="/forgot-password">
+            Forgot password?
+          </a>
+        ) : null}
+      </div>
     </form>
   );
 }

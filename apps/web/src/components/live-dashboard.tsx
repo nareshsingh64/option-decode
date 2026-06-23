@@ -89,6 +89,8 @@ export interface AuthUser {
   displayName?: string;
   role: string;
   emailVerified: boolean;
+  disabled: boolean;
+  lastLoginAt?: string;
   plan?: {
     code: string;
     name: string;
@@ -106,6 +108,8 @@ interface AdminOverview {
     displayName?: string;
     role: "ADMIN" | "SUBSCRIBER" | "TRIAL" | "FREE";
     emailVerified: boolean;
+    disabled: boolean;
+    lastLoginAt?: string;
     createdAt: string;
     plan?: {
       code: string;
@@ -864,6 +868,36 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   };
 
+  const handleUpdateAdminUserDisabled = async (userId: string, disabled: boolean) => {
+    setUpdatingAdminUserId(userId);
+    setAdminError(null);
+    try {
+      await updateAdminUserDisabled(userId, disabled);
+      setAdminOverview(await fetchAdminOverview());
+      if (authUser?.id === userId) {
+        await refreshAuthUser();
+      }
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Unable to update user status");
+    } finally {
+      setUpdatingAdminUserId(null);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setIsAuthSubmitting(true);
+    setAuthError(null);
+    setAuthMessage(null);
+    try {
+      await resendVerificationEmail();
+      setAuthMessage("Verification email sent.");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to send verification email");
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
   const loadReplaySnapshotAtIndex = async (nextIndex: number) => {
     const snapshot = replaySnapshotsRef.current[nextIndex];
     if (!snapshot) {
@@ -1204,9 +1238,22 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                 </div>
               )}
 
+              {authUser && !authUser.emailVerified ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-terminal-amber/50 bg-terminal-amber/10 px-3 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-terminal-amber">Email verification pending</p>
+                    <p className="mt-1 text-xs text-terminal-muted">Verify your email to keep account recovery and security controls active.</p>
+                  </div>
+                  <button className="h-9 rounded border border-terminal-amber/70 px-3 text-xs font-semibold text-terminal-amber transition hover:bg-terminal-amber hover:text-terminal-bg disabled:cursor-not-allowed disabled:opacity-50" disabled={isAuthSubmitting} type="button" onClick={handleResendVerification}>
+                    Resend Verification
+                  </button>
+                </div>
+              ) : null}
+
               {authUser ? (
                 <div className="grid gap-2 text-sm">
                   <SummaryLine label="Email" value={authUser.email} />
+                  <SummaryLine label="Last login" value={authUser.lastLoginAt ? formatIstShortDateTime(authUser.lastLoginAt) : "--"} />
                   <SummaryLine label="Plan code" value={authUser.plan?.code ?? "--"} />
                   <SummaryLine label="Premium alerts" value={authUser.plan?.premiumAlerts ? "Enabled" : "Not enabled"} />
                   <SummaryLine label="Realtime market feed" value={authUser.plan?.realtime ? "Enabled" : "Plan limited"} />
@@ -1283,13 +1330,15 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             <div className="rounded border border-terminal-line bg-white/[0.03]">
               <PaperSectionHeader title="Users" meta={`${adminOverview?.users.length ?? 0} latest`} />
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] border-collapse text-sm">
+                <table className="w-full min-w-[1120px] border-collapse text-sm">
                   <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                     <tr>
                       <th className="px-3 py-3 text-left">User</th>
                       <th className="px-3 py-3 text-left">Plan</th>
                       <th className="px-3 py-3 text-left">Role</th>
                       <th className="px-3 py-3 text-right">Verified</th>
+                      <th className="px-3 py-3 text-right">Status</th>
+                      <th className="px-3 py-3 text-right">Last Login</th>
                       <th className="px-3 py-3 text-right">Created</th>
                       <th className="px-3 py-3 text-right">Action</th>
                     </tr>
@@ -1314,12 +1363,18 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                           </select>
                         </td>
                         <td className={`px-3 py-3 text-right font-semibold ${user.emailVerified ? "text-terminal-emerald" : "text-terminal-amber"}`}>{user.emailVerified ? "Yes" : "No"}</td>
+                        <td className={`px-3 py-3 text-right font-semibold ${user.disabled ? "text-terminal-red" : "text-terminal-emerald"}`}>{user.disabled ? "Disabled" : "Active"}</td>
+                        <td className="px-3 py-3 text-right text-xs text-terminal-muted">{user.lastLoginAt ? formatIstShortDateTime(user.lastLoginAt) : "--"}</td>
                         <td className="px-3 py-3 text-right text-xs text-terminal-muted">{formatIstShortDateTime(user.createdAt)}</td>
-                        <td className="px-3 py-3 text-right text-xs text-terminal-muted">{updatingAdminUserId === user.id ? "Saving..." : "Role menu"}</td>
+                        <td className="px-3 py-3 text-right">
+                          <button className={`h-9 rounded border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${user.disabled ? "border-terminal-emerald/70 bg-terminal-emerald/10 text-terminal-emerald hover:bg-terminal-emerald hover:text-terminal-bg" : "border-terminal-red/70 bg-terminal-red/10 text-terminal-red hover:bg-terminal-red hover:text-white"}`} disabled={updatingAdminUserId === user.id} type="button" onClick={() => handleUpdateAdminUserDisabled(user.id, !user.disabled)}>
+                            {updatingAdminUserId === user.id ? "Saving..." : user.disabled ? "Enable" : "Disable"}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {adminOverview && !adminOverview.users.length ? (
-                      <tr><td colSpan={6} className="px-3 py-6 text-center text-terminal-muted">No users found.</td></tr>
+                      <tr><td colSpan={8} className="px-3 py-6 text-center text-terminal-muted">No users found.</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -2153,6 +2208,18 @@ async function logoutAuthUser(): Promise<void> {
   }
 }
 
+async function resendVerificationEmail(): Promise<void> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/auth/resend-verification`, {
+    method: "POST",
+    credentials: "include"
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Verification email failed with HTTP ${response.status}`);
+  }
+}
+
 async function fetchAdminOverview(): Promise<AdminOverview> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/admin/overview`, {
@@ -2179,6 +2246,22 @@ async function updateAdminUserRole(userId: string, role: AdminOverview["users"][
   if (!response.ok) {
     const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(errorBody?.message ?? `Role update failed with HTTP ${response.status}`);
+  }
+}
+
+async function updateAdminUserDisabled(userId: string, disabled: boolean) {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/admin/users/${userId}/disabled`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify({ disabled })
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `User status update failed with HTTP ${response.status}`);
   }
 }
 

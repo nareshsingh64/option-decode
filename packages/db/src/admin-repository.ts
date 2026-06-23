@@ -8,6 +8,8 @@ export interface AdminOverviewDto {
     displayName?: string;
     role: UserRole;
     emailVerified: boolean;
+    disabled: boolean;
+    lastLoginAt?: string;
     createdAt: string;
     plan?: {
       code: string;
@@ -97,6 +99,8 @@ export async function getAdminOverview(client: PrismaClient = prisma): Promise<A
         displayName: user.displayName ?? undefined,
         role: user.role,
         emailVerified: user.emailVerified,
+        disabled: user.disabled,
+        lastLoginAt: user.lastLoginAt?.toISOString(),
         createdAt: user.createdAt.toISOString(),
         plan: subscription
           ? {
@@ -139,4 +143,16 @@ export async function updateAdminUserRole(userId: string, role: UserRole, client
   });
 
   return user;
+}
+
+export async function updateAdminUserDisabled(userId: string, disabled: boolean, client: PrismaClient = prisma) {
+  return client.user.update({
+    where: { id: userId },
+    data: { disabled },
+    select: {
+      id: true,
+      email: true,
+      disabled: true
+    }
+  });
 }

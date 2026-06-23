@@ -1,9 +1,11 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
+import net from "node:net";
+import tls from "node:tls";
 import { z } from "zod";
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, placePaperOrder, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
@@ -95,24 +97,47 @@ const authSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional()
 });
 
+const emailSchema = z.object({
+  email: z.string().trim().email()
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().trim().min(20),
+  password: z.string().min(8).max(128)
+});
+
 app.post("/api/auth/register", async (request, reply) => {
   const parsed = authSchema.safeParse(request.body);
   if (!parsed.success) {
     return reply.status(400).send({ message: "Invalid registration details" });
   }
 
+  let user: Awaited<ReturnType<typeof createUser>>;
   try {
-    const user = await createUser({
+    user = await createUser({
       email: parsed.data.email,
       passwordHash: hashPassword(parsed.data.password),
       displayName: parsed.data.displayName
     });
-    reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
-    return { user };
   } catch (error) {
     request.log.warn({ error }, "User registration failed");
     return reply.status(409).send({ message: "An account already exists for this email." });
   }
+
+  try {
+    const verification = await createEmailVerificationToken(user.email);
+    await sendTransactionalEmail({
+      to: verification.email,
+      subject: "Verify your Option Decode account",
+      text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
+    });
+  } catch (error) {
+    request.log.warn({ error, email: user.email }, "Verification email delivery failed");
+    return reply.status(503).send({ message: "Account was created, but verification email could not be sent. Please contact support." });
+  }
+
+  reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
+  return { user };
 });
 
 app.post("/api/auth/login", async (request, reply) => {
@@ -125,12 +150,16 @@ app.post("/api/auth/login", async (request, reply) => {
   if (!credentials || !verifyPassword(parsed.data.password, credentials.passwordHash)) {
     return reply.status(401).send({ message: "Email or password is incorrect." });
   }
+  if (credentials.disabled) {
+    return reply.status(403).send({ message: "This account is disabled. Please contact support." });
+  }
 
   const user = await getAuthUserById(credentials.id);
-  if (!user) {
+  if (!user || user.disabled) {
     return reply.status(401).send({ message: "Account was not found." });
   }
 
+  await markUserLogin(user.id);
   reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
   return { user };
 });
@@ -138,12 +167,76 @@ app.post("/api/auth/login", async (request, reply) => {
 app.get("/api/auth/me", async (request) => {
   const userId = getSessionUserId(request.headers.cookie, config.SESSION_SECRET);
   const user = userId ? await getAuthUserById(userId) : null;
-  return { user };
+  return { user: user?.disabled ? null : user };
 });
 
 app.post("/api/auth/logout", async (_request, reply) => {
   reply.header("set-cookie", createClearedSessionCookie());
   return { ok: true };
+});
+
+app.post("/api/auth/resend-verification", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+  if (user.emailVerified) {
+    return { ok: true, message: "Email is already verified." };
+  }
+
+  const verification = await createEmailVerificationToken(user.email);
+  await sendTransactionalEmail({
+    to: verification.email,
+    subject: "Verify your Option Decode account",
+    text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
+  });
+  return { ok: true };
+});
+
+app.post<{
+  Body: {
+    token?: string;
+  };
+}>("/api/auth/verify-email", async (request, reply) => {
+  const token = String(request.body?.token ?? "");
+  const user = await verifyEmailToken(token);
+  if (!user) {
+    return reply.status(400).send({ message: "Verification link is invalid or expired." });
+  }
+
+  reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
+  return { user };
+});
+
+app.post("/api/auth/forgot-password", async (request) => {
+  const parsed = emailSchema.safeParse(request.body);
+  if (parsed.success) {
+    const reset = await createPasswordResetToken(parsed.data.email);
+    if (reset) {
+      await sendTransactionalEmail({
+        to: reset.email,
+        subject: "Reset your Option Decode password",
+        text: `Reset your password: ${config.APP_PUBLIC_URL}/reset-password?token=${reset.token}`
+      });
+    }
+  }
+
+  return { ok: true };
+});
+
+app.post("/api/auth/reset-password", async (request, reply) => {
+  const parsed = resetPasswordSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ message: "Invalid password reset request." });
+  }
+
+  const user = await resetPasswordWithToken(parsed.data.token, hashPassword(parsed.data.password));
+  if (!user) {
+    return reply.status(400).send({ message: "Reset link is invalid or expired." });
+  }
+
+  reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
+  return { user };
 });
 
 app.get("/api/admin/overview", async (request, reply) => {
@@ -175,6 +268,28 @@ app.patch<{
   }
 
   return updateAdminUserRole(request.params.id, parsed.data.role);
+});
+
+const adminDisabledSchema = z.object({
+  disabled: z.boolean()
+});
+
+app.patch<{
+  Params: {
+    id: string;
+  };
+}>("/api/admin/users/:id/disabled", async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.cookie);
+  if (!admin) {
+    return reply.status(403).send({ message: "Admin access is required." });
+  }
+
+  const parsed = adminDisabledSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ message: "Invalid user status." });
+  }
+
+  return updateAdminUserDisabled(request.params.id, parsed.data.disabled);
 });
 
 app.get<{
@@ -471,15 +586,203 @@ function normalizeUnderlying(value: string | undefined): string {
   return visibleUnderlyings.includes(normalized) ? normalized : String(visibleUnderlyings[0] ?? "NIFTY");
 }
 
+interface TransactionalEmail {
+  to: string;
+  subject: string;
+  text: string;
+}
+
+async function sendTransactionalEmail(message: TransactionalEmail) {
+  if (!config.SMTP_HOST) {
+    throw new Error("SMTP_HOST is not configured");
+  }
+
+  await deliverSmtpEmail(message);
+}
+
 async function requireAdminUser(cookieHeader: string | undefined) {
   const userId = getSessionUserId(cookieHeader, config.SESSION_SECRET);
   const user = userId ? await getAuthUserById(userId) : null;
-  return user?.role === "ADMIN" ? user : null;
+  return user && !user.disabled && user.role === "ADMIN" ? user : null;
 }
 
 async function getRequestUser(cookieHeader: string | undefined) {
   const userId = getSessionUserId(cookieHeader, config.SESSION_SECRET);
-  return userId ? getAuthUserById(userId) : null;
+  const user = userId ? await getAuthUserById(userId) : null;
+  return user?.disabled ? null : user;
+}
+
+async function deliverSmtpEmail(message: TransactionalEmail) {
+  const host = config.SMTP_HOST;
+  if (!host) {
+    throw new Error("SMTP_HOST is not configured");
+  }
+
+  const envelopeFrom = extractEmailAddress(config.EMAIL_FROM);
+  const envelopeTo = extractEmailAddress(message.to);
+  const client = await openSmtpConnection(host, config.SMTP_PORT, config.SMTP_SECURE);
+
+  try {
+    await client.expect(220);
+    await client.command(`EHLO ${getSmtpHeloName()}`, 250);
+
+    if (!config.SMTP_SECURE) {
+      await client.command("STARTTLS", 220);
+      await client.startTls(host);
+      await client.command(`EHLO ${getSmtpHeloName()}`, 250);
+    }
+
+    if (config.SMTP_USER && config.SMTP_PASSWORD) {
+      await client.command("AUTH LOGIN", 334);
+      await client.command(Buffer.from(config.SMTP_USER).toString("base64"), 334);
+      await client.command(Buffer.from(config.SMTP_PASSWORD).toString("base64"), 235);
+    }
+
+    await client.command(`MAIL FROM:<${envelopeFrom}>`, 250);
+    await client.command(`RCPT TO:<${envelopeTo}>`, [250, 251]);
+    await client.command("DATA", 354);
+    await client.command(formatEmailMessage(message), 250);
+  } finally {
+    await client.quit();
+  }
+}
+
+async function openSmtpConnection(host: string, port: number, secure: boolean) {
+  let socket: net.Socket | tls.TLSSocket = secure
+    ? tls.connect({ host, port, servername: host })
+    : net.connect({ host, port });
+  let buffer = "";
+  const pending: Array<(value: string) => void> = [];
+
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => {
+    buffer += chunk;
+    flushSmtpReplies();
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  function flushSmtpReplies() {
+    while (pending.length) {
+      const reply = readCompleteSmtpReply(buffer);
+      if (!reply) {
+        return;
+      }
+      buffer = buffer.slice(reply.length);
+      pending.shift()?.(reply);
+    }
+  }
+
+  function readReply() {
+    return new Promise<string>((resolve, reject) => {
+      const onError = (error: Error) => {
+        socket.off("close", onClose);
+        reject(error);
+      };
+      const onClose = () => {
+        socket.off("error", onError);
+        reject(new Error("SMTP connection closed"));
+      };
+      socket.once("error", onError);
+      socket.once("close", onClose);
+      pending.push((reply) => {
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        resolve(reply);
+      });
+      flushSmtpReplies();
+    });
+  }
+
+  async function expect(expectedCodes: number | number[]) {
+    const reply = await readReply();
+    assertSmtpReply(reply, expectedCodes);
+    return reply;
+  }
+
+  async function command(commandText: string, expectedCodes: number | number[]) {
+    socket.write(`${commandText}\r\n`);
+    return expect(expectedCodes);
+  }
+
+  async function startTls(servername: string) {
+    socket = tls.connect({ socket, servername });
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      flushSmtpReplies();
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("secureConnect", resolve);
+      socket.once("error", reject);
+    });
+  }
+
+  async function quit() {
+    if (socket.destroyed) {
+      return;
+    }
+    try {
+      await command("QUIT", 221);
+    } catch {
+      // Closing quietly is acceptable after a failed SMTP transaction.
+    } finally {
+      socket.end();
+    }
+  }
+
+  return { command, expect, quit, startTls };
+}
+
+function readCompleteSmtpReply(buffer: string) {
+  const lines = buffer.split(/\r?\n/);
+  let consumed = 0;
+  for (const line of lines) {
+    if (!line) {
+      break;
+    }
+    consumed += line.length + (buffer[consumed + line.length] === "\r" ? 2 : 1);
+    if (/^\d{3} /.test(line)) {
+      return buffer.slice(0, consumed);
+    }
+  }
+  return null;
+}
+
+function assertSmtpReply(reply: string, expectedCodes: number | number[]) {
+  const expected = Array.isArray(expectedCodes) ? expectedCodes : [expectedCodes];
+  const code = Number(reply.slice(0, 3));
+  if (!expected.includes(code)) {
+    throw new Error(`SMTP command failed with ${code}`);
+  }
+}
+
+function formatEmailMessage(message: TransactionalEmail) {
+  const headers = [
+    `From: ${config.EMAIL_FROM}`,
+    `To: ${message.to}`,
+    `Subject: ${sanitizeEmailHeader(message.subject)}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit"
+  ];
+  return `${headers.join("\r\n")}\r\n\r\n${message.text.replace(/\r?\n/g, "\r\n")}\r\n.`;
+}
+
+function sanitizeEmailHeader(value: string) {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
+function extractEmailAddress(value: string) {
+  const match = value.match(/<([^>]+)>/);
+  return (match?.[1] ?? value).trim();
+}
+
+function getSmtpHeloName() {
+  return new URL(config.APP_PUBLIC_URL).hostname || "pytrade.co.in";
 }
 
 function validatePaperOrderRisk(action: string, requestedPrice: number, stopLoss: number, targetPrice: number) {

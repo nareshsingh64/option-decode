@@ -11,9 +11,9 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export type { PrismaClient };
-export { getAdminOverview, updateAdminUserRole } from "./admin-repository.js";
+export { getAdminOverview, updateAdminUserDisabled, updateAdminUserRole } from "./admin-repository.js";
 export type { AdminOverviewDto } from "./admin-repository.js";
-export { createUser, getAuthUserById, getUserCredentialsByEmail, seedDefaultPlans } from "./auth-repository.js";
+export { createEmailVerificationToken, createPasswordResetToken, createUser, getAuthUserById, getUserCredentialsByEmail, markUserLogin, resetPasswordWithToken, seedDefaultPlans, verifyEmailToken } from "./auth-repository.js";
 export type { AuthUserDto } from "./auth-repository.js";
 export { buildDemoSnapshot } from "./demo-snapshot.js";
 export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan } from "./lot-size-repository.js";
