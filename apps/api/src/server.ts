@@ -132,7 +132,7 @@ app.post("/api/auth/register", async (request, reply) => {
       text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
     });
   } catch (error) {
-    request.log.warn({ error, email: user.email }, "Verification email delivery failed");
+    request.log.warn({ err: error, email: user.email }, "Verification email delivery failed");
     return reply.status(503).send({ message: "Account was created, but verification email could not be sent. Please contact support." });
   }
 
@@ -756,8 +756,17 @@ function assertSmtpReply(reply: string, expectedCodes: number | number[]) {
   const expected = Array.isArray(expectedCodes) ? expectedCodes : [expectedCodes];
   const code = Number(reply.slice(0, 3));
   if (!expected.includes(code)) {
-    throw new Error(`SMTP command failed with ${code}`);
+    throw new Error(`SMTP command failed with ${code}: ${sanitizeSmtpReply(reply)}`);
   }
+}
+
+function sanitizeSmtpReply(reply: string) {
+  return reply
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" | ")
+    .slice(0, 500);
 }
 
 function formatEmailMessage(message: TransactionalEmail) {
