@@ -5,7 +5,7 @@ services:
     working_dir: /workspace
     command: >
       sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
+      corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
       pnpm --filter @option-decode/web dev"
     environment:
@@ -30,7 +30,7 @@ services:
     working_dir: /workspace
     command: >
       sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
+      corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
       pnpm --filter @option-decode/api dev"
     environment:
@@ -63,7 +63,7 @@ services:
     working_dir: /workspace
     command: >
       sh -lc "corepack enable &&
-      corepack prepare pnpm@9.15.0 --activate &&
+      corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
       pnpm --filter @option-decode/worker dev"
     environment:
