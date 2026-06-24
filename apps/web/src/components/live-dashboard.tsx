@@ -1582,13 +1582,14 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handlePaperOrder}>
                 <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${overview.snapshot.expiry}`} />
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1200px] border-collapse text-sm">
+                  <table className="w-full min-w-[1280px] border-collapse text-sm">
                     <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                       <tr>
                         <th className="px-3 py-3 text-left">Symbol</th>
                         <th className="px-3 py-3 text-left">Order</th>
                         <th className="px-3 py-3 text-left">Type</th>
                         <th className="px-3 py-3 text-left">Strike</th>
+                        <th className="px-3 py-3 text-right">LTP</th>
                         <th className="px-3 py-3 text-right">Entry</th>
                         <th className="px-3 py-3 text-right">SL</th>
                         <th className="px-3 py-3 text-right">Target</th>
@@ -1627,6 +1628,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                               <option key={strike} value={strike}>{formatStrike(strike)}</option>
                             ))}
                           </select>
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <div className="font-semibold text-terminal-text">{orderTick?.lastPrice !== undefined ? formatPrice(orderTick.lastPrice) : "--"}</div>
+                          <div className={`text-xs ${orderTick?.lastPriceChange === undefined ? "text-terminal-muted" : orderTick.lastPriceChange >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatLtpChange(orderTick?.lastPriceChange, orderTick?.lastPriceChangePercent)}</div>
                         </td>
                         <td className="px-3 py-3 text-right">
                           <input value={orderEntry} onBlur={() => setOrderEntry((value) => (value ? formatTradablePrice(Number(value)) : value))} onChange={(event) => setOrderEntry(event.target.value)} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
