@@ -5,6 +5,8 @@ import type { AuthUserDto } from "./auth-repository.js";
 import { prisma } from "./index.js";
 import { getStoredFnoLotSize } from "./lot-size-repository.js";
 
+const DEMO_USER_EMAIL = "paper.demo@optiondecode.local";
+
 export interface PaperOrderInput {
   underlyingSymbol: string;
   expiry: string;
@@ -121,10 +123,11 @@ export interface PaperTradeDto {
 
 export async function getPaperSummary(user: AuthUserDto, client: PrismaClient = prisma): Promise<PaperSummary> {
   const includeAllUsers = user.role === "ADMIN";
-  const paperWhere = includeAllUsers ? {} : { userId: user.id };
-  const tradeWhere = includeAllUsers ? {} : { position: { userId: user.id } };
-  await refreshPendingPaperOrders(includeAllUsers ? undefined : user.id, client);
-  await refreshOpenPositionPrices(includeAllUsers ? undefined : user.id, client);
+  const paperWhere = includeAllUsers ? realUserPaperWhere() : { userId: user.id };
+  const positionWhere = includeAllUsers ? realUserPositionWhere() : { userId: user.id };
+  const tradeWhere = includeAllUsers ? realUserTradeWhere() : { position: { userId: user.id } };
+  await refreshPendingPaperOrders(paperWhere, client);
+  await refreshOpenPositionPrices(positionWhere, client);
 
   const [orders, openPositions, closedTrades] = await Promise.all([
     client.paperOrder.findMany({
@@ -134,7 +137,7 @@ export async function getPaperSummary(user: AuthUserDto, client: PrismaClient = 
       take: 30
     }),
     client.paperPosition.findMany({
-      where: { ...paperWhere, status: "OPEN" },
+      where: { ...positionWhere, status: "OPEN" },
       include: paperUserInclude,
       orderBy: { openedAt: "desc" },
       take: 30
@@ -285,7 +288,7 @@ export async function cancelPendingPaperOrder(orderId: string, user: AuthUserDto
 
 export async function closePaperPosition(positionId: string, user: AuthUserDto, exitReason = "MANUAL", client: PrismaClient = prisma): Promise<PaperSummary> {
   const includeAllUsers = user.role === "ADMIN";
-  await refreshOpenPositionPrices(includeAllUsers ? undefined : user.id, client);
+  await refreshOpenPositionPrices(includeAllUsers ? realUserPositionWhere() : { userId: user.id }, client);
 
   const position = await client.paperPosition.findFirst({
     where: {
@@ -347,10 +350,10 @@ export async function updatePaperPositionRisk(positionId: string, user: AuthUser
   return getPaperSummary(user, client);
 }
 
-async function refreshPendingPaperOrders(userId: string | undefined, client: PrismaClient) {
+async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, client: PrismaClient) {
   const pendingOrders = await client.paperOrder.findMany({
     where: {
-      ...(userId ? { userId } : {}),
+      ...where,
       status: "PENDING"
     },
     orderBy: { createdAt: "asc" }
@@ -428,10 +431,10 @@ async function refreshPendingPaperOrders(userId: string | undefined, client: Pri
   );
 }
 
-async function refreshOpenPositionPrices(userId: string | undefined, client: PrismaClient) {
+async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, client: PrismaClient) {
   const positions = await client.paperPosition.findMany({
     where: {
-      ...(userId ? { userId } : {}),
+      ...where,
       status: "OPEN"
     }
   });
@@ -870,6 +873,38 @@ const paperUserInclude = {
     }
   }
 };
+
+function realUserPaperWhere(): Prisma.PaperOrderWhereInput {
+  return {
+    user: {
+      email: {
+        not: DEMO_USER_EMAIL
+      }
+    }
+  };
+}
+
+function realUserPositionWhere(): Prisma.PaperPositionWhereInput {
+  return {
+    user: {
+      email: {
+        not: DEMO_USER_EMAIL
+      }
+    }
+  };
+}
+
+function realUserTradeWhere(): Prisma.PaperTradeWhereInput {
+  return {
+    position: {
+      user: {
+        email: {
+          not: DEMO_USER_EMAIL
+        }
+      }
+    }
+  };
+}
 
 function shouldFillPaperOrder(action: string, entryPrice: number, latestPrice: number) {
   return action === "BUY" ? latestPrice <= entryPrice : latestPrice >= entryPrice;
