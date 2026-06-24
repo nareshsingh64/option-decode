@@ -26,6 +26,7 @@ const MARKET_AUX_CACHE_MS = 5_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 const MARKET_EXPIRIES_CACHE_MS = 10_000;
 const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
+const LIVE_SNAPSHOT_STALE_MS = 90_000;
 const marketAuxCache = new Map<
   string,
   {
@@ -840,12 +841,23 @@ async function getCachedLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: 
 
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {
   try {
+    const underlying = getUnderlyingDefinition(underlyingSymbol);
     const storedSnapshot = await getLatestOptionChainSnapshot(underlyingSymbol, expiry);
     if (storedSnapshot) {
+      if (!underlying || !isMarketFeedWindowOpen(underlying.segment) || !isSnapshotStale(storedSnapshot.snapshotTime)) {
+        return storedSnapshot;
+      }
+
+      const liveExpiry = expiry ?? storedSnapshot.expiry;
+      try {
+        return await dhan.getOptionChain({ underlying, expiry: liveExpiry, spotPriceOverride });
+      } catch (liveError) {
+        app.log.warn({ error: liveError, underlyingSymbol, expiry: liveExpiry }, "Stored snapshot is stale; live option-chain refresh failed");
+      }
+
       return storedSnapshot;
     }
 
-    const underlying = getUnderlyingDefinition(underlyingSymbol);
     if (underlying) {
       const selectedExpiry = expiry ?? (await dhan.getExpiryList(underlying))[0];
       if (selectedExpiry) {
@@ -858,6 +870,35 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
     app.log.warn({ error, underlyingSymbol, expiry }, "Falling back to demo market snapshot");
     return underlyingSymbol === "NIFTY" ? buildDemoSnapshot() : buildEmptySnapshot(underlyingSymbol, expiry);
   }
+}
+
+function isSnapshotStale(snapshotTime: string) {
+  const parsed = Date.parse(snapshotTime);
+  return Number.isFinite(parsed) && Date.now() - parsed > LIVE_SNAPSHOT_STALE_MS;
+}
+
+function isMarketFeedWindowOpen(segment: string, now = new Date()) {
+  const istParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+  const weekday = istParts.find((part) => part.type === "weekday")?.value;
+  if (weekday === "Sat" || weekday === "Sun") {
+    return false;
+  }
+
+  const hour = Number(istParts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(istParts.find((part) => part.type === "minute")?.value ?? 0);
+  const minutesSinceMidnight = hour * 60 + minute;
+
+  if (segment === "MCX_COMM") {
+    return minutesSinceMidnight >= 9 * 60 && minutesSinceMidnight <= 23 * 60 + 30;
+  }
+
+  return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
 }
 
 async function getTickerSymbols(selectedUnderlying?: string) {
