@@ -15,6 +15,7 @@ const envSchema = z.object({
   MARKET_TIMEZONE: z.string().default("Asia/Kolkata"),
   FEED_UNDERLYINGS: z.string().default("NIFTY,BANKNIFTY"),
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  SNAPSHOT_CRON_PATTERN: z.string().trim().optional(),
   SMTP_HOST: z.string().trim().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z

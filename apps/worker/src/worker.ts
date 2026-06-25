@@ -2,8 +2,19 @@ import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, saveOptionChainSnapshot } from "@option-decode/db";
 import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { UnderlyingDefinition } from "@option-decode/types";
+import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 
 const config = loadConfig();
+const MARKET_SNAPSHOT_QUEUE = "market-snapshot";
+const CAPTURE_JOB_NAME = "capture";
+const SCHEDULER_ID = "market-snapshot:capture";
+const snapshotRepeatOptions = config.SNAPSHOT_CRON_PATTERN
+  ? { pattern: config.SNAPSHOT_CRON_PATTERN }
+  : { every: config.SNAPSHOT_INTERVAL_MS };
+const redisConnection = {
+  url: config.REDIS_URL,
+  maxRetriesPerRequest: null
+};
 
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
@@ -14,9 +25,15 @@ const dhan = new DhanClient({
 console.log("Option Decode worker starting", {
   underlyings: config.feedUnderlyings,
   intervalMs: config.SNAPSHOT_INTERVAL_MS,
+  cronPattern: config.SNAPSHOT_CRON_PATTERN,
   dhanConfigured: Boolean(dhan),
-  mockMarketFeedEnabled: config.MOCK_MARKET_FEED_ENABLED
+  mockMarketFeedEnabled: config.MOCK_MARKET_FEED_ENABLED,
+  queue: MARKET_SNAPSHOT_QUEUE
 });
+
+type MarketSnapshotJobData = {
+  trigger: "startup" | "scheduled";
+};
 
 async function captureOnce() {
   if (config.MOCK_MARKET_FEED_ENABLED) {
@@ -122,12 +139,110 @@ function isSnapshotWindowOpen(segment: string, now = new Date()) {
   return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
 }
 
-captureOnce().catch((error: unknown) => {
-  console.error("Initial market capture failed", error);
-});
-
-setInterval(() => {
-  captureOnce().catch((error: unknown) => {
-    console.error("Market capture failed", error);
+async function startWorker() {
+  const queue = new Queue<MarketSnapshotJobData>(MARKET_SNAPSHOT_QUEUE, {
+    connection: redisConnection,
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: "exponential",
+        delay: 5000
+      },
+      removeOnComplete: {
+        age: 60 * 60 * 24,
+        count: 200
+      },
+      removeOnFail: {
+        age: 60 * 60 * 24 * 7,
+        count: 500
+      }
+    }
   });
-}, config.SNAPSHOT_INTERVAL_MS);
+  const queueEvents = new QueueEvents(MARKET_SNAPSHOT_QUEUE, { connection: redisConnection });
+  const worker = new BullWorker<MarketSnapshotJobData>(
+    MARKET_SNAPSHOT_QUEUE,
+    async (job: Job<MarketSnapshotJobData>) => {
+      console.log("Processing market snapshot job", {
+        jobId: job.id,
+        name: job.name,
+        trigger: job.data.trigger,
+        attempt: job.attemptsMade + 1
+      });
+      await captureOnce();
+    },
+    {
+      connection: redisConnection,
+      concurrency: 1,
+      limiter: {
+        max: 1,
+        duration: Math.max(1000, Math.floor(config.SNAPSHOT_INTERVAL_MS / 2))
+      }
+    }
+  );
+
+  queueEvents.on("completed", ({ jobId }) => {
+    console.log("Market snapshot job completed", { jobId });
+  });
+  queueEvents.on("failed", ({ jobId, failedReason }) => {
+    console.error("Market snapshot job failed", { jobId, failedReason });
+  });
+  worker.on("failed", (job, error) => {
+    console.error("Market snapshot worker failure", {
+      jobId: job?.id,
+      attemptsMade: job?.attemptsMade,
+      error
+    });
+  });
+  worker.on("error", (error) => {
+    console.error("Market snapshot worker error", error);
+  });
+
+  await Promise.all([queue.waitUntilReady(), queueEvents.waitUntilReady(), worker.waitUntilReady()]);
+  await queue.upsertJobScheduler(
+    SCHEDULER_ID,
+    snapshotRepeatOptions,
+    {
+      name: CAPTURE_JOB_NAME,
+      data: { trigger: "scheduled" },
+      opts: {
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 5000
+        }
+      }
+    }
+  );
+  await queue.add(
+    CAPTURE_JOB_NAME,
+    { trigger: "startup" },
+    {
+      attempts: 3,
+      backoff: {
+        type: "exponential",
+        delay: 5000
+      },
+      removeOnComplete: true
+    }
+  );
+
+  console.log("Market snapshot BullMQ scheduler registered", {
+    queue: MARKET_SNAPSHOT_QUEUE,
+    schedulerId: SCHEDULER_ID,
+    repeat: snapshotRepeatOptions
+  });
+
+  async function shutdown(signal: NodeJS.Signals) {
+    console.log("Shutting down market snapshot worker", { signal });
+    await Promise.allSettled([worker.close(), queueEvents.close(), queue.close()]);
+    process.exit(0);
+  }
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+startWorker().catch((error: unknown) => {
+  console.error("Unable to start market snapshot BullMQ worker", error);
+  process.exit(1);
+});
