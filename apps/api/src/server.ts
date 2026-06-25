@@ -8,6 +8,7 @@ import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
+import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 
 const config = loadConfig();
@@ -844,7 +845,7 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
     const underlying = getUnderlyingDefinition(underlyingSymbol);
     const storedSnapshot = await getLatestOptionChainSnapshot(underlyingSymbol, expiry);
     if (storedSnapshot) {
-      if (!underlying || !isMarketFeedWindowOpen(underlying.segment) || !isSnapshotStale(storedSnapshot.snapshotTime)) {
+      if (!underlying || !isSegmentMarketSessionOpen(underlying.segment) || !isSnapshotStale(storedSnapshot.snapshotTime)) {
         return storedSnapshot;
       }
 
@@ -875,30 +876,6 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
 function isSnapshotStale(snapshotTime: string) {
   const parsed = Date.parse(snapshotTime);
   return Number.isFinite(parsed) && Date.now() - parsed > LIVE_SNAPSHOT_STALE_MS;
-}
-
-function isMarketFeedWindowOpen(segment: string, now = new Date()) {
-  const istParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-  const weekday = istParts.find((part) => part.type === "weekday")?.value;
-  if (weekday === "Sat" || weekday === "Sun") {
-    return false;
-  }
-
-  const hour = Number(istParts.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(istParts.find((part) => part.type === "minute")?.value ?? 0);
-  const minutesSinceMidnight = hour * 60 + minute;
-
-  if (segment === "MCX_COMM") {
-    return minutesSinceMidnight >= 9 * 60 && minutesSinceMidnight <= 23 * 60 + 30;
-  }
-
-  return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
 }
 
 async function getTickerSymbols(selectedUnderlying?: string) {

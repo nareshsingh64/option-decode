@@ -14,6 +14,7 @@
     "@option-decode/config": "workspace:*",
     "@option-decode/db": "workspace:*",
     "@option-decode/dhan": "workspace:*",
+    "@option-decode/utils": "workspace:*",
     "bullmq": "^5.34.2",
     "ioredis": "^5.4.2"
   },

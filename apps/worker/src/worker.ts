@@ -2,6 +2,7 @@ import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, saveOptionChainSnapshot } from "@option-decode/db";
 import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { UnderlyingDefinition } from "@option-decode/types";
+import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 
 const config = loadConfig();
@@ -37,7 +38,7 @@ type MarketSnapshotJobData = {
 
 async function captureOnce() {
   if (config.MOCK_MARKET_FEED_ENABLED) {
-    if (!isSnapshotWindowOpen("IDX_I")) {
+    if (!isMarketSessionOpen("IDX_I")) {
       console.log("Skipping mock market snapshot outside 09:15-15:30 IST storage window", {
         checkedAt: new Date().toISOString()
       });
@@ -58,7 +59,7 @@ async function captureOnce() {
   const underlyings = config.feedUnderlyings
     .map((configuredUnderlying) => getUnderlyingDefinition(normalizeUnderlyingKey(configuredUnderlying)))
     .filter((underlying): underlying is UnderlyingDefinition => Boolean(underlying));
-  const quoteOverrides = await getSpotPriceOverrides(underlyings.filter((underlying) => isSnapshotWindowOpen(underlying.segment)));
+  const quoteOverrides = await getSpotPriceOverrides(underlyings.filter((underlying) => isMarketSessionOpen(underlying.segment)));
 
   for (const configuredUnderlying of config.feedUnderlyings) {
     const underlyingKey = normalizeUnderlyingKey(configuredUnderlying);
@@ -68,7 +69,7 @@ async function captureOnce() {
       continue;
     }
 
-    if (!isSnapshotWindowOpen(underlying.segment)) {
+    if (!isMarketSessionOpen(underlying.segment)) {
       console.log("Skipping market snapshot outside segment storage window", {
         underlying: underlyingKey,
         segment: underlying.segment,
@@ -113,30 +114,6 @@ async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
     console.warn("Unable to fetch futures quote overrides; option-chain spot prices may use generic underlyings", error);
     return new Map<string, number>();
   }
-}
-
-function isSnapshotWindowOpen(segment: string, now = new Date()) {
-  const istParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(now);
-  const weekday = istParts.find((part) => part.type === "weekday")?.value;
-  if (weekday === "Sat" || weekday === "Sun") {
-    return false;
-  }
-
-  const hour = Number(istParts.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(istParts.find((part) => part.type === "minute")?.value ?? 0);
-  const minutesSinceMidnight = hour * 60 + minute;
-
-  if (segment === "MCX_COMM") {
-    return minutesSinceMidnight >= 9 * 60 && minutesSinceMidnight <= 23 * 60 + 30;
-  }
-
-  return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
 }
 
 async function startWorker() {

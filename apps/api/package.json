@@ -15,6 +15,7 @@
     "@option-decode/analytics": "workspace:*",
     "@option-decode/config": "workspace:*",
     "@option-decode/db": "workspace:*",
+    "@option-decode/utils": "workspace:*",
     "@option-decode/types": "workspace:*",
     "fastify": "^5.1.0",
     "zod": "^3.24.1"

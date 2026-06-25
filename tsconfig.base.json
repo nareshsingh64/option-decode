@@ -19,7 +19,8 @@
       "@option-decode/db": ["packages/db/src/index.ts"],
       "@option-decode/dhan": ["packages/dhan/src/index.ts"],
       "@option-decode/trading": ["packages/trading/src/index.ts"],
-      "@option-decode/types": ["packages/types/src/index.ts"]
+      "@option-decode/types": ["packages/types/src/index.ts"],
+      "@option-decode/utils": ["packages/utils/src/index.ts"]
     }
   }
 }
