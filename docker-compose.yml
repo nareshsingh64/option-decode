@@ -7,6 +7,7 @@ services:
       sh -lc "corepack enable &&
       corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/db db:generate &&
       pnpm --filter @option-decode/web dev"
     environment:
       NODE_ENV: development
@@ -32,6 +33,7 @@ services:
       sh -lc "corepack enable &&
       corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/db db:generate &&
       pnpm --filter @option-decode/api dev"
     environment:
       NODE_ENV: development
@@ -65,6 +67,7 @@ services:
       sh -lc "corepack enable &&
       corepack prepare pnpm@11.8.0 --activate &&
       if [ ! -d node_modules/.pnpm ]; then pnpm install --store-dir .pnpm-store; fi &&
+      pnpm --filter @option-decode/db db:generate &&
       pnpm --filter @option-decode/worker dev"
     environment:
       NODE_ENV: development
