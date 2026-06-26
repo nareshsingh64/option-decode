@@ -76,6 +76,18 @@ interface MarketTickerItem {
   changePercent?: number;
 }
 
+interface MarketStreamTickerPayload {
+  indiaVix?: number;
+  ticker?: MarketTickerItem[];
+  serverTime?: string;
+}
+
+interface MarketStreamSnapshotPayload {
+  underlying?: string;
+  expiry?: string;
+  serverTime?: string;
+}
+
 interface Watchlist {
   id: string;
   name: string;
@@ -244,6 +256,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [lastRefresh, setLastRefresh] = useState(initialOverview.snapshot.snapshotTime);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [isMarketStreamConnected, setIsMarketStreamConnected] = useState(false);
   const [secondsToRefresh, setSecondsToRefresh] = useState(REFRESH_SECONDS);
   const [paperSummary, setPaperSummary] = useState<PaperSummary | null>(null);
   const [paperError, setPaperError] = useState<string | null>(null);
@@ -298,6 +311,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const isRefreshingRef = useRef(false);
   const isFastRefreshingRef = useRef(false);
   const isPaperRefreshingRef = useRef(false);
+  const isMarketStreamConnectedRef = useRef(false);
   const replaySnapshotsRef = useRef<ReplaySnapshotSummary[]>([]);
   const replayIndexRef = useRef(0);
 
@@ -472,6 +486,50 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   }, []);
 
+  useEffect(() => {
+    const { underlying, expiry } = selectionRef.current;
+    const stream = new EventSource(buildMarketStreamUrl(underlying, expiry, tickerSymbolsRef.current), {
+      withCredentials: true
+    });
+
+    stream.onopen = () => {
+      isMarketStreamConnectedRef.current = true;
+      setIsMarketStreamConnected(true);
+    };
+    stream.onerror = () => {
+      isMarketStreamConnectedRef.current = false;
+      setIsMarketStreamConnected(false);
+    };
+    stream.addEventListener("ticker", (event) => {
+      try {
+        const payload = JSON.parse(event.data) as MarketStreamTickerPayload;
+        setOverview((currentOverview) => ({
+          ...currentOverview,
+          indiaVix: payload.indiaVix ?? currentOverview.indiaVix,
+          ticker: mergeTickerItems(currentOverview.ticker ?? [], payload.ticker ?? [])
+        }));
+      } catch {
+        // Ignore malformed stream events and allow the polling fallback to recover.
+      }
+    });
+    stream.addEventListener("snapshot-ready", (event) => {
+      try {
+        const payload = JSON.parse(event.data) as MarketStreamSnapshotPayload;
+        if (!payload.underlying || payload.underlying === selectionRef.current.underlying) {
+          refreshOverview();
+        }
+      } catch {
+        refreshOverview();
+      }
+    });
+
+    return () => {
+      isMarketStreamConnectedRef.current = false;
+      setIsMarketStreamConnected(false);
+      stream.close();
+    };
+  }, [overview.selectedExpiry, overview.selectedUnderlying, refreshOverview]);
+
   const refreshWatchlist = useCallback(async () => {
     try {
       setWatchlistError(null);
@@ -526,7 +584,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      refreshOverview();
+      if (!isMarketStreamConnectedRef.current) {
+        refreshOverview();
+      }
     }, REFRESH_SECONDS * 1000);
 
     return () => window.clearInterval(interval);
@@ -534,7 +594,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      refreshFastMarketData();
+      if (!isMarketStreamConnectedRef.current) {
+        refreshFastMarketData();
+      }
     }, FAST_REFRESH_SECONDS * 1000);
 
     return () => window.clearInterval(interval);
@@ -1106,7 +1168,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-terminal-muted">Last local update</span>
-              <span className="font-semibold">{formatIstTime(lastRefresh)}</span>
+              <span className="text-right">
+                <span className="block font-semibold">{formatIstTime(lastRefresh)}</span>
+                <span className={`text-xs font-semibold ${isMarketStreamConnected ? "text-terminal-emerald" : "text-terminal-amber"}`}>{isMarketStreamConnected ? "Live stream" : "Polling fallback"}</span>
+              </span>
             </div>
             <SummaryLine label="Data coverage" value={`${overview.snapshot.ticks.length} contracts`} />
             <SummaryLine label="Strongest level" value={pressureSummary.strongestLevelText} />
@@ -1471,7 +1536,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                 <span>ATM +/-</span>
               </label>
               <Clock3 size={15} />
-              <span>Auto-refresh 30s</span>
+              <span>{isMarketStreamConnected ? "SSE live" : "Auto-refresh 30s"}</span>
             </div>
           </div>
           <div className="grid gap-3 border-b border-terminal-line p-3 md:grid-cols-4">
@@ -2118,6 +2183,21 @@ async function fetchMarketTicker(symbols?: string[]): Promise<Pick<MarketOvervie
     throw new Error(`Ticker refresh failed with HTTP ${response.status}`);
   }
   return response.json() as Promise<Pick<MarketOverview, "indiaVix" | "ticker">>;
+}
+
+function buildMarketStreamUrl(underlying: string, expiry: string, symbols?: string[]) {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ underlying });
+  if (expiry) {
+    search.set("expiry", expiry);
+  }
+
+  const normalizedSymbols = [...new Set((symbols ?? []).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+  if (normalizedSymbols.length) {
+    search.set("symbols", normalizedSymbols.join(","));
+  }
+
+  return `${apiUrl}/api/market/stream?${search.toString()}`;
 }
 
 function buildClientViewHref(view: DashboardView, underlying: string, expiry: string) {

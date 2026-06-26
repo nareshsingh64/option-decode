@@ -28,6 +28,9 @@ const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 const MARKET_EXPIRIES_CACHE_MS = 10_000;
 const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
 const LIVE_SNAPSHOT_STALE_MS = 90_000;
+const MARKET_STREAM_TICKER_MS = 5_000;
+const MARKET_STREAM_SNAPSHOT_MS = 30_000;
+const MARKET_STREAM_HEARTBEAT_MS = 15_000;
 const marketAuxCache = new Map<
   string,
   {
@@ -334,6 +337,90 @@ app.get<{
     indiaVix: marketAux.indiaVix,
     ticker: marketAux.ticker
   };
+});
+
+app.get<{
+  Querystring: {
+    symbols?: string;
+    underlying?: string;
+    expiry?: string;
+  };
+}>("/api/market/stream", async (request, reply) => {
+  const tickerSymbols = parseTickerSymbols(request.query.symbols);
+  const requestedUnderlying = normalizeUnderlying(request.query.underlying);
+  const requestedExpiry = request.query.expiry?.trim() || undefined;
+  const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+  const corsHeaders = origin && allowedOrigins.has(origin)
+    ? {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        Vary: "Origin"
+      }
+    : {};
+
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    ...corsHeaders,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  reply.raw.write("retry: 5000\n\n");
+
+  let closed = false;
+  const writeEvent = (event: string, data: unknown) => {
+    if (closed || reply.raw.destroyed) {
+      return;
+    }
+
+    reply.raw.write(`event: ${event}\n`);
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  const sendTicker = async () => {
+    try {
+      const marketAux = await getMarketAuxData(tickerSymbols);
+      writeEvent("ticker", {
+        indiaVix: marketAux.indiaVix,
+        ticker: marketAux.ticker,
+        serverTime: new Date().toISOString()
+      });
+    } catch (error) {
+      app.log.warn({ error }, "Unable to emit market ticker stream event");
+      writeEvent("error", {
+        message: "Unable to refresh ticker stream",
+        serverTime: new Date().toISOString()
+      });
+    }
+  };
+  const sendSnapshotReady = () => {
+    writeEvent("snapshot-ready", {
+      underlying: requestedUnderlying,
+      expiry: requestedExpiry,
+      serverTime: new Date().toISOString()
+    });
+  };
+  const heartbeat = () => {
+    writeEvent("heartbeat", {
+      serverTime: new Date().toISOString()
+    });
+  };
+
+  const tickerTimer = setInterval(() => {
+    void sendTicker();
+  }, MARKET_STREAM_TICKER_MS);
+  const snapshotTimer = setInterval(sendSnapshotReady, MARKET_STREAM_SNAPSHOT_MS);
+  const heartbeatTimer = setInterval(heartbeat, MARKET_STREAM_HEARTBEAT_MS);
+
+  request.raw.on("close", () => {
+    closed = true;
+    clearInterval(tickerTimer);
+    clearInterval(snapshotTimer);
+    clearInterval(heartbeatTimer);
+  });
+
+  await sendTicker();
+  sendSnapshotReady();
 });
 
 app.get<{
