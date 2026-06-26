@@ -1,5 +1,6 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
+import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
@@ -31,6 +32,7 @@ const LIVE_SNAPSHOT_STALE_MS = 90_000;
 const MARKET_STREAM_TICKER_MS = 5_000;
 const MARKET_STREAM_SNAPSHOT_MS = 30_000;
 const MARKET_STREAM_HEARTBEAT_MS = 15_000;
+const MARKET_SNAPSHOT_SAVED_CHANNEL = "market:snapshot:saved";
 const marketAuxCache = new Map<
   string,
   {
@@ -44,6 +46,8 @@ const marketAuxCache = new Map<
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tickerSymbolsCache = new Map<string, HotCacheEntry<string[] | undefined>>();
+const marketStreamClients = new Map<number, MarketStreamClient>();
+let nextMarketStreamClientId = 1;
 
 interface MarketTickerItem {
   symbol: string;
@@ -61,6 +65,21 @@ interface HotCacheEntry<T> {
   promise?: Promise<T>;
 }
 
+interface MarketSnapshotSavedMessage {
+  snapshotId: string;
+  underlying: string;
+  expiry: string;
+  snapshotTime: string;
+  serverTime: string;
+}
+
+interface MarketStreamClient {
+  id: number;
+  underlying: string;
+  expiry?: string;
+  writeEvent: (event: string, data: unknown) => void;
+}
+
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
   clientId: config.DHAN_CLIENT_ID,
@@ -70,6 +89,10 @@ const app = Fastify({
   logger: {
     level: config.NODE_ENV === "production" ? "info" : "debug"
   }
+});
+const redisSubscriber = new Redis(config.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  lazyConnect: true
 });
 
 const allowedOrigins = new Set([
@@ -411,12 +434,20 @@ app.get<{
   }, MARKET_STREAM_TICKER_MS);
   const snapshotTimer = setInterval(sendSnapshotReady, MARKET_STREAM_SNAPSHOT_MS);
   const heartbeatTimer = setInterval(heartbeat, MARKET_STREAM_HEARTBEAT_MS);
+  const clientId = nextMarketStreamClientId++;
+  marketStreamClients.set(clientId, {
+    id: clientId,
+    underlying: requestedUnderlying,
+    expiry: requestedExpiry,
+    writeEvent
+  });
 
   request.raw.on("close", () => {
     closed = true;
     clearInterval(tickerTimer);
     clearInterval(snapshotTimer);
     clearInterval(heartbeatTimer);
+    marketStreamClients.delete(clientId);
   });
 
   await sendTicker();
@@ -1136,6 +1167,67 @@ function isMarketSessionOpen(startHour: number, startMinute: number, endHour: nu
   const minutes = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
   return minutes >= startHour * 60 + startMinute && minutes <= endHour * 60 + endMinute;
 }
+
+function handleSnapshotSavedMessage(message: string) {
+  let payload: MarketSnapshotSavedMessage;
+  try {
+    payload = JSON.parse(message) as MarketSnapshotSavedMessage;
+  } catch (error) {
+    app.log.warn({ error, message }, "Ignoring malformed market snapshot pub/sub message");
+    return;
+  }
+
+  if (!payload.underlying || !payload.expiry || !payload.snapshotId) {
+    app.log.warn({ payload }, "Ignoring incomplete market snapshot pub/sub message");
+    return;
+  }
+
+  clearMarketSnapshotCache(payload.underlying, payload.expiry);
+  for (const client of marketStreamClients.values()) {
+    if (client.underlying !== payload.underlying) {
+      continue;
+    }
+
+    if (client.expiry && client.expiry !== payload.expiry) {
+      continue;
+    }
+
+    client.writeEvent("snapshot-ready", payload);
+  }
+}
+
+function clearMarketSnapshotCache(underlying: string, expiry?: string) {
+  for (const cacheKey of marketSnapshotCache.keys()) {
+    if (cacheKey === `${underlying}:` || cacheKey.startsWith(`${underlying}:`)) {
+      if (!expiry || cacheKey === `${underlying}:${expiry}` || cacheKey === `${underlying}:`) {
+        marketSnapshotCache.delete(cacheKey);
+      }
+    }
+  }
+}
+
+async function startMarketSnapshotSubscriber() {
+  redisSubscriber.on("error", (error) => {
+    app.log.warn({ error }, "Market snapshot Redis subscriber error");
+  });
+  redisSubscriber.on("message", (channel, message) => {
+    if (channel === MARKET_SNAPSHOT_SAVED_CHANNEL) {
+      handleSnapshotSavedMessage(message);
+    }
+  });
+
+  await redisSubscriber.connect();
+  await redisSubscriber.subscribe(MARKET_SNAPSHOT_SAVED_CHANNEL);
+  app.log.info({ channel: MARKET_SNAPSHOT_SAVED_CHANNEL }, "Subscribed to market snapshot notifications");
+}
+
+app.addHook("onClose", async () => {
+  await redisSubscriber.quit().catch((error: unknown) => {
+    app.log.warn({ error }, "Unable to close market snapshot Redis subscriber cleanly");
+  });
+});
+
+await startMarketSnapshotSubscriber();
 
 const address = await app.listen({
   port: config.API_PORT,

@@ -4,11 +4,13 @@ import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@op
 import type { UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
+import Redis from "ioredis";
 
 const config = loadConfig();
 const MARKET_SNAPSHOT_QUEUE = "market-snapshot";
 const CAPTURE_JOB_NAME = "capture";
 const SCHEDULER_ID = "market-snapshot:capture";
+const MARKET_SNAPSHOT_SAVED_CHANNEL = "market:snapshot:saved";
 const snapshotRepeatOptions = config.SNAPSHOT_CRON_PATTERN
   ? { pattern: config.SNAPSHOT_CRON_PATTERN }
   : { every: config.SNAPSHOT_INTERVAL_MS };
@@ -16,6 +18,10 @@ const redisConnection = {
   url: config.REDIS_URL,
   maxRetriesPerRequest: null
 };
+const redisPublisher = new Redis(config.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  lazyConnect: true
+});
 
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
@@ -47,6 +53,7 @@ async function captureOnce() {
 
     const snapshot = buildDemoSnapshot();
     const snapshotId = await saveOptionChainSnapshot(snapshot);
+    await publishSnapshotSaved(snapshotId, snapshot);
     console.log("Saved mock market snapshot", {
       snapshotId,
       underlying: snapshot.underlyingSymbol,
@@ -87,11 +94,35 @@ async function captureOnce() {
 
     const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
     const snapshotId = await saveOptionChainSnapshot(snapshot);
+    await publishSnapshotSaved(snapshotId, snapshot);
     console.log("Saved Dhan market snapshot", {
       snapshotId,
       underlying: snapshot.underlyingSymbol,
       expiry: snapshot.expiry,
       ticks: snapshot.ticks.length
+    });
+  }
+}
+
+async function publishSnapshotSaved(snapshotId: string, snapshot: { underlyingSymbol: string; expiry: string; snapshotTime: string }) {
+  try {
+    if (redisPublisher.status === "wait") {
+      await redisPublisher.connect();
+    }
+
+    await redisPublisher.publish(MARKET_SNAPSHOT_SAVED_CHANNEL, JSON.stringify({
+      snapshotId,
+      underlying: snapshot.underlyingSymbol,
+      expiry: snapshot.expiry,
+      snapshotTime: snapshot.snapshotTime,
+      serverTime: new Date().toISOString()
+    }));
+  } catch (error) {
+    console.warn("Unable to publish market snapshot notification", {
+      snapshotId,
+      underlying: snapshot.underlyingSymbol,
+      expiry: snapshot.expiry,
+      error
     });
   }
 }
@@ -211,7 +242,7 @@ async function startWorker() {
 
   async function shutdown(signal: NodeJS.Signals) {
     console.log("Shutting down market snapshot worker", { signal });
-    await Promise.allSettled([worker.close(), queueEvents.close(), queue.close()]);
+    await Promise.allSettled([worker.close(), queueEvents.close(), queue.close(), redisPublisher.quit()]);
     process.exit(0);
   }
 
