@@ -40,6 +40,7 @@ export interface MarketOverview {
     bullishPressure: number;
     bearishPressure: number;
     pcr?: number;
+    maxPain?: number;
     supportZones: Array<{ strikePrice: number; score: number; reason: string }>;
     resistanceZones: Array<{ strikePrice: number; score: number; reason: string }>;
   };
@@ -3113,7 +3114,7 @@ function buildPressureSummary(overview: MarketOverview) {
   const pcr = overview.pressure.pcr;
   const pcrTone = pcr === undefined ? "blue" : pcr >= 1.05 ? "green" : pcr <= 0.95 ? "red" : "blue";
   const pcrAligned = (bias === "Bullish" && pcr !== undefined && pcr >= 1.05) || (bias === "Bearish" && pcr !== undefined && pcr <= 0.95);
-  const maxPainStrike = calculateMaxPainStrike(overview);
+  const maxPainStrike = overview.pressure.maxPain ?? calculateMaxPainStrike(overview);
   const maxPainDistance = maxPainStrike === undefined ? undefined : maxPainStrike - overview.snapshot.spotPrice;
   const currentActivityScore = calculateCurrentActivityScore(overview);
   const convictionScore = Math.min(100, Math.round(pressureGapAbs * 3 + currentActivityScore));

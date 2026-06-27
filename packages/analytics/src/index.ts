@@ -52,8 +52,32 @@ export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureS
     bearishPressure: Math.round((displayCePressure / total) * 100),
     supportZones: topZones(peTicks, snapshot.spotPrice, "support"),
     resistanceZones: topZones(ceTicks, snapshot.spotPrice, "resistance"),
-    pcr: totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : undefined
+    pcr: totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : undefined,
+    maxPain: calculateMaxPain(snapshot.ticks)
   };
+}
+
+function calculateMaxPain(ticks: OptionContractTick[]): number | undefined {
+  const strikes = [...new Set(ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
+  if (!strikes.length) {
+    return undefined;
+  }
+
+  let bestStrike = strikes[0];
+  let lowestPain = Number.POSITIVE_INFINITY;
+  for (const candidate of strikes) {
+    const pain = ticks.reduce((sum, tick) => {
+      const openInterestLots = toLots(tick.openInterest, tick);
+      const intrinsic = tick.optionType === "CE" ? Math.max(0, candidate - tick.strikePrice) : Math.max(0, tick.strikePrice - candidate);
+      return sum + openInterestLots * intrinsic;
+    }, 0);
+    if (pain < lowestPain) {
+      lowestPain = pain;
+      bestStrike = candidate;
+    }
+  }
+
+  return bestStrike;
 }
 
 function toLots(value: number | undefined, tick: OptionContractTick): number {
