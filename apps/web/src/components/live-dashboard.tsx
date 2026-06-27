@@ -17,6 +17,9 @@ interface OverviewTick {
   changeInOpenInterest?: number;
   impliedVolatility?: number;
   delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
 }
 
 type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
@@ -248,6 +251,7 @@ export type DashboardView = "dashboard" | "option-chain" | "pressure" | "replay"
 type NumberFormatMode = "indian" | "metric";
 type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
+type ChainTableMode = "standard" | "greeks";
 
 const REFRESH_SECONDS = 30;
 const FAST_REFRESH_SECONDS = 5;
@@ -304,6 +308,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [numberFormatMode, setNumberFormatMode] = useState<NumberFormatMode>("indian");
   const [quantityDisplayMode, setQuantityDisplayMode] = useState<QuantityDisplayMode>("lots");
   const [visibleStrikeMode, setVisibleStrikeMode] = useState<VisibleStrikeMode>("vix");
+  const [chainTableMode, setChainTableMode] = useState<ChainTableMode>("standard");
   const selectionRef = useRef({
     underlying: initialOverview.selectedUnderlying,
     expiry: initialOverview.selectedExpiry
@@ -682,6 +687,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const replayChainRange = useMemo(() => (visibleStrikeMode === "vix" ? buildVixStrikeRange(replayOverview ?? overview) : buildAtmStrikeRange(replayOverview ?? overview)), [overview, replayOverview, visibleStrikeMode]);
   const displayPreferences = useMemo(() => ({ numberFormatMode, quantityDisplayMode }), [numberFormatMode, quantityDisplayMode]);
   const chainRows = useMemo(() => buildChainRows(overview, chainRange, displayPreferences), [chainRange, displayPreferences, overview]);
+  const oiBuildupRows = useMemo(() => buildOiBuildupRows(chainRows, overview.snapshot.atmStrike, numberFormatMode), [chainRows, numberFormatMode, overview.snapshot.atmStrike]);
+  const ivSkewRows = useMemo(() => buildIvSkewRows(chainRows), [chainRows]);
   const replayChainRows = useMemo(() => buildChainRows(replayOverview ?? overview, replayChainRange, displayPreferences), [displayPreferences, overview, replayChainRange, replayOverview]);
   const activeAlerts = useMemo(() => overview.alerts.filter((alert) => !dismissedAlertIds.includes(alert.id)), [dismissedAlertIds, overview.alerts]);
   const visibleAlerts = useMemo(() => {
@@ -1543,6 +1550,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                 <input className="accent-terminal-blue" checked={visibleStrikeMode === "atm"} onChange={(event) => setVisibleStrikeMode(event.target.checked ? "atm" : "vix")} type="checkbox" />
                 <span>ATM +/-</span>
               </label>
+              <div className="flex h-9 overflow-hidden rounded border border-terminal-line bg-terminal-input">
+                <button className={`px-3 text-xs font-semibold transition ${chainTableMode === "standard" ? "bg-terminal-blue text-white" : "text-terminal-muted hover:text-terminal-text"}`} type="button" onClick={() => setChainTableMode("standard")}>OI</button>
+                <button className={`px-3 text-xs font-semibold transition ${chainTableMode === "greeks" ? "bg-terminal-blue text-white" : "text-terminal-muted hover:text-terminal-text"}`} type="button" onClick={() => setChainTableMode("greeks")}>Greeks</button>
+              </div>
               <Clock3 size={15} />
               <span>{isMarketStreamConnected ? "SSE live" : "Auto-refresh 30s"}</span>
             </div>
@@ -1553,42 +1564,84 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             <SignalCell label="OI Breadth" value={chainStats.breadth} detail={`PCR ${overview.pressure.pcr?.toFixed(2) ?? "--"}`} tone="blue" />
             <SignalCell label="Max OI Strike" value={chainStats.maxOiStrikeText} detail={chainStats.maxOiSide} tone="blue" />
           </div>
+          <div className="grid gap-3 border-b border-terminal-line p-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+            <OiBuildupChart rows={oiBuildupRows} />
+            <IvSkewChart rows={ivSkewRows} atmStrike={overview.snapshot.atmStrike} />
+          </div>
           <div className="max-w-full overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-xs xl:text-sm">
+            <table className={`w-full border-collapse text-xs xl:text-sm ${chainTableMode === "greeks" ? "min-w-[1160px]" : "min-w-[980px]"}`}>
               <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
-                <tr>
-                  <th className="px-2 py-3 text-left">CE IV/Δ</th>
-                  <th className="px-2 py-3 text-left">CE OI</th>
-                  <th className="px-2 py-3 text-left">CE Chg</th>
-                  <th className="px-2 py-3 text-left">CE Vol</th>
-                  <th className="px-2 py-3 text-left">CE LTP</th>
-                  <th className="px-2 py-3 text-center">Strike</th>
-                  <th className="px-2 py-3 text-right">PE LTP</th>
-                  <th className="px-2 py-3 text-right">PE Vol</th>
-                  <th className="px-2 py-3 text-right">PE Chg</th>
-                  <th className="px-2 py-3 text-right">PE OI</th>
-                  <th className="px-2 py-3 text-right">PE IV/Δ</th>
-                </tr>
+                {chainTableMode === "standard" ? (
+                  <tr>
+                    <th className="px-2 py-3 text-left">CE IV/Δ</th>
+                    <th className="px-2 py-3 text-left">CE OI</th>
+                    <th className="px-2 py-3 text-left">CE Chg</th>
+                    <th className="px-2 py-3 text-left">CE Vol</th>
+                    <th className="px-2 py-3 text-left">CE LTP</th>
+                    <th className="px-2 py-3 text-center">Strike</th>
+                    <th className="px-2 py-3 text-right">PE LTP</th>
+                    <th className="px-2 py-3 text-right">PE Vol</th>
+                    <th className="px-2 py-3 text-right">PE Chg</th>
+                    <th className="px-2 py-3 text-right">PE OI</th>
+                    <th className="px-2 py-3 text-right">PE IV/Δ</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th className="px-2 py-3 text-left">CE IV</th>
+                    <th className="px-2 py-3 text-left">CE Δ</th>
+                    <th className="px-2 py-3 text-left">CE Γ</th>
+                    <th className="px-2 py-3 text-left">CE Θ</th>
+                    <th className="px-2 py-3 text-left">CE Vega</th>
+                    <th className="px-2 py-3 text-left">CE LTP</th>
+                    <th className="px-2 py-3 text-center">Strike</th>
+                    <th className="px-2 py-3 text-right">PE LTP</th>
+                    <th className="px-2 py-3 text-right">PE Vega</th>
+                    <th className="px-2 py-3 text-right">PE Θ</th>
+                    <th className="px-2 py-3 text-right">PE Γ</th>
+                    <th className="px-2 py-3 text-right">PE Δ</th>
+                    <th className="px-2 py-3 text-right">PE IV</th>
+                  </tr>
+                )}
               </thead>
               <tbody>
                 {chainRows.map((row) => (
                   <tr key={row.strike} className={row.strike === overview.snapshot.atmStrike ? "border-y border-terminal-blue/70 bg-terminal-blue/10" : "border-t border-terminal-line/80"}>
-                    <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                    <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
-                    <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                    <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
-                    <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
-                    <td className="px-2 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
+                    {chainTableMode === "standard" ? (
+                      <>
+                        <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
+                        <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
+                        <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
+                        <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
+                        <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
+                        <td className="px-2 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-2 py-3 text-left font-semibold text-terminal-text">{formatOptionalNumber(row.ceIv, 1)}</td>
+                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceDelta, 2)}</td>
+                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceGamma, 4)}</td>
+                        <td className="px-2 py-3 text-left text-terminal-red">{formatOptionalNumber(row.ceTheta, 2)}</td>
+                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceVega, 2)}</td>
+                        <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
+                        <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
+                        <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
+                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peVega, 2)}</td>
+                        <td className="px-2 py-3 text-right text-terminal-red">{formatOptionalNumber(row.peTheta, 2)}</td>
+                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peGamma, 4)}</td>
+                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peDelta, 2)}</td>
+                        <td className="px-2 py-3 text-right font-semibold text-terminal-text">{formatOptionalNumber(row.peIv, 1)}</td>
+                      </>
+                    )}
                   </tr>
                 ))}
                 {!chainRows.length ? (
                   <tr>
-                    <td colSpan={11} className="px-2 py-8 text-center text-terminal-muted">
+                    <td colSpan={chainTableMode === "standard" ? 11 : 13} className="px-2 py-8 text-center text-terminal-muted">
                       No strikes available inside the current VIX range.
                     </td>
                   </tr>
@@ -2572,6 +2625,7 @@ function buildChainRows(overview: MarketOverview, range: VixStrikeRange, prefere
       ceOiLots: toLots(pair.CE?.openInterest, pair.CE),
       ceOiRaw: pair.CE?.openInterest ?? 0,
       ceChg: formatQuantityValue(pair.CE?.changeInOpenInterest, pair.CE, preferences, true),
+      ceChgSignedLots: toLots(pair.CE?.changeInOpenInterest, pair.CE),
       ceChgLots: Math.abs(toLots(pair.CE?.changeInOpenInterest, pair.CE)),
       ceChgRaw: Math.abs(pair.CE?.changeInOpenInterest ?? 0),
       ceVol: formatQuantityValue(pair.CE?.volume, pair.CE, preferences),
@@ -2583,16 +2637,23 @@ function buildChainRows(overview: MarketOverview, range: VixStrikeRange, prefere
       ceActivity: classifyOptionActivity(pair.CE),
       ceIv: pair.CE?.impliedVolatility,
       ceDelta: pair.CE?.delta,
+      ceGamma: pair.CE?.gamma,
+      ceTheta: pair.CE?.theta,
+      ceVega: pair.CE?.vega,
       peLtp: pair.PE?.lastPrice,
       peLtpChange: pair.PE?.lastPriceChange,
       peLtpChangePercent: pair.PE?.lastPriceChangePercent,
       peActivity: classifyOptionActivity(pair.PE),
       peIv: pair.PE?.impliedVolatility,
       peDelta: pair.PE?.delta,
+      peGamma: pair.PE?.gamma,
+      peTheta: pair.PE?.theta,
+      peVega: pair.PE?.vega,
       peVol: formatQuantityValue(pair.PE?.volume, pair.PE, preferences),
       peVolLots: toLots(pair.PE?.volume, pair.PE),
       peVolRaw: pair.PE?.volume ?? 0,
       peChg: formatQuantityValue(pair.PE?.changeInOpenInterest, pair.PE, preferences, true),
+      peChgSignedLots: toLots(pair.PE?.changeInOpenInterest, pair.PE),
       peChgLots: Math.abs(toLots(pair.PE?.changeInOpenInterest, pair.PE)),
       peChgRaw: Math.abs(pair.PE?.changeInOpenInterest ?? 0),
       peOi: formatQuantityValue(pair.PE?.openInterest, pair.PE, preferences),
@@ -2654,6 +2715,46 @@ function buildChainRows(overview: MarketOverview, range: VixStrikeRange, prefere
   });
 
   return visibleRows;
+}
+
+function buildOiBuildupRows(chainRows: ReturnType<typeof buildChainRows>, atmStrike: number, numberFormatMode: NumberFormatMode) {
+  const maxOi = Math.max(0, ...chainRows.flatMap((row) => [row.ceOiLots, row.peOiLots]));
+  const oiPercent = (value: number) => (maxOi > 0 && value > 0 ? Math.max(3, Math.round((value / maxOi) * 100)) : 0);
+  return chainRows.map((row) => ({
+    strike: row.strike,
+    isAtm: row.strike === atmStrike,
+    cePercent: oiPercent(row.ceOiLots),
+    pePercent: oiPercent(row.peOiLots),
+    ceBuilding: row.ceChgSignedLots >= 0,
+    peBuilding: row.peChgSignedLots >= 0,
+    ceLabel: formatLarge(row.ceOiLots, numberFormatMode),
+    peLabel: formatLarge(row.peOiLots, numberFormatMode)
+  }));
+}
+
+function buildIvSkewRows(chainRows: ReturnType<typeof buildChainRows>) {
+  const rows = [...chainRows].sort((left, right) => left.strike - right.strike);
+  const ivValues = rows.flatMap((row) => [row.ceIv, row.peIv]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const minIv = ivValues.length ? Math.min(...ivValues) : 0;
+  const maxIv = ivValues.length ? Math.max(...ivValues) : 1;
+  const ivRange = Math.max(1, maxIv - minIv);
+  const width = 520;
+  const height = 180;
+  const padding = 22;
+  const xRange = Math.max(1, rows.length - 1);
+  const yForIv = (iv?: number) => {
+    if (iv === undefined || !Number.isFinite(iv)) {
+      return undefined;
+    }
+    return height - padding - ((iv - minIv) / ivRange) * (height - padding * 2);
+  };
+
+  return rows.map((row, index) => ({
+    strike: row.strike,
+    x: padding + (index / xRange) * (width - padding * 2),
+    ceY: yForIv(row.ceIv),
+    peY: yForIv(row.peIv)
+  }));
 }
 
 function displayRankValue(lotsValue: number, rawValue: number, preferences: DisplayPreferences) {
@@ -2795,6 +2896,94 @@ function mergeTickerItem(currentItem: MarketTickerItem, nextItem: MarketTickerIt
 
 function isValidTickerNumber(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function OiBuildupChart({ rows }: { rows: ReturnType<typeof buildOiBuildupRows> }) {
+  return (
+    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase text-terminal-muted">OI Buildup</p>
+          <p className="mt-1 text-sm font-semibold text-terminal-text">CE resistance vs PE support</p>
+        </div>
+        <div className="flex items-center gap-3 text-[0.65rem] uppercase text-terminal-muted">
+          <span className="text-terminal-red">CE</span>
+          <span className="text-terminal-emerald">PE</span>
+        </div>
+      </div>
+      <div className="grid gap-1">
+        {rows.map((row) => (
+          <div key={row.strike} className={`grid grid-cols-[minmax(0,1fr)_4.75rem_minmax(0,1fr)] items-center gap-2 rounded px-2 py-1.5 ${row.isAtm ? "bg-terminal-blue/15 ring-1 ring-terminal-blue/50" : ""}`}>
+            <div className="flex items-center justify-end gap-2">
+              <span className="w-12 text-right text-[0.65rem] text-terminal-muted">{row.ceLabel}</span>
+              <div className="h-3 flex-1 rounded bg-white/5">
+                <div className={`ml-auto h-3 rounded ${row.ceBuilding ? "bg-terminal-red" : "bg-terminal-red/35"}`} style={{ width: `${row.cePercent}%` }} />
+              </div>
+            </div>
+            <div className={`text-center text-xs font-semibold ${row.isAtm ? "text-terminal-blue" : "text-terminal-text"}`}>{formatStrike(row.strike)}</div>
+            <div className="flex items-center gap-2">
+              <div className="h-3 flex-1 rounded bg-white/5">
+                <div className={`h-3 rounded ${row.peBuilding ? "bg-terminal-emerald" : "bg-terminal-emerald/35"}`} style={{ width: `${row.pePercent}%` }} />
+              </div>
+              <span className="w-12 text-[0.65rem] text-terminal-muted">{row.peLabel}</span>
+            </div>
+          </div>
+        ))}
+        {!rows.length ? <p className="px-2 py-6 text-center text-sm text-terminal-muted">No OI buildup data in visible range.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function IvSkewChart({ rows, atmStrike }: { rows: ReturnType<typeof buildIvSkewRows>; atmStrike: number }) {
+  const width = 520;
+  const height = 180;
+  const padding = 22;
+  const cePath = buildLinePath(rows, "ceY");
+  const pePath = buildLinePath(rows, "peY");
+  const atmRow = rows.find((row) => row.strike === atmStrike);
+
+  return (
+    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase text-terminal-muted">IV Skew</p>
+          <p className="mt-1 text-sm font-semibold text-terminal-text">Volatility by strike</p>
+        </div>
+        <div className="flex items-center gap-3 text-[0.65rem] uppercase text-terminal-muted">
+          <span className="text-terminal-red">CE IV</span>
+          <span className="text-terminal-emerald">PE IV</span>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded bg-black/10">
+        <svg className="h-48 w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="IV skew chart">
+          <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} stroke="rgba(148,163,184,0.25)" />
+          <line x1={padding} x2={padding} y1={padding} y2={height - padding} stroke="rgba(148,163,184,0.25)" />
+          {atmRow ? <line x1={atmRow.x} x2={atmRow.x} y1={padding} y2={height - padding} stroke="rgba(59,130,246,0.65)" strokeDasharray="4 4" /> : null}
+          {cePath ? <path d={cePath} fill="none" stroke="rgb(239,68,68)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
+          {pePath ? <path d={pePath} fill="none" stroke="rgb(34,197,94)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
+          {rows.map((row) => (
+            <g key={row.strike}>
+              {row.ceY !== undefined ? <circle cx={row.x} cy={row.ceY} r="2.75" fill="rgb(239,68,68)" /> : null}
+              {row.peY !== undefined ? <circle cx={row.x} cy={row.peY} r="2.75" fill="rgb(34,197,94)" /> : null}
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[0.65rem] text-terminal-muted">
+        <span>{rows[0] ? formatStrike(rows[0].strike) : "--"}</span>
+        <span>ATM {formatStrike(atmStrike)}</span>
+        <span>{rows[rows.length - 1] ? formatStrike(rows[rows.length - 1].strike) : "--"}</span>
+      </div>
+    </div>
+  );
+}
+
+function buildLinePath(rows: ReturnType<typeof buildIvSkewRows>, field: "ceY" | "peY") {
+  return rows
+    .filter((row) => row[field] !== undefined)
+    .map((row, index) => `${index === 0 ? "M" : "L"} ${row.x.toFixed(2)} ${(row[field] ?? 0).toFixed(2)}`)
+    .join(" ");
 }
 
 function renderLtpStack(value?: number, change?: number, changePercent?: number, align: "left" | "right" = "left", activity: OptionActivityKind = "NEUTRAL") {
