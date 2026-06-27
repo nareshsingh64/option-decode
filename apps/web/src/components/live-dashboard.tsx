@@ -2840,8 +2840,19 @@ function buildStrikeMovementRows(overview: MarketOverview) {
     return [];
   }
 
-  return strikes
-    .slice(Math.max(0, atmIndex - 2), atmIndex + 3)
+  const windowStrikes = strikes.slice(Math.max(0, atmIndex - 2), atmIndex + 3);
+  const trendSamples = windowStrikes
+    .flatMap((strike) => {
+      const ce = findOptionTick(overview, strike, "CE");
+      const pe = findOptionTick(overview, strike, "PE");
+      return [Math.abs(strikeTrendScore(ce)), Math.abs(strikeTrendScore(pe))];
+    })
+    .filter((score) => score > 0)
+    .sort((left, right) => left - right);
+  const medianTrend = trendSamples.length ? trendSamples[Math.floor(trendSamples.length / 2)] ?? 8 : 8;
+  const trendThreshold = Math.max(4, medianTrend);
+
+  return windowStrikes
     .map((strike, index, windowStrikes) => {
       const ce = findOptionTick(overview, strike, "CE");
       const pe = findOptionTick(overview, strike, "PE");
@@ -2857,7 +2868,7 @@ function buildStrikeMovementRows(overview: MarketOverview) {
       const netScorePercent = isThinMarket ? 0 : Math.round((netScore / combinedScore) * 100);
       const scoreBarPercent = isThinMarket ? 0 : Math.min(100, Math.abs(netScorePercent));
       const trendScore = strikeTrendScore(pe) - strikeTrendScore(ce);
-      const trendDirection = !isThinMarket && Math.abs(trendScore) >= 8 ? Math.sign(trendScore) : 0;
+      const trendDirection = !isThinMarket && Math.abs(trendScore) >= trendThreshold ? Math.sign(trendScore) : 0;
       const absoluteIndex = strikes.indexOf(strike);
       const distance = absoluteIndex - atmIndex;
       const bias = isThinMarket ? "Balanced" : netScore > 0 ? "Up / support" : netScore < 0 ? "Down / resistance" : "Balanced";
@@ -2881,7 +2892,7 @@ function buildStrikeMovementRows(overview: MarketOverview) {
         bias,
         trend,
         trendIcon: trendDirection > 0 ? "▲" : trendDirection < 0 ? "▼" : "•",
-        toneClass: netScore > 0 ? "text-terminal-emerald" : netScore < 0 ? "text-terminal-red" : "text-terminal-blue",
+        toneClass: isThinMarket ? "text-terminal-muted" : netScore > 0 ? "text-terminal-emerald" : netScore < 0 ? "text-terminal-red" : "text-terminal-blue",
         trendToneClass: trendDirection > 0 ? "text-terminal-emerald" : trendDirection < 0 ? "text-terminal-red" : "text-terminal-blue",
         sortOrder: windowStrikes.length - index
       };
