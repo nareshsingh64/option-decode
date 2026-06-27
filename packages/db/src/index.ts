@@ -17,7 +17,7 @@ export { createEmailVerificationToken, createPasswordResetToken, createUser, get
 export type { AuthUserDto } from "./auth-repository.js";
 export { buildDemoSnapshot } from "./demo-snapshot.js";
 export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan } from "./lot-size-repository.js";
-export { getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listReplaySnapshots, listStoredExpiries, saveOptionChainSnapshot } from "./market-repository.js";
+export { getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listPcrTrend, listReplaySnapshots, listStoredExpiries, saveOptionChainSnapshot } from "./market-repository.js";
 export { cancelPendingPaperOrder, closePaperPosition, getPaperSummary, monitorPaperTradingForSnapshot, placePaperOrder, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
 export type { PaperOrderInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";
 export { getDefaultWatchlist, updateDefaultWatchlist } from "./watchlist-repository.js";

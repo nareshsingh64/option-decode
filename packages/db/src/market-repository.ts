@@ -423,6 +423,35 @@ export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedE
   }));
 }
 
+export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?: string, limit = 60, client: DbClient = prisma) {
+  const rows = await client.pressureScore.findMany({
+    where: {
+      underlyingSymbol,
+      pcr: {
+        not: null
+      },
+      ...(requestedExpiry ? { expiryLabel: requestedExpiry } : {})
+    },
+    orderBy: { scoreTime: "desc" },
+    take: Math.max(1, Math.min(300, limit)),
+    select: {
+      scoreTime: true,
+      pcr: true,
+      bullishPressure: true,
+      bearishPressure: true,
+      maxPain: true
+    }
+  });
+
+  return rows.reverse().map((row) => ({
+    scoreTime: row.scoreTime.toISOString(),
+    pcr: row.pcr?.toNumber() ?? 0,
+    bullishPressure: row.bullishPressure,
+    bearishPressure: row.bearishPressure,
+    maxPain: row.maxPain?.toNumber()
+  }));
+}
+
 export async function getOptionChainSnapshotById(snapshotId: string, client: DbClient = prisma): Promise<OptionChainSnapshot | null> {
   const snapshot = await client.optionChainSnapshot.findUnique({
     where: { id: snapshotId },

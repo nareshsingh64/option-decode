@@ -99,6 +99,14 @@ interface Watchlist {
   updatedAt: string;
 }
 
+interface PcrTrendPoint {
+  scoreTime: string;
+  pcr: number;
+  bullishPressure: number;
+  bearishPressure: number;
+  maxPain?: number;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -267,6 +275,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [paperError, setPaperError] = useState<string | null>(null);
   const [watchlist, setWatchlist] = useState<Watchlist | null>(null);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
+  const [pcrTrend, setPcrTrend] = useState<PcrTrendPoint[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">(initialParams?.auth === "register" ? "register" : "login");
   const [authEmail, setAuthEmail] = useState("");
@@ -397,6 +406,24 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       expiry: overview.selectedExpiry
     };
   }, [overview.selectedExpiry, overview.selectedUnderlying]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPcrTrend(overview.selectedUnderlying, overview.selectedExpiry)
+      .then((trend) => {
+        if (!cancelled) {
+          setPcrTrend(trend);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPcrTrend([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [overview.selectedExpiry, overview.selectedUnderlying, overview.snapshot.snapshotTime]);
 
   const refreshOverview = useCallback(async () => {
     if (isRefreshingRef.current) {
@@ -1096,6 +1123,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <SignalCell label="Nearest Support" value={pressureSummary.nearestSupportText} detail={pressureSummary.supportDistanceText} tone="green" />
               <SignalCell label="Nearest Resistance" value={pressureSummary.nearestResistanceText} detail={pressureSummary.resistanceDistanceText} tone="red" />
               <SignalCell label="Trade Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="blue" />
+            </div>
+            <div className="mt-4">
+              <PcrTrendChart rows={pcrTrend} />
             </div>
           </Panel>
           <Panel title="Session Snapshot">
@@ -2269,6 +2299,23 @@ function buildClientViewHref(view: DashboardView, underlying: string, expiry: st
   return `/app?${search.toString()}`;
 }
 
+async function fetchPcrTrend(underlying: string, expiry: string, limit = 60): Promise<PcrTrendPoint[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ underlying, limit: String(limit) });
+  if (expiry) {
+    search.set("expiry", expiry);
+  }
+  const response = await fetch(`${apiUrl}/api/market/pcr-trend?${search.toString()}`, {
+    cache: "no-store",
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error(`PCR trend failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { trend: PcrTrendPoint[] };
+  return payload.trend;
+}
+
 async function fetchPaperSummary(): Promise<PaperSummary> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/paper/summary`, {
@@ -2896,6 +2943,59 @@ function mergeTickerItem(currentItem: MarketTickerItem, nextItem: MarketTickerIt
 
 function isValidTickerNumber(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function PcrTrendChart({ rows }: { rows: PcrTrendPoint[] }) {
+  const width = 720;
+  const height = 150;
+  const padding = 22;
+  const validRows = rows.filter((row) => Number.isFinite(row.pcr));
+  const values = validRows.map((row) => row.pcr);
+  const minValue = values.length ? Math.min(...values, 0.8) : 0.8;
+  const maxValue = values.length ? Math.max(...values, 1.2) : 1.2;
+  const range = Math.max(0.1, maxValue - minValue);
+  const xRange = Math.max(1, validRows.length - 1);
+  const points = validRows.map((row, index) => ({
+    ...row,
+    x: padding + (index / xRange) * (width - padding * 2),
+    y: height - padding - ((row.pcr - minValue) / range) * (height - padding * 2)
+  }));
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+  const last = validRows[validRows.length - 1];
+  const first = validRows[0];
+  const change = first && last ? last.pcr - first.pcr : 0;
+  const trendText = !last ? "--" : change > 0.02 ? "Put support building" : change < -0.02 ? "Call resistance building" : "PCR stable";
+  const trendTone = change > 0.02 ? "text-terminal-emerald" : change < -0.02 ? "text-terminal-red" : "text-terminal-blue";
+  const neutralY = height - padding - ((1 - minValue) / range) * (height - padding * 2);
+
+  return (
+    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase text-terminal-muted">PCR Trend</p>
+          <p className={`mt-1 text-sm font-semibold ${trendTone}`}>{trendText}</p>
+        </div>
+        <div className="text-right text-xs text-terminal-muted">
+          <span className="block font-semibold text-terminal-text">{last ? last.pcr.toFixed(2) : "--"}</span>
+          <span>{last ? `${formatIstTime(last.scoreTime)} IST` : "Waiting for snapshots"}</span>
+        </div>
+      </div>
+      <svg className="h-40 w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PCR trend chart">
+        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} stroke="rgba(148,163,184,0.22)" />
+        <line x1={padding} x2={padding} y1={padding} y2={height - padding} stroke="rgba(148,163,184,0.22)" />
+        {Number.isFinite(neutralY) ? <line x1={padding} x2={width - padding} y1={neutralY} y2={neutralY} stroke="rgba(59,130,246,0.45)" strokeDasharray="5 5" /> : null}
+        {path ? <path d={path} fill="none" stroke={change >= 0 ? "rgb(34,197,94)" : "rgb(239,68,68)"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
+        {points.map((point) => (
+          <circle key={point.scoreTime} cx={point.x} cy={point.y} r="2.5" fill={point.pcr >= 1 ? "rgb(34,197,94)" : "rgb(239,68,68)"} />
+        ))}
+      </svg>
+      <div className="mt-1 flex items-center justify-between text-[0.65rem] text-terminal-muted">
+        <span>{first ? formatIstTime(first.scoreTime) : "--"}</span>
+        <span>Neutral 1.00</span>
+        <span>{last ? formatIstTime(last.scoreTime) : "--"}</span>
+      </div>
+    </div>
+  );
 }
 
 function OiBuildupChart({ rows }: { rows: ReturnType<typeof buildOiBuildupRows> }) {

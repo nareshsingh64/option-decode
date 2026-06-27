@@ -6,7 +6,7 @@ import tls from "node:tls";
 import { z } from "zod";
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listReplaySnapshots, listStoredExpiries, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -359,6 +359,21 @@ app.get<{
   return {
     indiaVix: marketAux.indiaVix,
     ticker: marketAux.ticker
+  };
+});
+
+app.get<{
+  Querystring: {
+    underlying?: string;
+    expiry?: string;
+    limit?: string;
+  };
+}>("/api/market/pcr-trend", async (request) => {
+  const requestedUnderlying = normalizeUnderlying(request.query.underlying);
+  const requestedExpiry = request.query.expiry?.trim() || undefined;
+  const parsedLimit = Number(request.query.limit ?? 60);
+  return {
+    trend: await listPcrTrend(requestedUnderlying, requestedExpiry, Number.isFinite(parsedLimit) ? parsedLimit : 60)
   };
 });
 
