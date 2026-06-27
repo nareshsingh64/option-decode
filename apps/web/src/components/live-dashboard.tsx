@@ -99,14 +99,6 @@ interface Watchlist {
   updatedAt: string;
 }
 
-interface PcrTrendPoint {
-  scoreTime: string;
-  pcr: number;
-  bullishPressure: number;
-  bearishPressure: number;
-  maxPain?: number;
-}
-
 interface AlertThreshold {
   underlyingSymbol: string;
   proximityPoints: number;
@@ -313,7 +305,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [paperError, setPaperError] = useState<string | null>(null);
   const [watchlist, setWatchlist] = useState<Watchlist | null>(null);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
-  const [pcrTrend, setPcrTrend] = useState<PcrTrendPoint[]>([]);
   const [alertThresholds, setAlertThresholds] = useState<AlertThreshold[]>([]);
   const [alertThresholdDraft, setAlertThresholdDraft] = useState(defaultAlertThresholdDraft(initialOverview.selectedUnderlying));
   const [alertSettingsStatus, setAlertSettingsStatus] = useState<string | null>(null);
@@ -450,24 +441,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       expiry: overview.selectedExpiry
     };
   }, [overview.selectedExpiry, overview.selectedUnderlying]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchPcrTrend(overview.selectedUnderlying, overview.selectedExpiry)
-      .then((trend) => {
-        if (!cancelled) {
-          setPcrTrend(trend);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPcrTrend([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [overview.selectedExpiry, overview.selectedUnderlying, overview.snapshot.snapshotTime]);
 
   const refreshOverview = useCallback(async () => {
     if (isRefreshingRef.current) {
@@ -1216,7 +1189,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       </section>
 
       {initialView === "dashboard" ? (
-        <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.45fr)]">
+        <section className="grid gap-4">
           <Panel title="Trading Command Center">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <StatusTile icon={<ShieldCheck size={18} />} label="Market Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone={pressureSummary.bias === "Bullish" ? "green" : pressureSummary.bias === "Bearish" ? "red" : "blue"} />
@@ -1231,69 +1204,63 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <SignalCell label="Nearest Resistance" value={pressureSummary.nearestResistanceText} detail={pressureSummary.resistanceDistanceText} tone="red" />
               <SignalCell label="Trade Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="blue" />
             </div>
-            <div className="mt-4">
-              <PcrTrendChart rows={pcrTrend} />
+          </Panel>
+          <Panel title="ATM +/-2 Strike Movement Score">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.35fr)]">
+              <div className="grid gap-2">
+                {strikeMovementRows.map((row) => (
+                  <div key={row.strike} className={`grid gap-2 rounded border px-3 py-2 sm:grid-cols-[4.5rem_minmax(6rem,0.8fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(7rem,0.8fr)] sm:items-center ${row.isAtm ? "border-terminal-blue/60 bg-terminal-blue/10" : "border-terminal-line bg-white/[0.03]"}`}>
+                    <div>
+                      <p className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</p>
+                      <p className="font-semibold text-terminal-text">{formatStrike(row.strike)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase text-terminal-muted">Net score</p>
+                      <p className={`font-semibold ${row.toneClass}`}>{formatSignedLarge(row.netScore, numberFormatMode)} / {row.netScorePercent}%</p>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded bg-white/10">
+                        <div className={`h-full rounded ${row.netScore > 0 ? "bg-terminal-emerald" : row.netScore < 0 ? "bg-terminal-red" : "bg-terminal-blue"}`} style={{ width: `${row.scoreBarPercent}%` }} />
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase text-terminal-muted">Move bias</p>
+                      <p className={`font-semibold ${row.toneClass}`}>{row.bias}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase text-terminal-muted">Score trend</p>
+                      <p className={`font-semibold ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</p>
+                    </div>
+                    <div className="text-sm text-terminal-muted sm:text-right">
+                      <p><span className={getActivityToneClass(row.peActivity)}>{getActivityLabel(row.peActivity)}</span> PE {formatLarge(row.peScore, numberFormatMode)}</p>
+                      <p><span className={getActivityToneClass(row.ceActivity)}>{getActivityLabel(row.ceActivity)}</span> CE {formatLarge(row.ceScore, numberFormatMode)}</p>
+                      <p className={row.buyerMomentumScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>B {formatSignedLarge(row.buyerMomentumScore, numberFormatMode)}</p>
+                      <p className={row.sellerSafetyScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>S {formatSignedLarge(row.sellerSafetyScore, numberFormatMode)}</p>
+                    </div>
+                  </div>
+                ))}
+                {!strikeMovementRows.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-center text-sm text-terminal-muted">No ATM strike score available.</p> : null}
+              </div>
+              <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 text-sm">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                  <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={`Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}`} tone={tradeInterpretation.buyerScore > 8 ? "green" : tradeInterpretation.buyerScore < -8 ? "red" : "blue"} />
+                  <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={`Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}`} tone={tradeInterpretation.sellerScore > 8 ? "green" : tradeInterpretation.sellerScore < -8 ? "red" : "blue"} />
+                </div>
+                <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
+                <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
+                <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
+                <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. The trend uses OI and LTP change to show whether that pressure is building or fading near ATM.</p>
+              </div>
             </div>
           </Panel>
           <Panel title="Session Snapshot">
-            <div className="grid gap-3 text-sm">
-              <SummaryLine label="Snapshot time" value={`${snapshotAge} IST`} />
-              <SummaryLine label="Tracked expiry" value={overview.snapshot.expiry} />
-              <SummaryLine label="Total CE OI" value={formatLarge(chainStats.totalCeOi, numberFormatMode)} />
-              <SummaryLine label="Total PE OI" value={formatLarge(chainStats.totalPeOi, numberFormatMode)} />
-              <SummaryLine label="Max OI Strike" value={chainStats.maxOiStrikeText} />
+            <div className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-5">
+              <CompactSummary label="Snapshot" value={`${snapshotAge} IST`} />
+              <CompactSummary label="Expiry" value={overview.snapshot.expiry} />
+              <CompactSummary label="CE OI" value={formatLarge(chainStats.totalCeOi, numberFormatMode)} />
+              <CompactSummary label="PE OI" value={formatLarge(chainStats.totalPeOi, numberFormatMode)} />
+              <CompactSummary label="Max OI" value={chainStats.maxOiStrikeText} />
             </div>
           </Panel>
         </section>
-      ) : null}
-
-      {initialView === "dashboard" ? (
-        <Panel title="ATM +/-2 Strike Movement Score">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.35fr)]">
-            <div className="grid gap-2">
-              {strikeMovementRows.map((row) => (
-                <div key={row.strike} className={`grid gap-2 rounded border px-3 py-2 sm:grid-cols-[4.5rem_minmax(6rem,0.8fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(7rem,0.8fr)] sm:items-center ${row.isAtm ? "border-terminal-blue/60 bg-terminal-blue/10" : "border-terminal-line bg-white/[0.03]"}`}>
-                  <div>
-                    <p className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</p>
-                    <p className="font-semibold text-terminal-text">{formatStrike(row.strike)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-terminal-muted">Net score</p>
-                    <p className={`font-semibold ${row.toneClass}`}>{formatSignedLarge(row.netScore, numberFormatMode)} / {row.netScorePercent}%</p>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded bg-white/10">
-                      <div className={`h-full rounded ${row.netScore > 0 ? "bg-terminal-emerald" : row.netScore < 0 ? "bg-terminal-red" : "bg-terminal-blue"}`} style={{ width: `${row.scoreBarPercent}%` }} />
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-terminal-muted">Move bias</p>
-                    <p className={`font-semibold ${row.toneClass}`}>{row.bias}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-terminal-muted">Score trend</p>
-                    <p className={`font-semibold ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</p>
-                  </div>
-                  <div className="text-sm text-terminal-muted sm:text-right">
-                    <p><span className={getActivityToneClass(row.peActivity)}>{getActivityLabel(row.peActivity)}</span> PE {formatLarge(row.peScore, numberFormatMode)}</p>
-                    <p><span className={getActivityToneClass(row.ceActivity)}>{getActivityLabel(row.ceActivity)}</span> CE {formatLarge(row.ceScore, numberFormatMode)}</p>
-                    <p className={row.buyerMomentumScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>B {formatSignedLarge(row.buyerMomentumScore, numberFormatMode)}</p>
-                    <p className={row.sellerSafetyScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>S {formatSignedLarge(row.sellerSafetyScore, numberFormatMode)}</p>
-                  </div>
-                </div>
-              ))}
-              {!strikeMovementRows.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-center text-sm text-terminal-muted">No ATM strike score available.</p> : null}
-            </div>
-            <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 text-sm">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={`Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}`} tone={tradeInterpretation.buyerScore > 8 ? "green" : tradeInterpretation.buyerScore < -8 ? "red" : "blue"} />
-                <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={`Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}`} tone={tradeInterpretation.sellerScore > 8 ? "green" : tradeInterpretation.sellerScore < -8 ? "red" : "blue"} />
-              </div>
-              <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
-              <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
-              <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
-              <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. The trend uses OI and LTP change to show whether that pressure is building or fading near ATM.</p>
-            </div>
-          </div>
-        </Panel>
       ) : null}
 
       {initialView === "pressure" ? (
@@ -2434,23 +2401,6 @@ function buildClientViewHref(view: DashboardView, underlying: string, expiry: st
   return `/app?${search.toString()}`;
 }
 
-async function fetchPcrTrend(underlying: string, expiry: string, limit = 60): Promise<PcrTrendPoint[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-  const search = new URLSearchParams({ underlying, limit: String(limit) });
-  if (expiry) {
-    search.set("expiry", expiry);
-  }
-  const response = await fetch(`${apiUrl}/api/market/pcr-trend?${search.toString()}`, {
-    cache: "no-store",
-    credentials: "include"
-  });
-  if (!response.ok) {
-    throw new Error(`PCR trend failed with HTTP ${response.status}`);
-  }
-  const payload = (await response.json()) as { trend: PcrTrendPoint[] };
-  return payload.trend;
-}
-
 async function fetchPaperSummary(): Promise<PaperSummary> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/paper/summary`, {
@@ -3163,59 +3113,6 @@ function mergeTickerItem(currentItem: MarketTickerItem, nextItem: MarketTickerIt
 
 function isValidTickerNumber(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function PcrTrendChart({ rows }: { rows: PcrTrendPoint[] }) {
-  const width = 720;
-  const height = 150;
-  const padding = 22;
-  const validRows = rows.filter((row) => Number.isFinite(row.pcr));
-  const values = validRows.map((row) => row.pcr);
-  const minValue = values.length ? Math.min(...values, 0.8) : 0.8;
-  const maxValue = values.length ? Math.max(...values, 1.2) : 1.2;
-  const range = Math.max(0.1, maxValue - minValue);
-  const xRange = Math.max(1, validRows.length - 1);
-  const points = validRows.map((row, index) => ({
-    ...row,
-    x: padding + (index / xRange) * (width - padding * 2),
-    y: height - padding - ((row.pcr - minValue) / range) * (height - padding * 2)
-  }));
-  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
-  const last = validRows[validRows.length - 1];
-  const first = validRows[0];
-  const change = first && last ? last.pcr - first.pcr : 0;
-  const trendText = !last ? "--" : change > 0.02 ? "Put support building" : change < -0.02 ? "Call resistance building" : "PCR stable";
-  const trendTone = change > 0.02 ? "text-terminal-emerald" : change < -0.02 ? "text-terminal-red" : "text-terminal-blue";
-  const neutralY = height - padding - ((1 - minValue) / range) * (height - padding * 2);
-
-  return (
-    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase text-terminal-muted">PCR Trend</p>
-          <p className={`mt-1 text-sm font-semibold ${trendTone}`}>{trendText}</p>
-        </div>
-        <div className="text-right text-xs text-terminal-muted">
-          <span className="block font-semibold text-terminal-text">{last ? last.pcr.toFixed(2) : "--"}</span>
-          <span>{last ? `${formatIstTime(last.scoreTime)} IST` : "Waiting for snapshots"}</span>
-        </div>
-      </div>
-      <svg className="h-40 w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PCR trend chart">
-        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} stroke="rgba(148,163,184,0.22)" />
-        <line x1={padding} x2={padding} y1={padding} y2={height - padding} stroke="rgba(148,163,184,0.22)" />
-        {Number.isFinite(neutralY) ? <line x1={padding} x2={width - padding} y1={neutralY} y2={neutralY} stroke="rgba(59,130,246,0.45)" strokeDasharray="5 5" /> : null}
-        {path ? <path d={path} fill="none" stroke={change >= 0 ? "rgb(34,197,94)" : "rgb(239,68,68)"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
-        {points.map((point) => (
-          <circle key={point.scoreTime} cx={point.x} cy={point.y} r="2.5" fill={point.pcr >= 1 ? "rgb(34,197,94)" : "rgb(239,68,68)"} />
-        ))}
-      </svg>
-      <div className="mt-1 flex items-center justify-between text-[0.65rem] text-terminal-muted">
-        <span>{first ? formatIstTime(first.scoreTime) : "--"}</span>
-        <span>Neutral 1.00</span>
-        <span>{last ? formatIstTime(last.scoreTime) : "--"}</span>
-      </div>
-    </div>
-  );
 }
 
 function OiBuildupChart({ rows }: { rows: ReturnType<typeof buildOiBuildupRows> }) {
@@ -4060,6 +3957,15 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between gap-3 border-b border-terminal-line/70 pb-2 last:border-b-0 last:pb-0">
       <span className="text-terminal-muted">{label}</span>
       <span className="text-right font-semibold text-terminal-text">{value}</span>
+    </div>
+  );
+}
+
+function CompactSummary({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-terminal-line bg-white/[0.03] px-3 py-2">
+      <p className="text-[0.65rem] uppercase text-terminal-muted">{label}</p>
+      <p className="mt-1 truncate font-semibold text-terminal-text">{value}</p>
     </div>
   );
 }
