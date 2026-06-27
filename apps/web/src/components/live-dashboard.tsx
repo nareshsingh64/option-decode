@@ -3,6 +3,11 @@
 import { BellRing, Clock3, LineChart, LogOut, Pause, Play, Plus, RefreshCw, ShieldCheck, SkipBack, SkipForward, UserCircle, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import { AlertCenter } from "./alert-center";
+import { OptionChainTable } from "./option-chain-table";
+import { PaperTradingPanel } from "./paper-trading-panel";
+import { PressureEngine } from "./pressure-engine";
+import { ReplayLab } from "./replay-lab";
 
 interface OverviewTick {
   underlyingSymbol?: string;
@@ -1264,6 +1269,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "pressure" ? (
+      <PressureEngine>
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.6fr)]">
         <Panel title="Live Market Pressure">
           <div className="grid gap-4 md:grid-cols-2">
@@ -1298,9 +1304,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           </div>
         </Panel>
       </section>
-      ) : null}
-
-      {initialView === "pressure" ? (
         <section className="grid gap-4 lg:grid-cols-2">
           <Panel title="Support & Resistance Pressure">
             <div className="space-y-4">
@@ -1331,59 +1334,23 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             </div>
           </Panel>
         </section>
+      </PressureEngine>
       ) : null}
 
       {initialView === "dashboard" || initialView === "alerts" ? (
-        <Panel title={initialView === "alerts" ? "Alert Center" : "Live Alerts"}>
-          <div className="grid gap-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {initialView === "alerts" ? (
-                <div className="flex flex-wrap gap-2">
-                  {(["all", "critical", "warning", "info", "dismissed"] as const).map((filter) => (
-                    <button key={filter} className={`min-h-9 rounded border px-3 py-1.5 text-xs font-semibold uppercase transition ${alertFilter === filter ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line text-terminal-muted hover:border-terminal-blue hover:text-terminal-text"}`} type="button" onClick={() => setAlertFilter(filter)}>
-                      {filter}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <a className="flex min-h-9 items-center rounded border border-terminal-line px-3 py-1.5 text-xs font-semibold uppercase text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-blue" href={alertCenterHref}>
-                  Open Alert Center
-                </a>
-              )}
-              <div className="text-sm text-terminal-muted">
-                <span className="font-semibold text-terminal-text">{activeAlertCount}</span> active / {overview.alerts.length} total
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {displayedAlerts.map((alert) => {
-                const dismissed = dismissedAlertIds.includes(alert.id);
-
-                return (
-                  <div key={alert.id} className={`rounded border p-3 ${alert.severity === "critical" ? "border-terminal-red/70 bg-terminal-red/10" : alert.severity === "warning" ? "border-terminal-amber/70 bg-terminal-amber/10" : "border-terminal-blue/50 bg-terminal-blue/10"} ${dismissed ? "opacity-60" : ""}`}>
-                    <div className="flex items-start gap-2">
-                      <BellRing size={16} className={alert.severity === "critical" ? "mt-0.5 shrink-0 text-terminal-red" : alert.severity === "warning" ? "mt-0.5 shrink-0 text-terminal-amber" : "mt-0.5 shrink-0 text-terminal-blue"} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-semibold">{alert.title}</p>
-                          <span className="rounded border border-white/10 px-1.5 py-0.5 text-[0.65rem] uppercase text-terminal-muted">{alert.severity}</span>
-                          {dismissed ? <span className="rounded border border-terminal-line px-1.5 py-0.5 text-[0.65rem] uppercase text-terminal-muted">dismissed</span> : null}
-                        </div>
-                        <p className="mt-1 text-sm text-terminal-muted">{alert.message}</p>
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          <p className="text-xs text-terminal-muted">{formatIstTime(alert.createdAt)} IST</p>
-                          <button className="min-h-8 rounded border border-terminal-line px-2 py-1 text-xs text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" type="button" onClick={() => (dismissed ? handleRestoreAlert(alert.id) : handleDismissAlert(alert.id))}>
-                            {dismissed ? "Restore" : "Dismiss"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {!displayedAlerts.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-center text-sm text-terminal-muted md:col-span-2 xl:col-span-3">{initialView === "alerts" ? "No alerts in this filter." : "No active alerts."}</p> : null}
-            </div>
-          </div>
-        </Panel>
+        <AlertCenter
+          activeAlertCount={activeAlertCount}
+          alertCenterHref={alertCenterHref}
+          alertFilter={alertFilter}
+          alerts={overview.alerts}
+          dismissedAlertIds={dismissedAlertIds}
+          displayedAlerts={displayedAlerts}
+          formatTime={formatIstTime}
+          mode={initialView === "alerts" ? "alerts" : "dashboard"}
+          onDismissAlert={handleDismissAlert}
+          onFilterChange={setAlertFilter}
+          onRestoreAlert={handleRestoreAlert}
+        />
       ) : null}
 
       {initialView === "account" ? (
@@ -1663,6 +1630,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "option-chain" ? (
+      <OptionChainTable>
       <section className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
@@ -1811,9 +1779,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           </TerminalPanel>
         </div>
       </section>
+      </OptionChainTable>
       ) : null}
 
       {initialView === "paper" ? (
+        <PaperTradingPanel>
           <Panel title="Paper Trading">
             <div className="grid gap-4 text-sm">
               <div className="grid gap-3 md:grid-cols-4">
@@ -2186,9 +2156,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               </div>
             </div>
           </Panel>
+        </PaperTradingPanel>
       ) : null}
 
       {initialView === "replay" ? (
+        <ReplayLab>
         <Panel title="Replay Lab">
           <div className="grid gap-4 text-sm">
             <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-[minmax(10rem,0.5fr)_minmax(12rem,0.7fr)_auto] md:items-end">
@@ -2340,6 +2312,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             </div>
           </div>
         </Panel>
+        </ReplayLab>
       ) : null}
     </div>
   );
