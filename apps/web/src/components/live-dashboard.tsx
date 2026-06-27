@@ -1069,7 +1069,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       <section className="grid gap-3 md:grid-cols-4">
         <MetricCard label={`${overview.snapshot.underlyingSymbol} Spot`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" detail={`ATM ${formatStrike(overview.snapshot.atmStrike)}`} />
         <MetricCard label="Bullish Pressure" value={`${overview.pressure.bullishPressure}%`} tone="emerald" detail="PE support pressure" />
-        <MetricCard label="Bearish Pressure" value={`${overview.pressure.bearishPressure}%`} tone="amber" detail="CE resistance pressure" />
+        <MetricCard label="Bearish Pressure" value={`${overview.pressure.bearishPressure}%`} tone="red" detail="CE resistance pressure" />
         <MetricCard label="PCR" value={overview.pressure.pcr?.toFixed(2) ?? "--"} tone="blue" detail={`Updated ${snapshotAge} IST`} />
       </section>
 
@@ -1133,6 +1133,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               {!strikeMovementRows.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-center text-sm text-terminal-muted">No ATM strike score available.</p> : null}
             </div>
             <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 text-sm">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={`Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}`} tone={tradeInterpretation.buyerScore > 8 ? "green" : tradeInterpretation.buyerScore < -8 ? "red" : "blue"} />
+                <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={`Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}`} tone={tradeInterpretation.sellerScore > 8 ? "green" : tradeInterpretation.sellerScore < -8 ? "red" : "blue"} />
+              </div>
               <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
               <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
               <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
@@ -2917,7 +2921,7 @@ function strikePressureScore(tick?: OverviewTick) {
   if (!tick) {
     return 0;
   }
-  const score = toLots(tick.openInterest, tick) + toLots(tick.changeInOpenInterest, tick) * 1.5 + toLots(tick.volume, tick) * 0.25;
+  const score = toLots(tick.openInterest, tick) + toLots(tick.changeInOpenInterest, tick) * 1.5 + toLots(tick.volume, tick) * 0.5;
   return Math.max(0, Math.round(score));
 }
 
@@ -3315,8 +3319,8 @@ function scoreToPercent(score: number) {
   return Math.max(5, Math.min(100, Math.round(score / 15000)));
 }
 
-function MetricCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "blue" | "emerald" | "amber" }) {
-  const toneClass = tone === "emerald" ? "text-terminal-emerald" : tone === "amber" ? "text-terminal-amber" : "text-terminal-blue";
+function MetricCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "blue" | "emerald" | "amber" | "red" }) {
+  const toneClass = tone === "emerald" ? "text-terminal-emerald" : tone === "amber" ? "text-terminal-amber" : tone === "red" ? "text-terminal-red" : "text-terminal-blue";
 
   return (
     <article className="rounded border border-terminal-line bg-terminal-panel/80 p-4">

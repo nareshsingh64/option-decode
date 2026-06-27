@@ -1,31 +1,33 @@
 import type { MarketAlert, OptionChainSnapshot, OptionContractTick, PressureScore, PressureZone } from "@option-decode/types";
 
-function pressureValue(tick: OptionContractTick): number {
+function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
   const oi = toLots(tick.openInterest, tick);
   const oiChange = toLots(tick.changeInOpenInterest, tick);
   const volume = toLots(tick.volume, tick);
+  const volumeContribution = weightedVolumeContribution(volume, averageVolume);
   const ltpChange = tick.lastPriceChange ?? 0;
 
   if (oiChange > 0 && ltpChange < 0) {
-    return Math.max(0, oi + Math.abs(oiChange) * 1.5 + volume * 0.25);
+    return oi + Math.abs(oiChange) * 1.5 + volumeContribution;
   }
   if (oiChange < 0 && ltpChange > 0) {
-    return Math.max(0, oi - Math.abs(oiChange) * 1.2);
+    return oi - Math.abs(oiChange) * 1.2 + volumeContribution * 0.5;
   }
   if (oiChange > 0 && ltpChange > 0) {
-    return Math.max(0, oi + Math.abs(oiChange) * 0.4 + volume * 0.1);
+    return oi + Math.abs(oiChange) * 0.4 + volumeContribution * 0.5;
   }
 
-  return Math.max(0, oi + oiChange * 0.5 + volume * 0.1);
+  return oi + oiChange * 0.5 + volumeContribution * 0.5;
 }
 
 function topZones(ticks: OptionContractTick[], spotPrice: number, label: "support" | "resistance"): PressureZone[] {
   const directionalTicks = ticks.filter((tick) => (label === "support" ? tick.strikePrice <= spotPrice : tick.strikePrice >= spotPrice));
   const rankedTicks = directionalTicks.length ? directionalTicks : ticks;
+  const averageVolume = averageLotsVolume(ticks);
   return rankedTicks
     .map((tick) => ({
       strikePrice: tick.strikePrice,
-      score: Math.round(pressureValue(tick)),
+      score: Math.round(pressureValue(tick, averageVolume)),
       reason: `${tick.optionType} ${label} pressure from OI, OI change, and volume in lots`
     }))
     .sort((left, right) => right.score - left.score)
@@ -35,15 +37,19 @@ function topZones(ticks: OptionContractTick[], spotPrice: number, label: "suppor
 export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureScore {
   const peTicks = snapshot.ticks.filter((tick) => tick.optionType === "PE");
   const ceTicks = snapshot.ticks.filter((tick) => tick.optionType === "CE");
-  const pePressure = peTicks.reduce((total, tick) => total + pressureValue(tick), 0);
-  const cePressure = ceTicks.reduce((total, tick) => total + pressureValue(tick), 0);
-  const total = Math.max(pePressure + cePressure, 1);
+  const peAverageVolume = averageLotsVolume(peTicks);
+  const ceAverageVolume = averageLotsVolume(ceTicks);
+  const pePressure = peTicks.reduce((total, tick) => total + pressureValue(tick, peAverageVolume), 0);
+  const cePressure = ceTicks.reduce((total, tick) => total + pressureValue(tick, ceAverageVolume), 0);
+  const displayPePressure = Math.max(0, pePressure);
+  const displayCePressure = Math.max(0, cePressure);
+  const total = Math.max(displayPePressure + displayCePressure, 1);
   const totalPeOi = peTicks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
   const totalCeOi = ceTicks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
 
   return {
-    bullishPressure: Math.round((pePressure / total) * 100),
-    bearishPressure: Math.round((cePressure / total) * 100),
+    bullishPressure: Math.round((displayPePressure / total) * 100),
+    bearishPressure: Math.round((displayCePressure / total) * 100),
     supportZones: topZones(peTicks, snapshot.spotPrice, "support"),
     resistanceZones: topZones(ceTicks, snapshot.spotPrice, "resistance"),
     pcr: totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : undefined
@@ -53,6 +59,19 @@ export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureS
 function toLots(value: number | undefined, tick: OptionContractTick): number {
   const lotSize = tick.lotSize && tick.lotSize > 0 ? tick.lotSize : 1;
   return (value ?? 0) / lotSize;
+}
+
+function averageLotsVolume(ticks: OptionContractTick[]): number {
+  if (!ticks.length) {
+    return 0;
+  }
+
+  return ticks.reduce((sum, tick) => sum + toLots(tick.volume, tick), 0) / ticks.length;
+}
+
+function weightedVolumeContribution(volume: number, averageVolume: number): number {
+  const surgeMultiplier = averageVolume > 0 && volume > averageVolume * 2 ? 1.5 : 1;
+  return volume * 0.5 * surgeMultiplier;
 }
 
 export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date()): MarketAlert[] {
