@@ -15,7 +15,7 @@ CREATE TABLE `AlertThreshold` (
 CREATE TABLE `PushSubscription` (
   `id` VARCHAR(191) NOT NULL,
   `userId` VARCHAR(191) NOT NULL,
-  `endpoint` VARCHAR(768) NOT NULL,
+  `endpoint` VARCHAR(512) NOT NULL,
   `p256dh` VARCHAR(255) NOT NULL,
   `auth` VARCHAR(255) NOT NULL,
   `userAgent` VARCHAR(255) NULL,
