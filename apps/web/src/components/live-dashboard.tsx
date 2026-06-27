@@ -1076,10 +1076,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       {initialView === "dashboard" ? (
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.45fr)]">
           <Panel title="Trading Command Center">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <StatusTile icon={<ShieldCheck size={18} />} label="Market Bias" value={pressureSummary.bias} />
-              <StatusTile icon={<LineChart size={18} />} label="OI Breadth" value={chainStats.breadth} />
-              <StatusTile icon={<BellRing size={18} />} label="Active Alerts" value={String(activeAlertCount)} />
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+              <StatusTile icon={<ShieldCheck size={18} />} label="Market Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone={pressureSummary.bias === "Bullish" ? "green" : pressureSummary.bias === "Bearish" ? "red" : "blue"} />
+              <StatusTile icon={<LineChart size={18} />} label="PCR Live" value={pressureSummary.pcrText} detail={pressureSummary.pcrDetail} tone={pressureSummary.pcrTone} />
+              <StatusTile icon={<LineChart size={18} />} label="Max Pain" value={pressureSummary.maxPainText} detail={pressureSummary.maxPainDistanceText} tone="blue" />
+              <StatusTile icon={<ShieldCheck size={18} />} label="Conviction" value={pressureSummary.conviction} detail={`${pressureSummary.convictionScore}% ${pressureSummary.convictionDetail}`} tone={pressureSummary.convictionTone} />
+              <StatusTile icon={<BellRing size={18} />} label="Setup Quality" value={pressureSummary.setupQualityText} detail={pressureSummary.setupQualityDetail} tone={pressureSummary.setupQualityTone} />
               <StatusTile icon={<WalletCards size={18} />} label="Paper P/L" value={formatCurrency((paperSummary?.stats.realizedPnl ?? 0) + (paperSummary?.stats.markToMarketPnl ?? 0))} />
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -1105,7 +1107,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.35fr)]">
             <div className="grid gap-2">
               {strikeMovementRows.map((row) => (
-                <div key={row.strike} className={`grid gap-2 rounded border px-3 py-2 sm:grid-cols-[4.5rem_minmax(5rem,0.7fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(5rem,0.7fr)] sm:items-center ${row.isAtm ? "border-terminal-blue/60 bg-terminal-blue/10" : "border-terminal-line bg-white/[0.03]"}`}>
+                <div key={row.strike} className={`grid gap-2 rounded border px-3 py-2 sm:grid-cols-[4.5rem_minmax(6rem,0.8fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(7rem,0.8fr)] sm:items-center ${row.isAtm ? "border-terminal-blue/60 bg-terminal-blue/10" : "border-terminal-line bg-white/[0.03]"}`}>
                   <div>
                     <p className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</p>
                     <p className="font-semibold text-terminal-text">{formatStrike(row.strike)}</p>
@@ -1113,6 +1115,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                   <div>
                     <p className="text-xs uppercase text-terminal-muted">Net score</p>
                     <p className={`font-semibold ${row.toneClass}`}>{formatSignedLarge(row.netScore, numberFormatMode)} / {row.netScorePercent}%</p>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded bg-white/10">
+                      <div className={`h-full rounded ${row.netScore > 0 ? "bg-terminal-emerald" : row.netScore < 0 ? "bg-terminal-red" : "bg-terminal-blue"}`} style={{ width: `${row.scoreBarPercent}%` }} />
+                    </div>
                   </div>
                   <div>
                     <p className="text-xs uppercase text-terminal-muted">Move bias</p>
@@ -1123,8 +1128,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                     <p className={`font-semibold ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</p>
                   </div>
                   <div className="text-sm text-terminal-muted sm:text-right">
-                    <p>PE {formatLarge(row.peScore, numberFormatMode)}</p>
-                    <p>CE {formatLarge(row.ceScore, numberFormatMode)}</p>
+                    <p><span className={getActivityToneClass(row.peActivity)}>{getActivityLabel(row.peActivity)}</span> PE {formatLarge(row.peScore, numberFormatMode)}</p>
+                    <p><span className={getActivityToneClass(row.ceActivity)}>{getActivityLabel(row.ceActivity)}</span> CE {formatLarge(row.ceScore, numberFormatMode)}</p>
                     <p className={row.buyerMomentumScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>B {formatSignedLarge(row.buyerMomentumScore, numberFormatMode)}</p>
                     <p className={row.sellerSafetyScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>S {formatSignedLarge(row.sellerSafetyScore, numberFormatMode)}</p>
                   </div>
@@ -1140,8 +1145,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
               <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
               <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
-              <SummaryLine label="Buyer momentum" value={tradeInterpretation.buyerText} />
-              <SummaryLine label="Seller safety" value={tradeInterpretation.sellerText} />
               <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. The trend uses OI and LTP change to show whether that pressure is building or fading near ATM.</p>
             </div>
           </div>
@@ -2844,16 +2847,20 @@ function buildStrikeMovementRows(overview: MarketOverview) {
       const pe = findOptionTick(overview, strike, "PE");
       const peScore = strikePressureScore(pe);
       const ceScore = strikePressureScore(ce);
+      const peActivity = classifyOptionActivity(pe);
+      const ceActivity = classifyOptionActivity(ce);
       const buyerMomentumScore = getBuyerMomentumScore(ce) + getBuyerMomentumScore(pe);
       const sellerSafetyScore = getSellerSafetyScore(ce) + getSellerSafetyScore(pe);
       const combinedScore = peScore + ceScore;
+      const isThinMarket = combinedScore < 10;
       const netScore = peScore - ceScore;
-      const netScorePercent = combinedScore >= 10 ? Math.round((netScore / combinedScore) * 100) : 0;
+      const netScorePercent = isThinMarket ? 0 : Math.round((netScore / combinedScore) * 100);
+      const scoreBarPercent = isThinMarket ? 0 : Math.min(100, Math.abs(netScorePercent));
       const trendScore = strikeTrendScore(pe) - strikeTrendScore(ce);
-      const trendDirection = Math.abs(trendScore) >= 8 ? Math.sign(trendScore) : 0;
+      const trendDirection = !isThinMarket && Math.abs(trendScore) >= 8 ? Math.sign(trendScore) : 0;
       const absoluteIndex = strikes.indexOf(strike);
       const distance = absoluteIndex - atmIndex;
-      const bias = combinedScore < 10 ? "Balanced" : netScore > 0 ? "Up / support" : netScore < 0 ? "Down / resistance" : "Balanced";
+      const bias = isThinMarket ? "Balanced" : netScore > 0 ? "Up / support" : netScore < 0 ? "Down / resistance" : "Balanced";
       const trend = trendDirection > 0 ? "Increasing support" : trendDirection < 0 ? "Increasing resistance" : "Flat";
 
       return {
@@ -2862,10 +2869,13 @@ function buildStrikeMovementRows(overview: MarketOverview) {
         distanceLabel: distance === 0 ? "ATM" : distance > 0 ? `ATM +${distance}` : `ATM ${distance}`,
         peScore,
         ceScore,
+        peActivity,
+        ceActivity,
         buyerMomentumScore,
         sellerSafetyScore,
         netScore,
         netScorePercent,
+        scoreBarPercent,
         trendScore,
         trendDirection,
         bias,
@@ -3083,12 +3093,25 @@ function buildChainStats(overview: MarketOverview, preferences: DisplayPreferenc
 
 function buildPressureSummary(overview: MarketOverview) {
   const pressureGap = overview.pressure.bullishPressure - overview.pressure.bearishPressure;
+  const pressureGapAbs = Math.abs(pressureGap);
   const support = overview.pressure.supportZones[0];
   const resistance = overview.pressure.resistanceZones[0];
   const supportDistance = support ? Math.abs(overview.snapshot.spotPrice - support.strikePrice) : undefined;
   const resistanceDistance = resistance ? Math.abs(resistance.strikePrice - overview.snapshot.spotPrice) : undefined;
   const bias = pressureGap >= 6 ? "Bullish" : pressureGap <= -6 ? "Bearish" : "Balanced";
-  const readiness = Math.abs(pressureGap) >= 8 ? "Actionable" : Math.abs(pressureGap) >= 4 ? "Watch" : "Wait";
+  const pcr = overview.pressure.pcr;
+  const pcrTone = pcr === undefined ? "blue" : pcr >= 1.05 ? "green" : pcr <= 0.95 ? "red" : "blue";
+  const pcrAligned = (bias === "Bullish" && pcr !== undefined && pcr >= 1.05) || (bias === "Bearish" && pcr !== undefined && pcr <= 0.95);
+  const maxPainStrike = calculateMaxPainStrike(overview);
+  const maxPainDistance = maxPainStrike === undefined ? undefined : maxPainStrike - overview.snapshot.spotPrice;
+  const currentActivityScore = calculateCurrentActivityScore(overview);
+  const convictionScore = Math.min(100, Math.round(pressureGapAbs * 3 + currentActivityScore));
+  const conviction = convictionScore >= 70 ? "High" : convictionScore >= 45 ? "Medium" : "Low";
+  const convictionTone = conviction === "High" ? "green" : conviction === "Medium" ? "blue" : "red";
+  const setupQuality = Math.min(100, Math.round(pressureGapAbs * 4 + (pcrAligned ? 18 : 0) + (convictionScore * 0.45) + getLevelProximityScore(supportDistance, resistanceDistance)));
+  const setupQualityGrade = setupQuality >= 80 ? "A+" : setupQuality >= 70 ? "A" : setupQuality >= 55 ? "B" : setupQuality >= 40 ? "C" : "Wait";
+  const setupQualityTone = setupQuality >= 70 ? "green" : setupQuality >= 40 ? "blue" : "red";
+  const readiness = setupQuality >= 70 && convictionScore >= 45 && pressureGapAbs >= 6 ? "Actionable" : setupQuality >= 45 || pressureGapAbs >= 4 ? "Watch" : "Wait";
   const strongestSupport = support?.score ?? 0;
   const strongestResistance = resistance?.score ?? 0;
   const strongestLevelText =
@@ -3100,15 +3123,88 @@ function buildPressureSummary(overview: MarketOverview) {
 
   return {
     bias,
-    biasDetail: `${Math.abs(pressureGap)} pt pressure spread`,
+    biasDetail: `${pressureGapAbs} pt pressure spread`,
     readiness,
-    readinessDetail: readiness === "Actionable" ? "Pressure edge is clear" : readiness === "Watch" ? "Bias building" : "No clean edge",
+    readinessDetail: readiness === "Actionable" ? `Quality ${setupQuality}% with confirmed pressure` : readiness === "Watch" ? `Quality ${setupQuality}% but needs follow-through` : `Quality ${setupQuality}% / no clean edge`,
+    pcrText: pcr?.toFixed(2) ?? "--",
+    pcrDetail: pcr === undefined ? "PCR unavailable" : pcrAligned ? "PCR confirms bias" : pcr >= 1.05 ? "Put support heavy" : pcr <= 0.95 ? "Call pressure heavy" : "Balanced PCR",
+    pcrTone: pcrTone as "blue" | "green" | "red",
+    maxPainText: maxPainStrike === undefined ? "--" : formatStrike(maxPainStrike),
+    maxPainDistanceText: formatMaxPainDistance(maxPainDistance),
+    conviction,
+    convictionScore,
+    convictionDetail: currentActivityScore >= 35 ? "active tape" : currentActivityScore >= 18 ? "moderate tape" : "thin tape",
+    convictionTone: convictionTone as "blue" | "green" | "red",
+    setupQualityText: `${setupQualityGrade} / ${setupQuality}%`,
+    setupQualityDetail: pcrAligned ? "PCR and pressure aligned" : bias === "Balanced" ? "Waiting for direction" : "Pressure needs PCR support",
+    setupQualityTone: setupQualityTone as "blue" | "green" | "red",
     nearestSupportText: support ? formatStrike(support.strikePrice) : "--",
     nearestResistanceText: resistance ? formatStrike(resistance.strikePrice) : "--",
     supportDistanceText: supportDistance === undefined ? "No support zone" : `${formatStrike(supportDistance)} pts below/near`,
     resistanceDistanceText: resistanceDistance === undefined ? "No resistance zone" : `${formatStrike(resistanceDistance)} pts above/near`,
     strongestLevelText
   };
+}
+
+function calculateMaxPainStrike(overview: MarketOverview) {
+  const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
+  if (!strikes.length) {
+    return undefined;
+  }
+
+  let bestStrike = strikes[0];
+  let lowestPain = Number.POSITIVE_INFINITY;
+  for (const candidate of strikes) {
+    const pain = overview.snapshot.ticks.reduce((sum, tick) => {
+      const openInterestLots = toLots(tick.openInterest, tick);
+      const intrinsic = tick.optionType === "CE" ? Math.max(0, candidate - tick.strikePrice) : Math.max(0, tick.strikePrice - candidate);
+      return sum + openInterestLots * intrinsic;
+    }, 0);
+    if (pain < lowestPain) {
+      lowestPain = pain;
+      bestStrike = candidate;
+    }
+  }
+
+  return bestStrike;
+}
+
+function calculateCurrentActivityScore(overview: MarketOverview) {
+  const totalOiLots = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
+  if (totalOiLots <= 0) {
+    return 0;
+  }
+  const totalChangeLots = overview.snapshot.ticks.reduce((sum, tick) => sum + Math.abs(toLots(tick.changeInOpenInterest, tick)), 0);
+  const totalVolumeLots = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.volume, tick), 0);
+  const activityRatio = (totalChangeLots + totalVolumeLots * 0.25) / totalOiLots;
+  return Math.min(55, Math.round(activityRatio * 100));
+}
+
+function getLevelProximityScore(supportDistance?: number, resistanceDistance?: number) {
+  const nearestDistance = Math.min(supportDistance ?? Number.POSITIVE_INFINITY, resistanceDistance ?? Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(nearestDistance)) {
+    return 0;
+  }
+  if (nearestDistance <= 25) {
+    return 14;
+  }
+  if (nearestDistance <= 75) {
+    return 10;
+  }
+  if (nearestDistance <= 150) {
+    return 6;
+  }
+  return 2;
+}
+
+function formatMaxPainDistance(distance?: number) {
+  if (distance === undefined) {
+    return "Distance unavailable";
+  }
+  if (Math.abs(distance) < 0.01) {
+    return "At spot";
+  }
+  return `${formatPrice(Math.abs(distance))} pts ${distance > 0 ? "above spot" : "below spot"}`;
 }
 
 function buildPressureSignals(overview: MarketOverview, chainStats: ReturnType<typeof buildChainStats>) {
@@ -3431,12 +3527,15 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatusTile({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+function StatusTile({ icon, label, value, detail, tone = "blue" }: { icon: ReactNode; label: string; value: string; detail?: string; tone?: "blue" | "green" | "red" }) {
+  const toneClass = tone === "green" ? "text-terminal-emerald" : tone === "red" ? "text-terminal-red" : "text-terminal-blue";
+
   return (
     <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
-      <div className="flex items-center gap-2 text-terminal-blue">{icon}</div>
+      <div className={`flex items-center gap-2 ${toneClass}`}>{icon}</div>
       <p className="mt-3 text-xs uppercase text-terminal-muted">{label}</p>
-      <p className="mt-1 font-semibold">{value}</p>
+      <p className={`mt-1 font-semibold ${toneClass}`}>{value}</p>
+      {detail ? <p className="mt-1 text-xs text-terminal-muted">{detail}</p> : null}
     </div>
   );
 }
