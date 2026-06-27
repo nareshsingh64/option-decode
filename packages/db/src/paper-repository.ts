@@ -350,6 +350,28 @@ export async function updatePaperPositionRisk(positionId: string, user: AuthUser
   return getPaperSummary(user, client);
 }
 
+export async function monitorPaperTradingForSnapshot(underlyingSymbol: string, expiryLabel: string, client: PrismaClient = prisma) {
+  const orderWhere: Prisma.PaperOrderWhereInput = {
+    ...realUserPaperWhere(),
+    underlyingSymbol,
+    expiryLabel
+  };
+  const positionWhere: Prisma.PaperPositionWhereInput = {
+    ...realUserPositionWhere(),
+    underlyingSymbol,
+    expiryLabel
+  };
+
+  const filledOrders = await refreshPendingPaperOrders(orderWhere, client);
+  const positionResult = await refreshOpenPositionPrices(positionWhere, client);
+
+  return {
+    filledOrders,
+    checkedPositions: positionResult.checkedPositions,
+    closedPositions: positionResult.closedPositions
+  };
+}
+
 async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, client: PrismaClient) {
   const pendingOrders = await client.paperOrder.findMany({
     where: {
@@ -359,7 +381,7 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
     orderBy: { createdAt: "asc" }
   });
 
-  await Promise.all(
+  const results = await Promise.all(
     pendingOrders.map(async (order) => {
       const latestTick = await client.optionContractTick.findFirst({
         where: {
@@ -373,7 +395,7 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
 
       const latestPrice = latestTick?.lastPrice?.toNumber();
       if (latestPrice === undefined || !shouldFillPaperOrder(order.action, order.requestedPrice.toNumber(), latestPrice)) {
-        return;
+        return false;
       }
 
       const filledPrice = normalizeTradablePrice(order.requestedPrice.toNumber());
@@ -389,7 +411,7 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
         });
 
         if (currentOrder?.status !== "PENDING") {
-          return;
+          return false;
         }
 
         await tx.paperOrder.update({
@@ -426,9 +448,13 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
             openedAt: now
           }
         });
+
+        return true;
       });
     })
   );
+
+  return results.filter(Boolean).length;
 }
 
 async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, client: PrismaClient) {
@@ -450,7 +476,7 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
     return pending;
   };
 
-  await Promise.all(
+  const results = await Promise.all(
     positions.map(async (position) => {
       const latestTick = await client.optionContractTick.findFirst({
         where: {
@@ -463,7 +489,7 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
       });
 
       if (!latestTick?.lastPrice) {
-        return;
+        return { checked: true, closed: false };
       }
 
       const latestPrice = latestTick.lastPrice.toNumber();
@@ -496,10 +522,18 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
 
         if (updatedPosition?.status === "OPEN") {
           await closePositionRecord(updatedPosition, hitTarget ? "TARGET" : "STOP_LOSS", client);
+          return { checked: true, closed: true };
         }
       }
+
+      return { checked: true, closed: false };
     })
   );
+
+  return {
+    checkedPositions: results.filter((result) => result.checked).length,
+    closedPositions: results.filter((result) => result.closed).length
+  };
 }
 
 async function closePositionRecord(

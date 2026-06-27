@@ -1,5 +1,5 @@
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, monitorPaperTradingForSnapshot, saveOptionChainSnapshot } from "@option-decode/db";
 import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
@@ -53,6 +53,7 @@ async function captureOnce() {
 
     const snapshot = buildDemoSnapshot();
     const snapshotId = await saveOptionChainSnapshot(snapshot);
+    await monitorPaperTrading(snapshot);
     await publishSnapshotSaved(snapshotId, snapshot);
     console.log("Saved mock market snapshot", {
       snapshotId,
@@ -94,12 +95,32 @@ async function captureOnce() {
 
     const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
     const snapshotId = await saveOptionChainSnapshot(snapshot);
+    await monitorPaperTrading(snapshot);
     await publishSnapshotSaved(snapshotId, snapshot);
     console.log("Saved Dhan market snapshot", {
       snapshotId,
       underlying: snapshot.underlyingSymbol,
       expiry: snapshot.expiry,
       ticks: snapshot.ticks.length
+    });
+  }
+}
+
+async function monitorPaperTrading(snapshot: { underlyingSymbol: string; expiry: string }) {
+  try {
+    const result = await monitorPaperTradingForSnapshot(snapshot.underlyingSymbol, snapshot.expiry);
+    if (result.filledOrders || result.checkedPositions || result.closedPositions) {
+      console.log("Paper trading monitor completed", {
+        underlying: snapshot.underlyingSymbol,
+        expiry: snapshot.expiry,
+        ...result
+      });
+    }
+  } catch (error) {
+    console.error("Paper trading monitor failed after market snapshot", {
+      underlying: snapshot.underlyingSymbol,
+      expiry: snapshot.expiry,
+      error
     });
   }
 }
