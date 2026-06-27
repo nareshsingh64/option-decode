@@ -105,6 +105,8 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
   const nearestSupport = pressure.supportZones[0];
   const resistanceDistance = nearestResistance ? Math.abs(nearestResistance.strikePrice - snapshot.spotPrice) : undefined;
   const supportDistance = nearestSupport ? Math.abs(snapshot.spotPrice - nearestSupport.strikePrice) : undefined;
+  const proximityThreshold = getProximityThreshold(snapshot.underlyingSymbol);
+  const maxPainDistance = pressure.maxPain !== undefined ? Math.abs(snapshot.spotPrice - pressure.maxPain) : undefined;
 
   if (pressure.bearishPressure >= 55 && nearestResistance) {
     alerts.push({
@@ -139,7 +141,7 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
-  if (resistanceDistance !== undefined && resistanceDistance <= 100 && nearestResistance) {
+  if (resistanceDistance !== undefined && resistanceDistance <= proximityThreshold && nearestResistance) {
     alerts.push({
       id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-resistance`,
       severity: "info",
@@ -150,7 +152,7 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
-  if (supportDistance !== undefined && supportDistance <= 100 && nearestSupport) {
+  if (supportDistance !== undefined && supportDistance <= proximityThreshold && nearestSupport) {
     alerts.push({
       id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-support`,
       severity: "info",
@@ -161,9 +163,38 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
-  return alerts.slice(0, 5);
+  if (maxPainDistance !== undefined && pressure.maxPain !== undefined && maxPainDistance <= proximityThreshold) {
+    alerts.push({
+      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-max-pain`,
+      severity: "info",
+      title: "CMP near max pain",
+      message: `Spot is within ${formatStrike(maxPainDistance)} points of max pain at ${formatStrike(pressure.maxPain)}.`,
+      metric: "maxPainDistance",
+      createdAt
+    });
+  }
+
+  return alerts.slice(0, 7);
 }
 
 function formatStrike(value: number) {
   return value.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+function getProximityThreshold(underlyingSymbol: string) {
+  const thresholds: Record<string, number> = {
+    NIFTY: 100,
+    BANKNIFTY: 250,
+    FINNIFTY: 100,
+    MIDCPNIFTY: 75,
+    NIFTYNXT50: 150,
+    SENSEX: 250,
+    BANKEX: 150,
+    CRUDEOIL: 30,
+    NATURALGAS: 5,
+    COPPER: 10,
+    SILVER: 150
+  };
+
+  return thresholds[underlyingSymbol.toUpperCase()] ?? 100;
 }
