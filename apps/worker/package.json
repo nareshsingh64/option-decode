@@ -11,14 +11,17 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@option-decode/analytics": "workspace:*",
     "@option-decode/config": "workspace:*",
     "@option-decode/db": "workspace:*",
     "@option-decode/dhan": "workspace:*",
     "@option-decode/utils": "workspace:*",
     "bullmq": "^5.34.2",
-    "ioredis": "^5.4.2"
+    "ioredis": "^5.4.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@types/web-push": "^3.6.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

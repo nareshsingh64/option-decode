@@ -1,4 +1,4 @@
-import type { MarketAlert, OptionChainSnapshot, OptionContractTick, PressureScore, PressureZone } from "@option-decode/types";
+import type { AlertThresholdConfig, MarketAlert, OptionChainSnapshot, OptionContractTick, PressureScore, PressureZone } from "@option-decode/types";
 
 function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
   const oi = toLots(tick.openInterest, tick);
@@ -98,20 +98,26 @@ function weightedVolumeContribution(volume: number, averageVolume: number): numb
   return volume * 0.5 * surgeMultiplier;
 }
 
-export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date()): MarketAlert[] {
+export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date(), thresholds?: AlertThresholdConfig): MarketAlert[] {
   const createdAt = now.toISOString();
   const alerts: MarketAlert[] = [];
   const nearestResistance = pressure.resistanceZones[0];
   const nearestSupport = pressure.supportZones[0];
   const resistanceDistance = nearestResistance ? Math.abs(nearestResistance.strikePrice - snapshot.spotPrice) : undefined;
   const supportDistance = nearestSupport ? Math.abs(snapshot.spotPrice - nearestSupport.strikePrice) : undefined;
-  const proximityThreshold = getProximityThreshold(snapshot.underlyingSymbol);
+  const proximityThreshold = thresholds?.proximityPoints ?? getProximityThreshold(snapshot.underlyingSymbol);
+  const pressureWarning = thresholds?.pressureWarning ?? 55;
+  const pressureCritical = thresholds?.pressureCritical ?? 62;
+  const pcrUpper = thresholds?.pcrUpper ?? 1.15;
+  const pcrLower = thresholds?.pcrLower ?? 0.85;
+  const pcrCriticalUpper = pcrUpper + 0.1;
+  const pcrCriticalLower = Math.max(0, pcrLower - 0.1);
   const maxPainDistance = pressure.maxPain !== undefined ? Math.abs(snapshot.spotPrice - pressure.maxPain) : undefined;
 
-  if (pressure.bearishPressure >= 55 && nearestResistance) {
+  if (pressure.bearishPressure >= pressureWarning && nearestResistance) {
     alerts.push({
       id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bearish-pressure`,
-      severity: pressure.bearishPressure >= 62 ? "critical" : "warning",
+      severity: pressure.bearishPressure >= pressureCritical ? "critical" : "warning",
       title: "Resistance pressure active",
       message: `CE pressure is ${pressure.bearishPressure}% with strongest resistance near ${formatStrike(nearestResistance.strikePrice)}.`,
       metric: "bearishPressure",
@@ -119,10 +125,10 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
-  if (pressure.bullishPressure >= 55 && nearestSupport) {
+  if (pressure.bullishPressure >= pressureWarning && nearestSupport) {
     alerts.push({
       id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bullish-pressure`,
-      severity: pressure.bullishPressure >= 62 ? "critical" : "warning",
+      severity: pressure.bullishPressure >= pressureCritical ? "critical" : "warning",
       title: "Support pressure active",
       message: `PE support is ${pressure.bullishPressure}% with strongest support near ${formatStrike(nearestSupport.strikePrice)}.`,
       metric: "bullishPressure",
@@ -130,10 +136,10 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
-  if (pressure.pcr !== undefined && (pressure.pcr >= 1.15 || pressure.pcr <= 0.85)) {
+  if (pressure.pcr !== undefined && (pressure.pcr >= pcrUpper || pressure.pcr <= pcrLower)) {
     alerts.push({
       id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-pcr-bias`,
-      severity: pressure.pcr >= 1.25 || pressure.pcr <= 0.75 ? "critical" : "warning",
+      severity: pressure.pcr >= pcrCriticalUpper || pressure.pcr <= pcrCriticalLower ? "critical" : "warning",
       title: "PCR bias detected",
       message: `PCR is ${pressure.pcr.toFixed(2)}, showing ${pressure.pcr > 1 ? "put-side support" : "call-side resistance"} bias.`,
       metric: "pcr",

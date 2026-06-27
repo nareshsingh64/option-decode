@@ -6,7 +6,7 @@ import tls from "node:tls";
 import { z } from "zod";
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -329,13 +329,16 @@ app.get<{
   const requestedUnderlying = normalizeUnderlying(request.query.underlying);
   const requestedExpiry = request.query.expiry?.trim() || undefined;
   const tickerSymbolsPromise = getTickerSymbols(requestedUnderlying);
-  const [marketAux, snapshot, expiries] = await Promise.all([
+  const userPromise = getRequestUser(request.headers.cookie);
+  const [marketAux, snapshot, expiries, user] = await Promise.all([
     tickerSymbolsPromise.then((symbols) => getMarketAuxData(symbols)),
     getCachedLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry),
-    getCachedExpiriesOrEmpty(requestedUnderlying)
+    getCachedExpiriesOrEmpty(requestedUnderlying),
+    userPromise
   ]);
   const pressure = calculatePressureScore(snapshot);
-  const alerts = generateMarketAlerts(snapshot, pressure);
+  const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
+  const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
 
   return {
     underlyings: visibleUnderlyings,
@@ -375,6 +378,108 @@ app.get<{
   return {
     trend: await listPcrTrend(requestedUnderlying, requestedExpiry, Number.isFinite(parsedLimit) ? parsedLimit : 60)
   };
+});
+
+const alertThresholdSchema = z.object({
+  proximityPoints: z.coerce.number().positive().max(10000),
+  pcrUpper: z.coerce.number().min(0.01).max(10),
+  pcrLower: z.coerce.number().min(0.01).max(10),
+  pressureWarning: z.coerce.number().int().min(1).max(100),
+  pressureCritical: z.coerce.number().int().min(1).max(100)
+}).superRefine((value, context) => {
+  if (value.pcrLower >= value.pcrUpper) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pcrLower"],
+      message: "PCR lower threshold must be below PCR upper threshold."
+    });
+  }
+  if (value.pressureWarning > value.pressureCritical) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pressureWarning"],
+      message: "Warning pressure must be less than or equal to critical pressure."
+    });
+  }
+});
+
+app.get("/api/settings/alert-thresholds", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  return {
+    thresholds: await listUserAlertThresholds(user.id)
+  };
+});
+
+app.put<{
+  Params: {
+    underlying: string;
+  };
+}>("/api/settings/alert-thresholds/:underlying", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  const underlyingSymbol = normalizeUnderlyingKey(request.params.underlying);
+  if (!visibleUnderlyings.includes(underlyingSymbol)) {
+    return reply.status(400).send({ message: "Unsupported underlying." });
+  }
+
+  const parsed = alertThresholdSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({
+      message: "Invalid alert thresholds.",
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message
+      }))
+    });
+  }
+
+  const threshold = await upsertUserAlertThreshold(user.id, {
+    underlyingSymbol,
+    ...parsed.data
+  });
+  marketSnapshotCache.clear();
+  return { threshold };
+});
+
+app.get("/api/push/vapid-public-key", async () => ({
+  enabled: Boolean(config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY),
+  publicKey: config.VAPID_PUBLIC_KEY ?? null
+}));
+
+const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({
+    p256dh: z.string().min(1),
+    auth: z.string().min(1)
+  })
+});
+
+app.post("/api/push/subscriptions", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+  if (!config.VAPID_PUBLIC_KEY || !config.VAPID_PRIVATE_KEY) {
+    return reply.status(503).send({ message: "Browser push is not configured." });
+  }
+
+  const parsed = pushSubscriptionSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ message: "Invalid push subscription." });
+  }
+
+  const subscription = await upsertPushSubscription(user.id, {
+    ...parsed.data,
+    userAgent: request.headers["user-agent"]
+  });
+  return { subscription };
 });
 
 app.get<{
@@ -508,10 +613,12 @@ app.get<{
   }
 
   const pressure = calculatePressureScore(snapshot);
+  const user = await getRequestUser(request.headers.cookie);
+  const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   return {
     snapshot,
     pressure,
-    alerts: generateMarketAlerts(snapshot, pressure)
+    alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined)
   };
 });
 

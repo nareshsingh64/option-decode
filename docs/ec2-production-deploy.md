@@ -32,12 +32,22 @@ Set real values for:
 - `SMTP_USER`
 - `SMTP_PASSWORD`
 - `EMAIL_FROM`
+- `SNAPSHOT_RETENTION_DAYS`
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT`
 
 Generate strong secrets:
 
 ```bash
 openssl rand -base64 48
 openssl rand -base64 48
+```
+
+Generate browser push VAPID keys after dependencies are installed:
+
+```bash
+pnpm --filter @option-decode/worker exec web-push generate-vapid-keys
 ```
 
 For `pytrade.co.in`, keep:

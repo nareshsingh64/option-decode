@@ -46,6 +46,41 @@ model User {
   watchlists     Watchlist[]
   paperOrders    PaperOrder[]
   paperPositions PaperPosition[]
+  alertThresholds AlertThreshold[]
+  pushSubscriptions PushSubscription[]
+}
+
+model AlertThreshold {
+  id               String   @id @default(cuid())
+  userId           String
+  underlyingSymbol String
+  proximityPoints  Decimal  @db.Decimal(12, 2)
+  pcrUpper         Decimal  @db.Decimal(10, 4)
+  pcrLower         Decimal  @db.Decimal(10, 4)
+  pressureWarning  Int      @default(55)
+  pressureCritical Int      @default(62)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, underlyingSymbol])
+  @@index([underlyingSymbol])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @db.VarChar(768)
+  p256dh    String   @db.VarChar(255)
+  auth      String   @db.VarChar(255)
+  userAgent String?  @db.VarChar(255)
+  disabled  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, endpoint])
+  @@index([userId, disabled])
 }
 
 model EmailVerificationToken {

@@ -519,3 +519,59 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
     ticks
   };
 }
+
+export async function pruneMarketDataBefore(cutoff: Date, batchSize = 500, client: PrismaClient = prisma) {
+  const snapshots = await client.optionChainSnapshot.findMany({
+    where: {
+      snapshotTime: {
+        lt: cutoff
+      }
+    },
+    orderBy: {
+      snapshotTime: "asc"
+    },
+    select: {
+      id: true
+    },
+    take: batchSize
+  });
+  const snapshotIds = snapshots.map((snapshot) => snapshot.id);
+
+  if (!snapshotIds.length) {
+    return {
+      snapshots: 0,
+      ticks: 0,
+      pressureScores: 0
+    };
+  }
+
+  const [pressureScores, ticks, deletedSnapshots] = await client.$transaction([
+    client.pressureScore.deleteMany({
+      where: {
+        snapshotId: {
+          in: snapshotIds
+        }
+      }
+    }),
+    client.optionContractTick.deleteMany({
+      where: {
+        snapshotId: {
+          in: snapshotIds
+        }
+      }
+    }),
+    client.optionChainSnapshot.deleteMany({
+      where: {
+        id: {
+          in: snapshotIds
+        }
+      }
+    })
+  ]);
+
+  return {
+    snapshots: deletedSnapshots.count,
+    ticks: ticks.count,
+    pressureScores: pressureScores.count
+  };
+}

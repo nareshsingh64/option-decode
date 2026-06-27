@@ -107,6 +107,15 @@ interface PcrTrendPoint {
   maxPain?: number;
 }
 
+interface AlertThreshold {
+  underlyingSymbol: string;
+  proximityPoints: number;
+  pcrUpper: number;
+  pcrLower: number;
+  pressureWarning: number;
+  pressureCritical: number;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -263,6 +272,35 @@ type ChainTableMode = "standard" | "greeks";
 
 const REFRESH_SECONDS = 30;
 const FAST_REFRESH_SECONDS = 5;
+const DEFAULT_ALERT_THRESHOLDS: Record<string, AlertThreshold> = {
+  NIFTY: { underlyingSymbol: "NIFTY", proximityPoints: 100, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  BANKNIFTY: { underlyingSymbol: "BANKNIFTY", proximityPoints: 250, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  FINNIFTY: { underlyingSymbol: "FINNIFTY", proximityPoints: 100, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  MIDCPNIFTY: { underlyingSymbol: "MIDCPNIFTY", proximityPoints: 75, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  NIFTYNXT50: { underlyingSymbol: "NIFTYNXT50", proximityPoints: 150, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  SENSEX: { underlyingSymbol: "SENSEX", proximityPoints: 250, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  BANKEX: { underlyingSymbol: "BANKEX", proximityPoints: 150, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  CRUDEOIL: { underlyingSymbol: "CRUDEOIL", proximityPoints: 30, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  NATURALGAS: { underlyingSymbol: "NATURALGAS", proximityPoints: 5, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  COPPER: { underlyingSymbol: "COPPER", proximityPoints: 10, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 },
+  SILVER: { underlyingSymbol: "SILVER", proximityPoints: 150, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 }
+};
+
+function defaultAlertThreshold(underlyingSymbol: string): AlertThreshold {
+  const normalized = underlyingSymbol.toUpperCase();
+  return DEFAULT_ALERT_THRESHOLDS[normalized] ?? { underlyingSymbol: normalized, proximityPoints: 100, pcrUpper: 1.15, pcrLower: 0.85, pressureWarning: 55, pressureCritical: 62 };
+}
+
+function defaultAlertThresholdDraft(underlyingSymbol: string) {
+  const threshold = defaultAlertThreshold(underlyingSymbol);
+  return {
+    proximityPoints: String(threshold.proximityPoints),
+    pcrUpper: String(threshold.pcrUpper),
+    pcrLower: String(threshold.pcrLower),
+    pressureWarning: String(threshold.pressureWarning),
+    pressureCritical: String(threshold.pressureCritical)
+  };
+}
 
 export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onMarketSelectionChange }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
@@ -276,6 +314,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [watchlist, setWatchlist] = useState<Watchlist | null>(null);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
   const [pcrTrend, setPcrTrend] = useState<PcrTrendPoint[]>([]);
+  const [alertThresholds, setAlertThresholds] = useState<AlertThreshold[]>([]);
+  const [alertThresholdDraft, setAlertThresholdDraft] = useState(defaultAlertThresholdDraft(initialOverview.selectedUnderlying));
+  const [alertSettingsStatus, setAlertSettingsStatus] = useState<string | null>(null);
+  const [isSavingAlertThresholds, setIsSavingAlertThresholds] = useState(false);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+  const [isPushSubmitting, setIsPushSubmitting] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">(initialParams?.auth === "register" ? "register" : "login");
   const [authEmail, setAuthEmail] = useState("");
@@ -592,6 +636,16 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   }, []);
 
+  const refreshAlertThresholds = useCallback(async () => {
+    try {
+      const thresholds = await fetchAlertThresholds();
+      setAlertThresholds(thresholds);
+      setAlertSettingsStatus(null);
+    } catch (error) {
+      setAlertSettingsStatus(error instanceof Error ? error.message : "Unable to load alert settings");
+    }
+  }, []);
+
   const refreshReplayTimeline = useCallback(async () => {
     try {
       setReplayError(null);
@@ -662,7 +716,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     if (initialView === "admin") {
       refreshAdminOverview();
     }
-  }, [initialView, refreshAdminOverview, refreshPaperSummary, refreshReplayTimeline]);
+    if (initialView === "settings" && authUser) {
+      refreshAlertThresholds();
+    }
+  }, [authUser, initialView, refreshAdminOverview, refreshAlertThresholds, refreshPaperSummary, refreshReplayTimeline]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -758,6 +815,56 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const pendingPaperOrders = useMemo(() => (paperSummary?.orders ?? []).filter((order) => order.status === "PENDING"), [paperSummary?.orders]);
   const recentPaperOrders = useMemo(() => (paperSummary?.orders ?? []).filter((order) => order.status !== "PENDING"), [paperSummary?.orders]);
   const snapshotAge = formatIstTime(overview.snapshot.snapshotTime);
+  const selectedAlertThreshold = useMemo(() => {
+    return alertThresholds.find((threshold) => threshold.underlyingSymbol === overview.selectedUnderlying) ?? defaultAlertThreshold(overview.selectedUnderlying);
+  }, [alertThresholds, overview.selectedUnderlying]);
+
+  useEffect(() => {
+    setAlertThresholdDraft({
+      proximityPoints: String(selectedAlertThreshold.proximityPoints),
+      pcrUpper: String(selectedAlertThreshold.pcrUpper),
+      pcrLower: String(selectedAlertThreshold.pcrLower),
+      pressureWarning: String(selectedAlertThreshold.pressureWarning),
+      pressureCritical: String(selectedAlertThreshold.pressureCritical)
+    });
+  }, [selectedAlertThreshold]);
+
+  const saveAlertThresholds = async () => {
+    setIsSavingAlertThresholds(true);
+    setAlertSettingsStatus(null);
+    try {
+      const saved = await updateAlertThreshold(overview.selectedUnderlying, {
+        proximityPoints: Number(alertThresholdDraft.proximityPoints),
+        pcrUpper: Number(alertThresholdDraft.pcrUpper),
+        pcrLower: Number(alertThresholdDraft.pcrLower),
+        pressureWarning: Number(alertThresholdDraft.pressureWarning),
+        pressureCritical: Number(alertThresholdDraft.pressureCritical)
+      });
+      setAlertThresholds((thresholds) => [
+        ...thresholds.filter((threshold) => threshold.underlyingSymbol !== saved.underlyingSymbol),
+        saved
+      ].sort((left, right) => left.underlyingSymbol.localeCompare(right.underlyingSymbol)));
+      setAlertSettingsStatus("Alert thresholds saved.");
+      await refreshOverview();
+    } catch (error) {
+      setAlertSettingsStatus(error instanceof Error ? error.message : "Unable to save alert thresholds");
+    } finally {
+      setIsSavingAlertThresholds(false);
+    }
+  };
+
+  const enableBrowserPush = async () => {
+    setIsPushSubmitting(true);
+    setPushStatus(null);
+    try {
+      await registerBrowserPush();
+      setPushStatus("Browser notifications are enabled for critical alerts.");
+    } catch (error) {
+      setPushStatus(error instanceof Error ? error.message : "Unable to enable browser notifications");
+    } finally {
+      setIsPushSubmitting(false);
+    }
+  };
   const alertCenterHref = buildClientViewHref("alerts", overview.selectedUnderlying, overview.selectedExpiry);
 
   useEffect(() => {
@@ -1531,34 +1638,61 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "settings" ? (
-        <Panel title="Settings">
-          <div className="grid gap-4 md:grid-cols-2">
-            <SettingsSwitch
-              label="Number Format"
-              leftLabel="L"
-              rightLabel="M"
-              checked={numberFormatMode === "metric"}
-              onChange={(checked) => setNumberFormatMode(checked ? "metric" : "indian")}
-              detail={numberFormatMode === "metric" ? "Uses K, M, B scaling" : "Uses K, L, Cr scaling"}
-            />
-            <SettingsSwitch
-              label="OI / Volume Values"
-              leftLabel="Contracts"
-              rightLabel="Numbers"
-              checked={quantityDisplayMode === "numbers"}
-              onChange={(checked) => setQuantityDisplayMode(checked ? "numbers" : "lots")}
-              detail={quantityDisplayMode === "numbers" ? "Shows raw exchange quantity" : "Shows contract-normalized values"}
-            />
-            <SettingsSwitch
-              label="Visible Strikes"
-              leftLabel="VIX"
-              rightLabel="ATM"
-              checked={visibleStrikeMode === "atm"}
-              onChange={(checked) => setVisibleStrikeMode(checked ? "atm" : "vix")}
-              detail={visibleStrikeMode === "atm" ? "Shows ATM +/- 6 strikes" : "Shows India VIX expected range"}
-            />
-          </div>
-        </Panel>
+        <div className="grid gap-4">
+          <Panel title="Settings">
+            <div className="grid gap-4 md:grid-cols-2">
+              <SettingsSwitch
+                label="Number Format"
+                leftLabel="L"
+                rightLabel="M"
+                checked={numberFormatMode === "metric"}
+                onChange={(checked) => setNumberFormatMode(checked ? "metric" : "indian")}
+                detail={numberFormatMode === "metric" ? "Uses K, M, B scaling" : "Uses K, L, Cr scaling"}
+              />
+              <SettingsSwitch
+                label="OI / Volume Values"
+                leftLabel="Contracts"
+                rightLabel="Numbers"
+                checked={quantityDisplayMode === "numbers"}
+                onChange={(checked) => setQuantityDisplayMode(checked ? "numbers" : "lots")}
+                detail={quantityDisplayMode === "numbers" ? "Shows raw exchange quantity" : "Shows contract-normalized values"}
+              />
+              <SettingsSwitch
+                label="Visible Strikes"
+                leftLabel="VIX"
+                rightLabel="ATM"
+                checked={visibleStrikeMode === "atm"}
+                onChange={(checked) => setVisibleStrikeMode(checked ? "atm" : "vix")}
+                detail={visibleStrikeMode === "atm" ? "Shows ATM +/- 6 strikes" : "Shows India VIX expected range"}
+              />
+            </div>
+          </Panel>
+          <Panel title="Alert Thresholds">
+            <div className="grid gap-3 md:grid-cols-5">
+              <SettingsNumberField label="Near Level Pts" value={alertThresholdDraft.proximityPoints} onChange={(value) => setAlertThresholdDraft((draft) => ({ ...draft, proximityPoints: value }))} />
+              <SettingsNumberField label="PCR Upper" value={alertThresholdDraft.pcrUpper} step="0.01" onChange={(value) => setAlertThresholdDraft((draft) => ({ ...draft, pcrUpper: value }))} />
+              <SettingsNumberField label="PCR Lower" value={alertThresholdDraft.pcrLower} step="0.01" onChange={(value) => setAlertThresholdDraft((draft) => ({ ...draft, pcrLower: value }))} />
+              <SettingsNumberField label="Pressure Warn %" value={alertThresholdDraft.pressureWarning} onChange={(value) => setAlertThresholdDraft((draft) => ({ ...draft, pressureWarning: value }))} />
+              <SettingsNumberField label="Pressure Critical %" value={alertThresholdDraft.pressureCritical} onChange={(value) => setAlertThresholdDraft((draft) => ({ ...draft, pressureCritical: value }))} />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-terminal-muted">Applies to {overview.selectedUnderlying}. Change the Market Control symbol to edit another underlying.</p>
+              <button className="rounded bg-terminal-blue px-4 py-2 text-sm font-semibold text-white transition hover:bg-terminal-blue/80 disabled:cursor-not-allowed disabled:opacity-60" disabled={!authUser || isSavingAlertThresholds} type="button" onClick={saveAlertThresholds}>
+                {isSavingAlertThresholds ? "Saving..." : "Save Thresholds"}
+              </button>
+            </div>
+            {alertSettingsStatus ? <p className="mt-3 text-sm text-terminal-muted">{alertSettingsStatus}</p> : null}
+          </Panel>
+          <Panel title="Browser Notifications">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="max-w-2xl text-sm text-terminal-muted">Critical market alerts can be delivered by browser push when this device grants permission.</p>
+              <button className="rounded border border-terminal-blue px-4 py-2 text-sm font-semibold text-terminal-blue transition hover:bg-terminal-blue/10 disabled:cursor-not-allowed disabled:opacity-60" disabled={!authUser || isPushSubmitting} type="button" onClick={enableBrowserPush}>
+                {isPushSubmitting ? "Enabling..." : "Enable Push"}
+              </button>
+            </div>
+            {pushStatus ? <p className="mt-3 text-sm text-terminal-muted">{pushStatus}</p> : null}
+          </Panel>
+        </div>
       ) : null}
 
       {initialView === "option-chain" ? (
@@ -2251,7 +2385,8 @@ async function fetchMarketOverview(underlying: string, expiry: string): Promise<
     search.set("expiry", expiry);
   }
   const response = await fetch(`${apiUrl}/api/market/overview?${search.toString()}`, {
-    cache: "no-store"
+    cache: "no-store",
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error(`Market refresh failed with HTTP ${response.status}`);
@@ -2411,6 +2546,91 @@ async function resendVerificationEmail(): Promise<void> {
     const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(errorBody?.message ?? `Verification email failed with HTTP ${response.status}`);
   }
+}
+
+async function fetchAlertThresholds(): Promise<AlertThreshold[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/settings/alert-thresholds`, {
+    cache: "no-store",
+    credentials: "include"
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Alert settings failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { thresholds: AlertThreshold[] };
+  return payload.thresholds;
+}
+
+async function updateAlertThreshold(underlying: string, threshold: Omit<AlertThreshold, "underlyingSymbol">): Promise<AlertThreshold> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/settings/alert-thresholds/${encodeURIComponent(underlying)}`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify(threshold)
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Alert settings update failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { threshold: AlertThreshold };
+  return payload.threshold;
+}
+
+async function registerBrowserPush(): Promise<void> {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    throw new Error("This browser does not support push notifications.");
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const keyResponse = await fetch(`${apiUrl}/api/push/vapid-public-key`, {
+    cache: "no-store",
+    credentials: "include"
+  });
+  if (!keyResponse.ok) {
+    throw new Error(`Push setup failed with HTTP ${keyResponse.status}`);
+  }
+  const keyPayload = (await keyResponse.json()) as { enabled: boolean; publicKey?: string | null };
+  if (!keyPayload.enabled || !keyPayload.publicKey) {
+    throw new Error("Browser push is not configured on the server.");
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error("Notification permission was not granted.");
+  }
+
+  const registration = await navigator.serviceWorker.register("/push-sw.js");
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(keyPayload.publicKey)
+  });
+  const response = await fetch(`${apiUrl}/api/push/subscriptions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify(subscription.toJSON())
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Push registration failed with HTTP ${response.status}`);
+  }
+}
+
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const output = new Uint8Array(rawData.length);
+  for (let index = 0; index < rawData.length; index += 1) {
+    output[index] = rawData.charCodeAt(index);
+  }
+  return output;
 }
 
 async function fetchAdminOverview(): Promise<AdminOverview> {
@@ -3752,6 +3972,22 @@ function SettingsSwitch({ label, leftLabel, rightLabel, checked, onChange, detai
         </label>
       </div>
     </div>
+  );
+}
+
+function SettingsNumberField({ label, value, step = "1", onChange }: { label: string; value: string; step?: string; onChange: (value: string) => void }) {
+  return (
+    <label className="grid gap-2 text-sm">
+      <span className="text-xs uppercase text-terminal-muted">{label}</span>
+      <input
+        className="h-10 rounded border border-terminal-line bg-terminal-input px-3 font-semibold text-terminal-text outline-none focus:border-terminal-blue"
+        min="0"
+        step={step}
+        type="number"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }
 

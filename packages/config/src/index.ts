@@ -16,6 +16,12 @@ const envSchema = z.object({
   FEED_UNDERLYINGS: z.string().default("NIFTY,BANKNIFTY"),
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SNAPSHOT_CRON_PATTERN: z.string().trim().optional(),
+  SNAPSHOT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  SNAPSHOT_RETENTION_CRON_PATTERN: z.string().trim().default("0 30 1 * * *"),
+  SNAPSHOT_RETENTION_BATCH_SIZE: z.coerce.number().int().positive().default(500),
+  VAPID_PUBLIC_KEY: z.string().trim().optional(),
+  VAPID_PRIVATE_KEY: z.string().trim().optional(),
+  VAPID_SUBJECT: z.string().trim().default("mailto:info@pytrade.co.in"),
   SMTP_HOST: z.string().trim().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z

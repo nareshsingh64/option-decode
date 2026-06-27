@@ -73,6 +73,14 @@ export interface MarketAlert {
   createdAt: string;
 }
 
+export interface AlertThresholdConfig {
+  proximityPoints?: number;
+  pcrUpper?: number;
+  pcrLower?: number;
+  pressureWarning?: number;
+  pressureCritical?: number;
+}
+
 export interface PaperOrderRequest {
   userId: string;
   underlyingSymbol: UnderlyingSymbol;
