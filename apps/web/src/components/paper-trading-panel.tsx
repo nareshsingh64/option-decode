@@ -121,6 +121,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
     handleClosePosition,
     recentPaperOrders
   } = props;
+  const totalOpenDeltaExposure = (paperSummary?.openPositions ?? []).reduce((total: number, position: any) => total + (position.deltaExposure ?? 0), 0);
 
   return (
     <section className="rounded border border-terminal-line bg-terminal-panel/80 p-4">
@@ -346,15 +347,51 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
         </div>
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
+          <PaperSectionHeader title="Open Position Totals" meta={`Net Delta ${formatDeltaExposure(totalOpenDeltaExposure)}`} />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
+                <tr>
+                  <th className="px-3 py-3 text-left">Underlying</th>
+                  <th className="px-3 py-3 text-left">Expiry</th>
+                  <th className="px-3 py-3 text-right">Positions</th>
+                  <th className="px-3 py-3 text-right">Contracts</th>
+                  <th className="px-3 py-3 text-right">Qty</th>
+                  <th className="px-3 py-3 text-right">Net Delta</th>
+                  <th className="px-3 py-3 text-right">MTM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(paperSummary?.openPositionGroups ?? []).map((group: any) => (
+                  <tr key={`${group.underlyingSymbol}-${group.expiry}`} className="border-t border-terminal-line/80">
+                    <td className="px-3 py-3 font-semibold">{group.underlyingSymbol}</td>
+                    <td className="px-3 py-3 text-terminal-muted">{group.expiry}</td>
+                    <td className="px-3 py-3 text-right">{group.positions}</td>
+                    <td className="px-3 py-3 text-right">{group.lots}</td>
+                    <td className="px-3 py-3 text-right text-terminal-muted">{group.quantity.toLocaleString("en-IN")}</td>
+                    <td className={`px-3 py-3 text-right font-semibold ${deltaToneClass(group.deltaExposure)}`}>{formatDeltaExposure(group.deltaExposure)}</td>
+                    <td className={`px-3 py-3 text-right font-semibold ${group.markToMarketPnl >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatCurrency(group.markToMarketPnl)}</td>
+                  </tr>
+                ))}
+                {paperSummary && !paperSummary.openPositionGroups?.length ? (
+                  <tr><td colSpan={7} className="px-3 py-6 text-center text-terminal-muted">No open position totals yet.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Open Paper Positions" meta={`${formatCurrency(paperSummary?.stats.markToMarketPnl ?? 0)} MTM`} />
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1180px] border-collapse text-sm">
+            <table className="w-full min-w-[1280px] border-collapse text-sm">
               <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Trade</th>
                   <th className="px-3 py-3 text-right">Qty</th>
                   <th className="px-3 py-3 text-right">Entry</th>
                   <th className="px-3 py-3 text-right">LTP</th>
+                  <th className="px-3 py-3 text-right">Delta</th>
                   <th className="px-3 py-3 text-right">Trail SL</th>
                   <th className="px-3 py-3 text-right">Target</th>
                   <th className="px-3 py-3 text-right">P/L</th>
@@ -380,6 +417,10 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                       <td className="px-3 py-3 text-right text-terminal-muted">{formatLotsAndQty(position.lots, position.lotSize, position.quantity)}</td>
                       <td className="px-3 py-3 text-right">{formatPrice(position.entryPrice)}</td>
                       <td className="px-3 py-3 text-right">{formatPrice(position.currentPrice)}</td>
+                      <td className="px-3 py-3 text-right">
+                        <div className="font-semibold text-terminal-text">{formatDelta(position.delta)}</div>
+                        <div className={`text-xs ${deltaToneClass(position.deltaExposure)}`}>{formatDeltaExposure(position.deltaExposure)}</div>
+                      </td>
                       <td className="px-3 py-3 text-right">
                         <input value={draft.trailDistance} onBlur={() => setPositionRiskDrafts((drafts: any) => ({ ...drafts, [position.id]: { ...draft, trailDistance: draft.trailDistance ? formatTradablePrice(Number(draft.trailDistance)) : draft.trailDistance } }))} onChange={(event) => setPositionRiskDrafts((drafts: any) => {
                           const nextTrailDistance = event.target.value;
@@ -407,7 +448,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                   );
                 })}
                 {paperSummary && !paperSummary.openPositions.length ? (
-                  <tr><td colSpan={9} className="px-3 py-6 text-center text-terminal-muted">No open paper positions.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-6 text-center text-terminal-muted">No open paper positions.</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -533,6 +574,28 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
       <span className="text-right font-semibold text-terminal-text">{value}</span>
     </div>
   );
+}
+
+function formatDelta(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  return value.toFixed(2);
+}
+
+function formatDeltaExposure(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(0)}`;
+}
+
+function deltaToneClass(value?: number) {
+  if (value === undefined || Math.abs(value) < 0.5) {
+    return "text-terminal-muted";
+  }
+  return value > 0 ? "text-terminal-emerald" : "text-terminal-red";
 }
 
 function PaperSectionHeader({ title, meta }: { title: string; meta: string }) {

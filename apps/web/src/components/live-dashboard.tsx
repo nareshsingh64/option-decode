@@ -107,6 +107,7 @@ export interface MarketOverview {
 export interface PaperSummary {
   orders: PaperOrder[];
   openPositions: PaperPosition[];
+  openPositionGroups: PaperPositionGroup[];
   closedTrades: PaperTrade[];
   stats: {
     openPositions: number;
@@ -115,6 +116,16 @@ export interface PaperSummary {
     realizedPnl: number;
     markToMarketPnl: number;
   };
+}
+
+interface PaperPositionGroup {
+  underlyingSymbol: string;
+  expiry: string;
+  positions: number;
+  lots: number;
+  quantity: number;
+  markToMarketPnl: number;
+  deltaExposure: number;
 }
 
 interface MarketTickerItem {
@@ -259,6 +270,8 @@ interface PaperPosition {
   trailDistance: number;
   bestPrice: number;
   targetPrice: number;
+  delta?: number;
+  deltaExposure?: number;
   unrealizedPnl: number;
   status: string;
   openedAt: string;

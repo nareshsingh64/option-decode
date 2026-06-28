@@ -36,6 +36,7 @@ export interface PaperSummary {
   userId: string;
   orders: PaperOrderDto[];
   openPositions: PaperPositionDto[];
+  openPositionGroups: PaperPositionGroupDto[];
   closedTrades: PaperTradeDto[];
   stats: {
     openPositions: number;
@@ -90,10 +91,22 @@ export interface PaperPositionDto {
   bestPrice: number;
   targetPrice: number;
   status: string;
+  delta?: number;
+  deltaExposure?: number;
   unrealizedPnl: number;
   openedAt: string;
   ownerEmail?: string;
   ownerName?: string;
+}
+
+export interface PaperPositionGroupDto {
+  underlyingSymbol: string;
+  expiry: string;
+  positions: number;
+  lots: number;
+  quantity: number;
+  markToMarketPnl: number;
+  deltaExposure: number;
 }
 
 export interface PaperTradeDto {
@@ -173,11 +186,13 @@ export async function getPaperSummary(user: AuthUserDto, client: PrismaClient = 
   const orderDtos = await Promise.all(orders.map((order) => mapOrder(order, client)));
   const positionDtos = await Promise.all(openPositions.map((position) => mapPosition(position, client)));
   const tradeDtos = await Promise.all(closedTrades.map((trade) => mapTrade(trade, client)));
+  const openPositionGroups = buildOpenPositionGroups(positionDtos);
 
   return {
     userId: user.id,
     orders: orderDtos,
     openPositions: positionDtos,
+    openPositionGroups,
     closedTrades: tradeDtos,
     stats: {
       openPositions: positionDtos.length,
@@ -666,6 +681,9 @@ async function mapPosition(
   const currentPrice = position.currentPrice.toNumber();
   const direction = position.action === "BUY" ? 1 : -1;
   const lotSize = await getPaperLotSize(position.underlyingSymbol, position.expiryLabel, client);
+  const latestTick = await getLatestPaperOptionTick(position, client);
+  const delta = latestTick?.deltaValue?.toNumber();
+  const deltaExposure = delta === undefined ? undefined : delta * position.quantity * direction;
 
   return {
     id: position.id,
@@ -686,11 +704,42 @@ async function mapPosition(
     bestPrice: position.bestPrice?.toNumber() ?? currentPrice,
     targetPrice: normalizeTradablePrice(position.targetPrice.toNumber()),
     status: position.status,
+    delta,
+    deltaExposure,
     unrealizedPnl: (currentPrice - entryPrice) * position.quantity * direction,
     openedAt: position.openedAt.toISOString(),
     ownerEmail: position.user?.email,
     ownerName: position.user?.displayName ?? undefined
   };
+}
+
+function buildOpenPositionGroups(positions: PaperPositionDto[]): PaperPositionGroupDto[] {
+  const groups = new Map<string, PaperPositionGroupDto>();
+
+  for (const position of positions) {
+    const key = `${position.underlyingSymbol}:${position.expiry}`;
+    const group = groups.get(key) ?? {
+      underlyingSymbol: position.underlyingSymbol,
+      expiry: position.expiry,
+      positions: 0,
+      lots: 0,
+      quantity: 0,
+      markToMarketPnl: 0,
+      deltaExposure: 0
+    };
+
+    group.positions += 1;
+    group.lots += position.lots;
+    group.quantity += position.quantity;
+    group.markToMarketPnl += position.unrealizedPnl;
+    group.deltaExposure += position.deltaExposure ?? 0;
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].sort((left, right) => {
+    const symbolCompare = left.underlyingSymbol.localeCompare(right.underlyingSymbol);
+    return symbolCompare || left.expiry.localeCompare(right.expiry);
+  });
 }
 
 async function mapTrade(
@@ -773,6 +822,29 @@ async function getLatestPaperOrderPrice(
   });
 
   return latestTick?.lastPrice?.toNumber();
+}
+
+async function getLatestPaperOptionTick(
+  option: {
+    underlyingSymbol: string;
+    expiryLabel: string;
+    optionType: OptionType;
+    strikePrice: Prisma.Decimal;
+  },
+  client: PrismaClient
+) {
+  return client.optionContractTick.findFirst({
+    where: {
+      underlyingSymbol: option.underlyingSymbol,
+      expiryLabel: option.expiryLabel,
+      optionType: option.optionType,
+      strikePrice: option.strikePrice
+    },
+    orderBy: { tickTime: "desc" },
+    select: {
+      deltaValue: true
+    }
+  });
 }
 
 function getFallbackLotSizeForUnderlying(underlyingSymbol: string) {
