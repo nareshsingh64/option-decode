@@ -34,6 +34,16 @@ import {
 } from "./dashboard-client";
 import { DashboardMainPanel } from "./dashboard-main-panel";
 import { MarketControls } from "./market-controls";
+import {
+  buildAtmStrikeRange,
+  buildChainRows,
+  buildChainStats,
+  buildIvSkewRows,
+  buildOiBuildupRows,
+  buildTopStrikeRows,
+  buildVixStrikeRange
+} from "./option-chain-builders";
+import type { DisplayPreferences } from "./option-chain-builders";
 import { IvSkewChart, OiBuildupChart } from "./option-chain-charts";
 import { OptionChainPanel } from "./option-chain-panel";
 import { PaperTradingPanel } from "./paper-trading-panel";
@@ -41,7 +51,7 @@ import { PressureEngine } from "./pressure-engine";
 import { ReplayLab } from "./replay-lab";
 import { SettingsPanel } from "./settings-panel";
 
-interface OverviewTick {
+export interface OverviewTick {
   underlyingSymbol?: string;
   optionType: "CE" | "PE";
   strikePrice: number;
@@ -1407,227 +1417,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   );
 }
 
-interface VixStrikeRange {
-  lower: number;
-  upper: number;
-  expectedMove: number;
-  vix: number;
-}
-
-interface DisplayPreferences {
-  numberFormatMode: NumberFormatMode;
-  quantityDisplayMode: QuantityDisplayMode;
-}
-
-function buildVixStrikeRange(overview: MarketOverview): VixStrikeRange {
-  const spot = overview.snapshot.spotPrice;
-  const vix = overview.indiaVix && overview.indiaVix > 0 ? overview.indiaVix : 15;
-  const daysToExpiry = getDaysToExpiry(overview.snapshot.expiry, overview.snapshot.snapshotTime);
-  const expectedMove = spot > 0 ? spot * (vix / 100) * Math.sqrt(daysToExpiry / 365) : 0;
-
-  return {
-    lower: Math.max(0, spot - expectedMove),
-    upper: spot + expectedMove,
-    expectedMove,
-    vix
-  };
-}
-
-function buildAtmStrikeRange(overview: MarketOverview): VixStrikeRange {
-  const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
-  const atmIndex = strikes.findIndex((strike) => strike === overview.snapshot.atmStrike);
-  if (atmIndex < 0) {
-    return buildVixStrikeRange(overview);
-  }
-  const visibleStrikes = strikes.slice(Math.max(0, atmIndex - 6), atmIndex + 7);
-  return {
-    lower: visibleStrikes[0] ?? overview.snapshot.atmStrike,
-    upper: visibleStrikes[visibleStrikes.length - 1] ?? overview.snapshot.atmStrike,
-    expectedMove: Math.abs((visibleStrikes[visibleStrikes.length - 1] ?? overview.snapshot.atmStrike) - overview.snapshot.atmStrike),
-    vix: overview.indiaVix && overview.indiaVix > 0 ? overview.indiaVix : 15
-  };
-}
-
-function getDaysToExpiry(expiry: string, snapshotTime: string) {
-  const expiryTime = Date.parse(`${expiry}T15:30:00+05:30`);
-  const snapshotDate = Date.parse(snapshotTime);
-  if (!Number.isFinite(expiryTime) || !Number.isFinite(snapshotDate)) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil((expiryTime - snapshotDate) / 86_400_000));
-}
-
-function buildChainRows(overview: MarketOverview, range: VixStrikeRange, preferences: DisplayPreferences) {
-  const ticksByStrike = new Map<number, Partial<Record<"CE" | "PE", OverviewTick>>>();
-
-  for (const tick of overview.snapshot.ticks) {
-    const row = ticksByStrike.get(tick.strikePrice) ?? {};
-    row[tick.optionType] = tick;
-    ticksByStrike.set(tick.strikePrice, row);
-  }
-
-  const allRows = [...ticksByStrike.entries()]
-    .filter(([strike]) => strike >= range.lower && strike <= range.upper)
-    .map(([strike, pair]) => ({
-      strike,
-      ceOi: formatQuantityValue(pair.CE?.openInterest, pair.CE, preferences),
-      ceOiLots: toLots(pair.CE?.openInterest, pair.CE),
-      ceOiRaw: pair.CE?.openInterest ?? 0,
-      ceChg: formatQuantityValue(pair.CE?.changeInOpenInterest, pair.CE, preferences, true),
-      ceChgSignedLots: toLots(pair.CE?.changeInOpenInterest, pair.CE),
-      ceChgLots: Math.abs(toLots(pair.CE?.changeInOpenInterest, pair.CE)),
-      ceChgRaw: Math.abs(pair.CE?.changeInOpenInterest ?? 0),
-      ceVol: formatQuantityValue(pair.CE?.volume, pair.CE, preferences),
-      ceVolLots: toLots(pair.CE?.volume, pair.CE),
-      ceVolRaw: pair.CE?.volume ?? 0,
-      ceLtp: pair.CE?.lastPrice,
-      ceLtpChange: pair.CE?.lastPriceChange,
-      ceLtpChangePercent: pair.CE?.lastPriceChangePercent,
-      ceActivity: classifyOptionActivity(pair.CE),
-      ceIv: pair.CE?.impliedVolatility,
-      ceDelta: pair.CE?.delta,
-      ceGamma: pair.CE?.gamma,
-      ceTheta: pair.CE?.theta,
-      ceVega: pair.CE?.vega,
-      peLtp: pair.PE?.lastPrice,
-      peLtpChange: pair.PE?.lastPriceChange,
-      peLtpChangePercent: pair.PE?.lastPriceChangePercent,
-      peActivity: classifyOptionActivity(pair.PE),
-      peIv: pair.PE?.impliedVolatility,
-      peDelta: pair.PE?.delta,
-      peGamma: pair.PE?.gamma,
-      peTheta: pair.PE?.theta,
-      peVega: pair.PE?.vega,
-      peVol: formatQuantityValue(pair.PE?.volume, pair.PE, preferences),
-      peVolLots: toLots(pair.PE?.volume, pair.PE),
-      peVolRaw: pair.PE?.volume ?? 0,
-      peChg: formatQuantityValue(pair.PE?.changeInOpenInterest, pair.PE, preferences, true),
-      peChgSignedLots: toLots(pair.PE?.changeInOpenInterest, pair.PE),
-      peChgLots: Math.abs(toLots(pair.PE?.changeInOpenInterest, pair.PE)),
-      peChgRaw: Math.abs(pair.PE?.changeInOpenInterest ?? 0),
-      peOi: formatQuantityValue(pair.PE?.openInterest, pair.PE, preferences),
-      peOiLots: toLots(pair.PE?.openInterest, pair.PE),
-      peOiRaw: pair.PE?.openInterest ?? 0,
-      ceOiPercent: 0,
-      ceChgPercent: 0,
-      ceVolPercent: 0,
-      peOiPercent: 0,
-      peChgPercent: 0,
-      peVolPercent: 0,
-      ceOiRank: undefined as 1 | 2 | undefined,
-      ceChgRank: undefined as 1 | 2 | undefined,
-      ceVolRank: undefined as 1 | 2 | undefined,
-      peOiRank: undefined as 1 | 2 | undefined,
-      peChgRank: undefined as 1 | 2 | undefined,
-      peVolRank: undefined as 1 | 2 | undefined
-    }))
-    .sort((left, right) => right.strike - left.strike);
-
-  const visibleRows = allRows;
-
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.ceOiLots, row.ceOiRaw, preferences), (row, percent) => {
-    row.ceOiPercent = percent;
-  });
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.ceChgLots, row.ceChgRaw, preferences), (row, percent) => {
-    row.ceChgPercent = percent;
-  });
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.ceVolLots, row.ceVolRaw, preferences), (row, percent) => {
-    row.ceVolPercent = percent;
-  });
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.peOiLots, row.peOiRaw, preferences), (row, percent) => {
-    row.peOiPercent = percent;
-  });
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.peChgLots, row.peChgRaw, preferences), (row, percent) => {
-    row.peChgPercent = percent;
-  });
-  applyPressurePercents(visibleRows, (row) => displayRankValue(row.peVolLots, row.peVolRaw, preferences), (row, percent) => {
-    row.peVolPercent = percent;
-  });
-
-  applyPressureRanks(visibleRows, (row) => row.ceOiLots, (row, rank) => {
-    row.ceOiRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.ceChgLots, (row, rank) => {
-    row.ceChgRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.ceVolLots, (row, rank) => {
-    row.ceVolRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peOiLots, (row, rank) => {
-    row.peOiRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peChgLots, (row, rank) => {
-    row.peChgRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peVolLots, (row, rank) => {
-    row.peVolRank = rank;
-  });
-
-  return visibleRows;
-}
-
-function buildOiBuildupRows(chainRows: ReturnType<typeof buildChainRows>, atmStrike: number, numberFormatMode: NumberFormatMode) {
-  const maxOi = Math.max(0, ...chainRows.flatMap((row) => [row.ceOiLots, row.peOiLots]));
-  const oiPercent = (value: number) => (maxOi > 0 && value > 0 ? Math.max(3, Math.round((value / maxOi) * 100)) : 0);
-  return chainRows.map((row) => ({
-    strike: row.strike,
-    isAtm: row.strike === atmStrike,
-    cePercent: oiPercent(row.ceOiLots),
-    pePercent: oiPercent(row.peOiLots),
-    ceBuilding: row.ceChgSignedLots >= 0,
-    peBuilding: row.peChgSignedLots >= 0,
-    ceLabel: formatLarge(row.ceOiLots, numberFormatMode),
-    peLabel: formatLarge(row.peOiLots, numberFormatMode)
-  }));
-}
-
-function buildIvSkewRows(chainRows: ReturnType<typeof buildChainRows>) {
-  const rows = [...chainRows].sort((left, right) => left.strike - right.strike);
-  const ivValues = rows.flatMap((row) => [row.ceIv, row.peIv]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  const minIv = ivValues.length ? Math.min(...ivValues) : 0;
-  const maxIv = ivValues.length ? Math.max(...ivValues) : 1;
-  const ivRange = Math.max(1, maxIv - minIv);
-  const width = 520;
-  const height = 180;
-  const padding = 22;
-  const xRange = Math.max(1, rows.length - 1);
-  const yForIv = (iv?: number) => {
-    if (iv === undefined || !Number.isFinite(iv)) {
-      return undefined;
-    }
-    return height - padding - ((iv - minIv) / ivRange) * (height - padding * 2);
-  };
-
-  return rows.map((row, index) => ({
-    strike: row.strike,
-    x: padding + (index / xRange) * (width - padding * 2),
-    ceY: yForIv(row.ceIv),
-    peY: yForIv(row.peIv)
-  }));
-}
-
-function displayRankValue(lotsValue: number, rawValue: number, preferences: DisplayPreferences) {
-  return preferences.quantityDisplayMode === "lots" ? lotsValue : rawValue;
-}
-
-function applyPressurePercents<T>(rows: T[], getValue: (row: T) => number, setPercent: (row: T, percent: number) => void) {
-  const maxValue = Math.max(0, ...rows.map(getValue));
-  for (const row of rows) {
-    const percent = maxValue > 0 ? Math.round((getValue(row) / maxValue) * 100) : 0;
-    setPercent(row, percent);
-  }
-}
-
-function applyPressureRanks<T>(rows: T[], getValue: (row: T) => number, setRank: (row: T, rank: 1 | 2) => void) {
-  const rankedRows = [...rows]
-    .filter((row) => getValue(row) > 0)
-    .sort((left, right) => getValue(right) - getValue(left))
-    .slice(0, 2);
-
-  rankedRows.forEach((row, index) => {
-    setRank(row, (index + 1) as 1 | 2);
-  });
-}
 
 function buildStrikeChoices(overview: MarketOverview) {
   const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
@@ -1737,19 +1526,6 @@ function renderIvDeltaCell(iv?: number, delta?: number, align: "left" | "right" 
   );
 }
 
-function buildTopStrikeRows(overview: MarketOverview, preferences: DisplayPreferences) {
-  const getQuantity = (tick: OverviewTick) => (preferences.quantityDisplayMode === "lots" ? toLots(tick.openInterest, tick) : tick.openInterest ?? 0);
-  return [...overview.snapshot.ticks]
-    .filter((tick) => (tick.openInterest ?? 0) > 0)
-    .sort((left, right) => getQuantity(right) - getQuantity(left))
-    .slice(0, 4)
-    .map((tick) => ({
-      strike: tick.strikePrice,
-      optionType: tick.optionType,
-      openInterest: getQuantity(tick),
-      changePercent: tick.openInterest ? ((tick.changeInOpenInterest ?? 0) / tick.openInterest) * 100 : 0
-    }));
-}
 
 function buildStrikeMovementRows(overview: MarketOverview) {
   const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
@@ -1998,27 +1774,6 @@ function buildZoneRows(overview: MarketOverview) {
   ];
 }
 
-function buildChainStats(overview: MarketOverview, preferences: DisplayPreferences) {
-  const ceTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "CE");
-  const peTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "PE");
-  const getQuantity = (value: number | undefined, tick: OverviewTick) => (preferences.quantityDisplayMode === "lots" ? toLots(value, tick) : value ?? 0);
-  const totalCeOi = ceTicks.reduce((sum, tick) => sum + getQuantity(tick.openInterest, tick), 0);
-  const totalPeOi = peTicks.reduce((sum, tick) => sum + getQuantity(tick.openInterest, tick), 0);
-  const totalCeChange = ceTicks.reduce((sum, tick) => sum + getQuantity(tick.changeInOpenInterest, tick), 0);
-  const totalPeChange = peTicks.reduce((sum, tick) => sum + getQuantity(tick.changeInOpenInterest, tick), 0);
-  const maxOiTick = [...overview.snapshot.ticks].sort((left, right) => getQuantity(right.openInterest, right) - getQuantity(left.openInterest, left))[0];
-  const breadth = totalPeOi > totalCeOi * 1.05 ? "Put Support" : totalCeOi > totalPeOi * 1.05 ? "Call Resistance" : "Balanced";
-
-  return {
-    totalCeOi,
-    totalPeOi,
-    totalCeChange,
-    totalPeChange,
-    breadth,
-    maxOiStrikeText: maxOiTick ? `${formatStrike(maxOiTick.strikePrice)} ${maxOiTick.optionType}` : "--",
-    maxOiSide: maxOiTick ? `${formatQuantityValue(maxOiTick.openInterest, maxOiTick, preferences)} OI` : "--"
-  };
-}
 
 function buildPressureSummary(overview: MarketOverview) {
   const pressureGap = overview.pressure.bullishPressure - overview.pressure.bearishPressure;
