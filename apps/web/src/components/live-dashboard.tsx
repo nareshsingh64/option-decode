@@ -1269,72 +1269,21 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "pressure" ? (
-      <PressureEngine>
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.6fr)]">
-        <Panel title="Live Market Pressure">
-          <div className="grid gap-4 md:grid-cols-2">
-            <PressureGauge label="Bullish Pressure" value={overview.pressure.bullishPressure} tone="emerald" detail="PE support dominance" />
-            <PressureGauge label="Bearish Pressure" value={overview.pressure.bearishPressure} tone="red" detail="CE resistance dominance" />
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <SignalCell label="Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone="blue" />
-            <SignalCell label="Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="green" />
-            <SignalCell label="PCR Context" value={overview.pressure.pcr?.toFixed(2) ?? "--"} detail={chainStats.breadth} tone="blue" />
-          </div>
-        </Panel>
-        <Panel title="Refresh Status">
-          <div className="grid gap-3 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-terminal-muted">Next refresh</span>
-              <span className="font-semibold text-terminal-blue">{secondsToRefresh}s</span>
-            </div>
-            <div className="h-2 rounded bg-white/10">
-              <div className="h-2 rounded bg-terminal-blue transition-all" style={{ width: `${Math.max(0, Math.min(100, ((REFRESH_SECONDS - secondsToRefresh) / REFRESH_SECONDS) * 100))}%` }} />
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-terminal-muted">Last local update</span>
-              <span className="text-right">
-                <span className="block font-semibold">{formatIstTime(lastRefresh)}</span>
-                <span className={`text-xs font-semibold ${isMarketStreamConnected ? "text-terminal-emerald" : "text-terminal-amber"}`}>{isMarketStreamConnected ? "Live stream" : "Polling fallback"}</span>
-              </span>
-            </div>
-            <SummaryLine label="Data coverage" value={`${overview.snapshot.ticks.length} contracts`} />
-            <SummaryLine label="Strongest level" value={pressureSummary.strongestLevelText} />
-            {refreshError ? <p className="text-terminal-red">{refreshError}</p> : null}
-          </div>
-        </Panel>
-      </section>
-        <section className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Support & Resistance Pressure">
-            <div className="space-y-4">
-              {overview.pressure.supportZones.slice(0, 2).map((zone) => (
-                <PressureBar key={`support-${zone.strikePrice}`} label={`Support ${formatStrike(zone.strikePrice)} PE`} value={scoreToPercent(zone.score)} tone="emerald" />
-              ))}
-              {overview.pressure.resistanceZones.slice(0, 2).map((zone) => (
-                <PressureBar key={`resistance-${zone.strikePrice}`} label={`Resistance ${formatStrike(zone.strikePrice)} CE`} value={scoreToPercent(zone.score)} tone="blue" />
-              ))}
-            </div>
-          </Panel>
-          <TerminalPanel title="Support & Resistance Zones">
-            <div className="grid gap-1">
-              {zoneRows.map((row) => (
-                <div key={row.label} className={`grid grid-cols-[3rem_minmax(6rem,1fr)_minmax(5rem,0.7fr)] items-center rounded px-2 py-2 ${row.isCurrent ? "bg-terminal-blue/15" : ""}`}>
-                  <span className={`text-sm font-semibold ${row.tone === "green" ? "text-terminal-emerald" : row.tone === "red" ? "text-terminal-red" : "text-terminal-blue"}`}>{row.label}</span>
-                  <span className={`text-center text-sm font-semibold ${row.isCurrent ? "text-terminal-blue" : "text-terminal-text"}`}>{formatStrike(row.value)}</span>
-                  <span className={`text-right text-sm ${row.isCurrent ? "text-terminal-blue" : "text-terminal-muted"}`}>{row.status}</span>
-                </div>
-              ))}
-            </div>
-          </TerminalPanel>
-          <Panel title="Pressure Signal Board">
-            <div className="grid gap-3">
-              {buildPressureSignals(overview, chainStats).map((signal) => (
-                <SignalCell key={signal.label} label={signal.label} value={signal.value} detail={signal.detail} tone={signal.tone} />
-              ))}
-            </div>
-          </Panel>
-        </section>
-      </PressureEngine>
+        <PressureEngine
+          buildPressureSignals={buildPressureSignals}
+          chainStats={chainStats}
+          formatStrike={formatStrike}
+          formatTime={formatIstTime}
+          isMarketStreamConnected={isMarketStreamConnected}
+          lastRefresh={lastRefresh}
+          overview={overview}
+          pressureSummary={pressureSummary}
+          refreshError={refreshError}
+          refreshSeconds={REFRESH_SECONDS}
+          scoreToPercent={scoreToPercent}
+          secondsToRefresh={secondsToRefresh}
+          zoneRows={zoneRows}
+        />
       ) : null}
 
       {initialView === "dashboard" || initialView === "alerts" ? (
@@ -1630,7 +1579,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       ) : null}
 
       {initialView === "option-chain" ? (
-      <OptionChainTable>
       <section className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
@@ -1667,87 +1615,15 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
             <OiBuildupChart rows={oiBuildupRows} />
             <IvSkewChart rows={ivSkewRows} atmStrike={overview.snapshot.atmStrike} />
           </div>
-          <div className="max-w-full overflow-x-auto">
-            <table className={`w-full border-collapse text-xs xl:text-sm ${chainTableMode === "greeks" ? "min-w-[1160px]" : "min-w-[980px]"}`}>
-              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
-                {chainTableMode === "standard" ? (
-                  <tr>
-                    <th className="px-2 py-3 text-left">CE IV/Δ</th>
-                    <th className="px-2 py-3 text-left">CE OI</th>
-                    <th className="px-2 py-3 text-left">CE Chg</th>
-                    <th className="px-2 py-3 text-left">CE Vol</th>
-                    <th className="px-2 py-3 text-left">CE LTP</th>
-                    <th className="px-2 py-3 text-center">Strike</th>
-                    <th className="px-2 py-3 text-right">PE LTP</th>
-                    <th className="px-2 py-3 text-right">PE Vol</th>
-                    <th className="px-2 py-3 text-right">PE Chg</th>
-                    <th className="px-2 py-3 text-right">PE OI</th>
-                    <th className="px-2 py-3 text-right">PE IV/Δ</th>
-                  </tr>
-                ) : (
-                  <tr>
-                    <th className="px-2 py-3 text-left">CE IV</th>
-                    <th className="px-2 py-3 text-left">CE Δ</th>
-                    <th className="px-2 py-3 text-left">CE Γ</th>
-                    <th className="px-2 py-3 text-left">CE Θ</th>
-                    <th className="px-2 py-3 text-left">CE Vega</th>
-                    <th className="px-2 py-3 text-left">CE LTP</th>
-                    <th className="px-2 py-3 text-center">Strike</th>
-                    <th className="px-2 py-3 text-right">PE LTP</th>
-                    <th className="px-2 py-3 text-right">PE Vega</th>
-                    <th className="px-2 py-3 text-right">PE Θ</th>
-                    <th className="px-2 py-3 text-right">PE Γ</th>
-                    <th className="px-2 py-3 text-right">PE Δ</th>
-                    <th className="px-2 py-3 text-right">PE IV</th>
-                  </tr>
-                )}
-              </thead>
-              <tbody>
-                {chainRows.map((row) => (
-                  <tr key={row.strike} className={row.strike === overview.snapshot.atmStrike ? "border-y border-terminal-blue/70 bg-terminal-blue/10" : "border-t border-terminal-line/80"}>
-                    {chainTableMode === "standard" ? (
-                      <>
-                        <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                        <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
-                        <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                        <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
-                        <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
-                        <td className="px-2 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="px-2 py-3 text-left font-semibold text-terminal-text">{formatOptionalNumber(row.ceIv, 1)}</td>
-                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceDelta, 2)}</td>
-                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceGamma, 4)}</td>
-                        <td className="px-2 py-3 text-left text-terminal-red">{formatOptionalNumber(row.ceTheta, 2)}</td>
-                        <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceVega, 2)}</td>
-                        <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
-                        <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                        <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
-                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peVega, 2)}</td>
-                        <td className="px-2 py-3 text-right text-terminal-red">{formatOptionalNumber(row.peTheta, 2)}</td>
-                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peGamma, 4)}</td>
-                        <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peDelta, 2)}</td>
-                        <td className="px-2 py-3 text-right font-semibold text-terminal-text">{formatOptionalNumber(row.peIv, 1)}</td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-                {!chainRows.length ? (
-                  <tr>
-                    <td colSpan={chainTableMode === "standard" ? 11 : 13} className="px-2 py-8 text-center text-terminal-muted">
-                      No strikes available inside the current VIX range.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          <OptionChainTable
+            atmStrike={overview.snapshot.atmStrike}
+            chainRows={chainRows}
+            chainTableMode={chainTableMode}
+            formatOptionalNumber={formatOptionalNumber}
+            renderIvDeltaCell={renderIvDeltaCell}
+            renderLtpStack={renderLtpStack}
+            renderPressureCell={renderPressureCell}
+          />
         </div>
 
         <div className="grid gap-3">
@@ -1779,12 +1655,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           </TerminalPanel>
         </div>
       </section>
-      </OptionChainTable>
       ) : null}
 
       {initialView === "paper" ? (
         <PaperTradingPanel>
-          <Panel title="Paper Trading">
             <div className="grid gap-4 text-sm">
               <div className="grid gap-3 md:grid-cols-4">
                 <StatusTile icon={<Play size={18} />} label="Replay" value="Ready" />
@@ -2155,13 +2029,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
                 </div>
               </div>
             </div>
-          </Panel>
         </PaperTradingPanel>
       ) : null}
 
       {initialView === "replay" ? (
         <ReplayLab>
-        <Panel title="Replay Lab">
           <div className="grid gap-4 text-sm">
             <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-[minmax(10rem,0.5fr)_minmax(12rem,0.7fr)_auto] md:items-end">
               <label className="grid gap-1 text-xs uppercase text-terminal-muted">
@@ -2311,7 +2183,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
               </div>
             </div>
           </div>
-        </Panel>
         </ReplayLab>
       ) : null}
     </div>
