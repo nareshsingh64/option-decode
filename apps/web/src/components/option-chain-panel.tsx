@@ -24,7 +24,6 @@ interface OptionChainPanelProps {
   renderPressureCell: any;
   topStrikeRows: any;
   zoneRows: any;
-  fitScreenMode?: boolean;
 }
 
 export function OptionChainPanel(props: OptionChainPanelProps) {
@@ -49,14 +48,13 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
     renderLtpStack,
     renderPressureCell,
     topStrikeRows,
-    zoneRows,
-    fitScreenMode = false
+    zoneRows
   } = props;
 
   return (
-    <section className={`grid min-w-0 gap-3 ${fitScreenMode ? "h-full min-h-0 2xl:grid-cols-[minmax(0,1fr)_16rem]" : "2xl:grid-cols-[minmax(0,1fr)_18rem]"}`}>
-      <div className={`min-w-0 rounded border border-terminal-line bg-terminal-panel/80 ${fitScreenMode ? "flex min-h-0 flex-col" : ""}`}>
-        <div className={`flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line ${fitScreenMode ? "p-3" : "p-4"}`}>
+    <section className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
           <div>
             <h2 className="text-base font-semibold">Live Option Chain Intelligence</h2>
             <p className="mt-1 text-sm text-terminal-muted">
@@ -80,13 +78,13 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
             <span>{isMarketStreamConnected ? "SSE live" : "Auto-refresh 30s"}</span>
           </div>
         </div>
-        <div className={`grid border-b border-terminal-line md:grid-cols-4 ${fitScreenMode ? "gap-2 p-2" : "gap-3 p-3"}`}>
+        <div className="grid gap-3 border-b border-terminal-line p-3 md:grid-cols-4">
           <SignalCell label="CE Open Interest" value={formatLarge(chainStats.totalCeOi, numberFormatMode)} detail={formatSignedLarge(chainStats.totalCeChange, numberFormatMode)} tone="red" />
           <SignalCell label="PE Open Interest" value={formatLarge(chainStats.totalPeOi, numberFormatMode)} detail={formatSignedLarge(chainStats.totalPeChange, numberFormatMode)} tone="green" />
           <SignalCell label="OI Breadth" value={chainStats.breadth} detail={`PCR ${overview.pressure.pcr?.toFixed(2) ?? "--"}`} tone="blue" />
           <SignalCell label="Max OI Strike" value={chainStats.maxOiStrikeText} detail={chainStats.maxOiSide} tone="blue" />
         </div>
-        <div className={`grid border-b border-terminal-line xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] ${fitScreenMode ? "gap-2 p-2" : "gap-3 p-3"}`}>
+        <div className="grid gap-3 border-b border-terminal-line p-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
           {oiBuildupChart}
           {ivSkewChart}
         </div>
@@ -98,11 +96,10 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
           renderIvDeltaCell={renderIvDeltaCell}
           renderLtpStack={renderLtpStack}
           renderPressureCell={renderPressureCell}
-          fitScreenMode={fitScreenMode}
         />
       </div>
 
-      <div className={`grid gap-3 ${fitScreenMode ? "min-h-0 content-start overflow-y-auto" : ""}`}>
+      <div className="grid gap-3">
         <TerminalPanel title={`${overview.snapshot.underlyingSymbol} Option Chain - Top Strikes`}>
           <div className="grid gap-1">
             {topStrikeRows.map((row: any) => (

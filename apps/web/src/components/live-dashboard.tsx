@@ -334,7 +334,6 @@ interface PaperTrade {
 }
 
 interface LiveDashboardProps {
-  fitScreenMode?: boolean;
   initialOverview: MarketOverview;
   initialParams?: {
     underlying?: string;
@@ -343,7 +342,6 @@ interface LiveDashboardProps {
   };
   initialView?: DashboardView;
   onAuthUserChange?: (user: AuthUser | null) => void;
-  onFitScreenModeChange?: (enabled: boolean) => void;
   onMarketSelectionChange?: (params: { underlying: string; expiry: string }) => void;
 }
 
@@ -385,7 +383,7 @@ function defaultAlertThresholdDraft(underlyingSymbol: string) {
   };
 }
 
-export function LiveDashboard({ fitScreenMode = false, initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onFitScreenModeChange, onMarketSelectionChange }: LiveDashboardProps) {
+export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onMarketSelectionChange }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
   const [lastRefresh, setLastRefresh] = useState(initialOverview.snapshot.snapshotTime);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -1211,26 +1209,24 @@ export function LiveDashboard({ fitScreenMode = false, initialOverview, initialP
   };
 
   return (
-    <div className={`grid min-w-0 ${fitScreenMode ? "h-full min-h-0 content-start gap-2 overflow-y-auto pr-1 text-[0.92rem]" : "gap-4"}`}>
-      <div className={fitScreenMode ? "sticky top-0 z-20 bg-terminal-bg/95 pb-1 backdrop-blur" : ""}>
-        <MarketControls
-          formatIstShortDateTime={formatIstShortDateTime}
-          handleAddWatchSymbol={handleAddWatchSymbol}
-          handleMarketControlSubmit={handleMarketControlSubmit}
-          initialView={initialView}
-          isRefreshing={isRefreshing}
-          lastRefresh={lastRefresh}
-          loadMarketSelection={loadMarketSelection}
-          newWatchSymbol={newWatchSymbol}
-          overview={overview}
-          refreshOverview={refreshOverview}
-          setNewWatchSymbol={setNewWatchSymbol}
-          watchlist={watchlist}
-          watchlistError={watchlistError}
-        />
-      </div>
+    <div className="grid min-w-0 gap-4">
+      <MarketControls
+        formatIstShortDateTime={formatIstShortDateTime}
+        handleAddWatchSymbol={handleAddWatchSymbol}
+        handleMarketControlSubmit={handleMarketControlSubmit}
+        initialView={initialView}
+        isRefreshing={isRefreshing}
+        lastRefresh={lastRefresh}
+        loadMarketSelection={loadMarketSelection}
+        newWatchSymbol={newWatchSymbol}
+        overview={overview}
+        refreshOverview={refreshOverview}
+        setNewWatchSymbol={setNewWatchSymbol}
+        watchlist={watchlist}
+        watchlistError={watchlistError}
+      />
 
-      <section className={`grid ${fitScreenMode ? "gap-2 md:grid-cols-4" : "gap-3 md:grid-cols-4"}`}>
+      <section className="grid gap-3 md:grid-cols-4">
         <MetricCard label={`${overview.snapshot.underlyingSymbol} Spot`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" detail={`ATM ${formatStrike(overview.snapshot.atmStrike)}`} />
         <MetricCard label="Bullish Pressure" value={`${overview.pressure.bullishPressure}%`} tone="emerald" detail="PE support pressure" />
         <MetricCard label="Bearish Pressure" value={`${overview.pressure.bearishPressure}%`} tone="red" detail="CE resistance pressure" />
@@ -1334,7 +1330,6 @@ export function LiveDashboard({ fitScreenMode = false, initialOverview, initialP
           authUser={authUser}
           disableBrowserPush={disableBrowserNotifications}
           enableBrowserPush={enableBrowserPush}
-          fitScreenMode={fitScreenMode}
           isPushSubmitting={isPushSubmitting}
           isSavingAlertThresholds={isSavingAlertThresholds}
           numberFormatMode={numberFormatMode}
@@ -1343,7 +1338,6 @@ export function LiveDashboard({ fitScreenMode = false, initialOverview, initialP
           quantityDisplayMode={quantityDisplayMode}
           saveAlertThresholds={saveAlertThresholds}
           setAlertThresholdDraft={setAlertThresholdDraft}
-          setFitScreenMode={onFitScreenModeChange}
           setNumberFormatMode={setNumberFormatMode}
           setQuantityDisplayMode={setQuantityDisplayMode}
           setVisibleStrikeMode={setVisibleStrikeMode}
@@ -1374,7 +1368,6 @@ export function LiveDashboard({ fitScreenMode = false, initialOverview, initialP
           renderPressureCell={renderPressureCell}
           topStrikeRows={topStrikeRows}
           zoneRows={zoneRows}
-          fitScreenMode={fitScreenMode}
         />
       ) : null}
 
@@ -1437,7 +1430,6 @@ export function LiveDashboard({ fitScreenMode = false, initialOverview, initialP
           handleUpdatePositionRisk={handleUpdatePositionRisk}
           handleClosePosition={handleClosePosition}
           recentPaperOrders={recentPaperOrders}
-          fitScreenMode={fitScreenMode}
         />
       ) : null}
 

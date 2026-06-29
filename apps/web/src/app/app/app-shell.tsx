@@ -36,7 +36,6 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   const [activeView, setActiveView] = useState(requestedView);
   const [currentParams, setCurrentParams] = useState(initialParams);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [fitScreenMode, setFitScreenMode] = useState(false);
   const navItems = useMemo(() => protectedNavItems.filter(([view]) => view !== "admin" || authUser?.role === "ADMIN"), [authUser?.role]);
 
   useEffect(() => {
@@ -46,22 +45,6 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   useEffect(() => {
     setCurrentParams(initialParams);
   }, [initialParams]);
-
-  useEffect(() => {
-    try {
-      setFitScreenMode(window.localStorage.getItem("option-decode-fit-screen") === "true");
-    } catch {
-      setFitScreenMode(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("option-decode-fit-screen", String(fitScreenMode));
-    } catch {
-      // Ignore storage failures; the in-memory toggle still works for this session.
-    }
-  }, [fitScreenMode]);
 
   const handleViewChange = useCallback((view: DashboardView) => {
     setActiveView(view);
@@ -105,17 +88,14 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   );
 
   return (
-    <main className={fitScreenMode ? "h-screen overflow-hidden" : "min-h-screen"}>
-      <section className={`flex w-full flex-col px-3 sm:px-4 lg:px-5 ${fitScreenMode ? "h-screen overflow-hidden py-2" : "min-h-screen py-3"}`}>
-        <header className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-terminal-line/80 ${fitScreenMode ? "pb-2" : "pb-3"}`}>
+    <main className="min-h-screen">
+      <section className="flex min-h-screen w-full flex-col px-3 py-3 sm:px-4 lg:px-5">
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line/80 pb-3">
           <div>
             <p className="text-xs font-semibold uppercase text-terminal-emerald">Option Decode</p>
-            <h1 className={`${fitScreenMode ? "mt-0.5 text-xl" : "mt-1 text-2xl sm:text-3xl"} font-semibold text-terminal-text`}>Decode Market Pressure Before You Trade</h1>
+            <h1 className="mt-1 text-2xl font-semibold text-terminal-text sm:text-3xl">Decode Market Pressure Before You Trade</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button className={`min-h-10 rounded border px-3 py-2 text-sm font-semibold transition ${fitScreenMode ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel text-terminal-muted hover:border-terminal-blue hover:text-terminal-text"}`} type="button" onClick={() => setFitScreenMode((enabled) => !enabled)}>
-              Fit Screen
-            </button>
             <a className="relative grid h-10 w-10 place-items-center rounded border border-terminal-line bg-terminal-panel text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" aria-label="Notifications" href={buildViewHref("alerts", currentParams)} onClick={(event) => {
               event.preventDefault();
               handleViewChange("alerts");
@@ -136,7 +116,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
           </div>
         </header>
 
-        <nav className={`${fitScreenMode ? "mt-2 pb-2" : "mt-3 pb-3"} flex shrink-0 gap-2 overflow-x-auto border-b border-terminal-line text-sm text-terminal-muted lg:hidden`} aria-label="Mobile sections">
+        <nav className="mt-3 flex gap-2 overflow-x-auto border-b border-terminal-line pb-3 text-sm text-terminal-muted lg:hidden" aria-label="Mobile sections">
           {navItems.map(([view, label, Icon]) => (
             <a key={view} className={`flex shrink-0 items-center gap-2 rounded border px-3 py-2 transition ${activeView === view ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-terminal-panel hover:border-terminal-blue hover:text-terminal-text"}`} href={buildViewHref(view, currentParams)} onClick={(event) => {
               event.preventDefault();
@@ -149,12 +129,12 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
           ))}
         </nav>
 
-        <div className={`grid min-h-0 flex-1 gap-4 ${fitScreenMode ? "overflow-hidden py-2" : "py-3"} lg:grid-cols-[14.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)]`}>
+        <div className="grid min-h-0 flex-1 gap-4 py-3 lg:grid-cols-[14.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)]">
           <aside className="hidden min-h-0 border-r border-terminal-line pr-3 lg:block">
             <nav className="sticky top-3 space-y-1 text-sm text-terminal-muted">{nav}</nav>
           </aside>
 
-          <LiveDashboard fitScreenMode={fitScreenMode} initialOverview={initialOverview} initialParams={currentParams} initialView={activeView} onAuthUserChange={setAuthUser} onFitScreenModeChange={setFitScreenMode} onMarketSelectionChange={handleMarketSelectionChange} />
+          <LiveDashboard initialOverview={initialOverview} initialParams={currentParams} initialView={activeView} onAuthUserChange={setAuthUser} onMarketSelectionChange={handleMarketSelectionChange} />
         </div>
       </section>
     </main>

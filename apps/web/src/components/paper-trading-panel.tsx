@@ -59,7 +59,6 @@ interface PaperTradingPanelProps {
   handleUpdatePositionRisk: any;
   handleClosePosition: any;
   recentPaperOrders: any;
-  fitScreenMode?: boolean;
 }
 
 export function PaperTradingPanel(props: PaperTradingPanelProps) {
@@ -120,24 +119,23 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
     closingPositionId,
     handleUpdatePositionRisk,
     handleClosePosition,
-    recentPaperOrders,
-    fitScreenMode = false
+    recentPaperOrders
   } = props;
   const totalOpenDeltaExposure = (paperSummary?.openPositions ?? []).reduce((total: number, position: any) => total + (position.deltaExposure ?? 0), 0);
 
   return (
-    <section className={`rounded border border-terminal-line bg-terminal-panel/80 ${fitScreenMode ? "h-full min-h-0 overflow-y-auto p-3 text-[0.92rem]" : "p-4"}`}>
+    <section className="rounded border border-terminal-line bg-terminal-panel/80 p-4">
       <h2 className="text-base font-semibold">Paper Trading</h2>
       <div className="mt-4">
-      <div className={`grid text-sm ${fitScreenMode ? "gap-3" : "gap-4"}`}>
-        <div className={`grid md:grid-cols-4 ${fitScreenMode ? "gap-2" : "gap-3"}`}>
+      <div className="grid gap-4 text-sm">
+        <div className="grid gap-3 md:grid-cols-4">
           <StatusTile icon={<Play size={18} />} label="Replay" value="Ready" />
           <StatusTile icon={<WalletCards size={18} />} label="Open Paper" value={String(paperSummary?.stats.openPositions ?? 0)} />
           <StatusTile icon={<LineChart size={18} />} label="MTM P/L" value={formatCurrency(paperSummary?.stats.markToMarketPnl ?? 0)} />
           <StatusTile icon={<ShieldCheck size={18} />} label="Risk Mode" value="Strict" />
         </div>
 
-        <div className={`grid xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.4fr)] ${fitScreenMode ? "gap-2" : "gap-3"}`}>
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.4fr)]">
           <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-3">
             <SignalCell label="Entry Trigger" value={formatPrice(orderEntryPrice)} detail={`${orderAction === "BUY" ? "BUY fills when LTP <= entry" : "SELL fills when LTP >= entry"} / LTP ${formatPrice(marketEntryPrice)}`} tone="blue" />
             <SignalCell label="Risk / Reward" value={riskReward ? `1:${riskReward.toFixed(1)}` : "--"} detail={`${formatCurrency(estimatedRisk)} trail risk`} tone="green" />
@@ -152,9 +150,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handlePaperOrder}>
           <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${overview.snapshot.expiry}`} />
-          <div className={fitScreenMode ? "max-h-[42vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[1280px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Symbol</th>
                   <th className="px-3 py-3 text-left">Order</th>
@@ -240,9 +238,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Pending Orders" meta={`${pendingPaperOrders.length} waiting`} />
-          <div className={fitScreenMode ? "max-h-[38vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[1340px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Order</th>
                   <th className="px-3 py-3 text-right">Contracts</th>
@@ -350,9 +348,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Open Position Totals" meta={`Net Delta ${formatDeltaExposure(totalOpenDeltaExposure)}`} />
-          <div className={fitScreenMode ? "max-h-[42vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Underlying</th>
                   <th className="px-3 py-3 text-left">Expiry</th>
@@ -385,9 +383,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Open Paper Positions" meta={`${formatCurrency(paperSummary?.stats.markToMarketPnl ?? 0)} MTM`} />
-          <div className={fitScreenMode ? "max-h-[42vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[1280px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Trade</th>
                   <th className="px-3 py-3 text-right">Qty</th>
@@ -459,9 +457,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Closed Trades" meta={`${formatCurrency(paperSummary?.stats.realizedPnl ?? 0)} realized`} />
-          <div className={fitScreenMode ? "max-h-[38vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[1240px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Trade</th>
                   <th className="px-3 py-3 text-left">Reason</th>
@@ -504,9 +502,9 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <div className="rounded border border-terminal-line bg-white/[0.03]">
           <PaperSectionHeader title="Recent Filled Orders" meta={`${paperSummary?.stats.filledOrders ?? 0} filled`} />
-          <div className={fitScreenMode ? "max-h-[34vh] overflow-auto" : "overflow-x-auto"}>
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] border-collapse text-sm">
-              <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
+              <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Order</th>
                   <th className="px-3 py-3 text-right">Qty</th>
