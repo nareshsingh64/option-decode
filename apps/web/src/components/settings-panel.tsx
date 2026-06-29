@@ -6,6 +6,7 @@ interface SettingsPanelProps {
   authUser: any;
   disableBrowserPush: () => void;
   enableBrowserPush: () => void;
+  fitScreenMode: boolean;
   isPushSubmitting: boolean;
   isSavingAlertThresholds: boolean;
   numberFormatMode: "indian" | "metric";
@@ -14,6 +15,7 @@ interface SettingsPanelProps {
   quantityDisplayMode: "lots" | "numbers";
   saveAlertThresholds: () => void;
   setAlertThresholdDraft: (updater: any) => void;
+  setFitScreenMode?: (enabled: boolean) => void;
   setNumberFormatMode: (value: "indian" | "metric") => void;
   setQuantityDisplayMode: (value: "lots" | "numbers") => void;
   setVisibleStrikeMode: (value: "vix" | "atm") => void;
@@ -26,6 +28,7 @@ export function SettingsPanel({
   authUser,
   disableBrowserPush,
   enableBrowserPush,
+  fitScreenMode,
   isPushSubmitting,
   isSavingAlertThresholds,
   numberFormatMode,
@@ -34,6 +37,7 @@ export function SettingsPanel({
   quantityDisplayMode,
   saveAlertThresholds,
   setAlertThresholdDraft,
+  setFitScreenMode,
   setNumberFormatMode,
   setQuantityDisplayMode,
   setVisibleStrikeMode,
@@ -66,6 +70,14 @@ export function SettingsPanel({
             checked={visibleStrikeMode === "atm"}
             onChange={(checked) => setVisibleStrikeMode(checked ? "atm" : "vix")}
             detail={visibleStrikeMode === "atm" ? "Shows ATM +/- 6 strikes" : "Shows India VIX expected range"}
+          />
+          <SettingsSwitch
+            label="Fit Screen"
+            leftLabel="Off"
+            rightLabel="On"
+            checked={fitScreenMode}
+            onChange={(checked) => setFitScreenMode?.(checked)}
+            detail={fitScreenMode ? "Keeps the workspace inside the screen with internal table scrolling" : "Uses normal page scrolling"}
           />
         </div>
       </Panel>

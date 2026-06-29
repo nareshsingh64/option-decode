@@ -8,6 +8,7 @@ interface OptionChainTableProps {
   renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
   renderLtpStack: (ltp: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity: any) => ReactNode;
   formatOptionalNumber: (value: number | undefined, decimals: number) => string;
+  fitScreenMode?: boolean;
 }
 
 export function OptionChainTable({
@@ -17,12 +18,13 @@ export function OptionChainTable({
   renderIvDeltaCell,
   renderPressureCell,
   renderLtpStack,
-  formatOptionalNumber
+  formatOptionalNumber,
+  fitScreenMode = false
 }: OptionChainTableProps) {
   return (
-    <div className="max-w-full overflow-x-auto">
+    <div className={`max-w-full ${fitScreenMode ? "min-h-0 flex-1 overflow-auto" : "overflow-x-auto"}`}>
       <table className={`w-full border-collapse text-xs xl:text-sm ${chainTableMode === "greeks" ? "min-w-[1160px]" : "min-w-[980px]"}`}>
-        <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
+        <thead className={`${fitScreenMode ? "sticky top-0 z-10" : ""} bg-white/[0.03] text-xs uppercase text-terminal-muted`}>
           {chainTableMode === "standard" ? (
             <tr>
               <th className="px-2 py-3 text-left">CE IV/Δ</th>
