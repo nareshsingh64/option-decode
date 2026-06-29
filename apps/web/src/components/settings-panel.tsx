@@ -4,6 +4,7 @@ interface SettingsPanelProps {
   alertSettingsStatus: string | null;
   alertThresholdDraft: any;
   authUser: any;
+  disableBrowserPush: () => void;
   enableBrowserPush: () => void;
   isPushSubmitting: boolean;
   isSavingAlertThresholds: boolean;
@@ -23,6 +24,7 @@ export function SettingsPanel({
   alertSettingsStatus,
   alertThresholdDraft,
   authUser,
+  disableBrowserPush,
   enableBrowserPush,
   isPushSubmitting,
   isSavingAlertThresholds,
@@ -86,9 +88,14 @@ export function SettingsPanel({
       <Panel title="Browser Notifications">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="max-w-2xl text-sm text-terminal-muted">Critical market alerts can be delivered by browser push when this device grants permission.</p>
-          <button className="rounded border border-terminal-blue px-4 py-2 text-sm font-semibold text-terminal-blue transition hover:bg-terminal-blue/10 disabled:cursor-not-allowed disabled:opacity-60" disabled={!authUser || isPushSubmitting} type="button" onClick={enableBrowserPush}>
-            {isPushSubmitting ? "Enabling..." : "Enable Push"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button className="rounded border border-terminal-blue px-4 py-2 text-sm font-semibold text-terminal-blue transition hover:bg-terminal-blue/10 disabled:cursor-not-allowed disabled:opacity-60" disabled={!authUser || isPushSubmitting} type="button" onClick={enableBrowserPush}>
+              {isPushSubmitting ? "Working..." : "Enable Push"}
+            </button>
+            <button className="rounded border border-terminal-red px-4 py-2 text-sm font-semibold text-terminal-red transition hover:bg-terminal-red/10 disabled:cursor-not-allowed disabled:opacity-60" disabled={!authUser || isPushSubmitting} type="button" onClick={disableBrowserPush}>
+              Disable Push
+            </button>
+          </div>
         </div>
         {pushStatus ? <p className="mt-3 text-sm text-terminal-muted">{pushStatus}</p> : null}
       </Panel>

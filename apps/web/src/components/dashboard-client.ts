@@ -236,6 +236,33 @@ export async function registerBrowserPush(): Promise<void> {
   }
 }
 
+export async function disableBrowserPush(): Promise<void> {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    throw new Error("This browser does not support push notifications.");
+  }
+
+  const registration = await navigator.serviceWorker.getRegistration("/push-sw.js");
+  const subscription = await registration?.pushManager.getSubscription();
+  const endpoint = subscription?.endpoint;
+  if (subscription) {
+    await subscription.unsubscribe();
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/push/subscriptions`, {
+    method: "DELETE",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify(endpoint ? { endpoint } : {})
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Push disable failed with HTTP ${response.status}`);
+  }
+}
+
 export function urlBase64ToUint8Array(value: string) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");

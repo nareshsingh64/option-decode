@@ -67,6 +67,16 @@ export async function disablePushSubscriptionByEndpoint(endpoint: string, client
   });
 }
 
+export async function disablePushSubscriptionsForUser(userId: string, endpoint?: string, client: PrismaClient = prisma) {
+  await client.pushSubscription.updateMany({
+    where: {
+      userId,
+      ...(endpoint ? { endpoint } : {})
+    },
+    data: { disabled: true }
+  });
+}
+
 function toDto(row: { id: string; userId: string; endpoint: string; p256dh: string; auth: string }): PushSubscriptionDto {
   return {
     id: row.id,

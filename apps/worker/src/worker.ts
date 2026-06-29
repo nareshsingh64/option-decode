@@ -16,6 +16,7 @@ const SNAPSHOT_RETENTION_QUEUE = "snapshot-retention";
 const RETENTION_JOB_NAME = "cleanup";
 const RETENTION_SCHEDULER_ID = "snapshot-retention:cleanup";
 const MARKET_SNAPSHOT_SAVED_CHANNEL = "market:snapshot:saved";
+const PUSH_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
 const snapshotRepeatOptions = config.SNAPSHOT_CRON_PATTERN
   ? { pattern: config.SNAPSHOT_CRON_PATTERN }
   : { every: config.SNAPSHOT_INTERVAL_MS };
@@ -28,6 +29,7 @@ const redisPublisher = new Redis(config.REDIS_URL, {
   lazyConnect: true
 });
 const pushNotificationsEnabled = Boolean(config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY);
+const pushAlertLastSentAt = new Map<string, number>();
 
 if (pushNotificationsEnabled) {
   webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY as string, config.VAPID_PRIVATE_KEY as string);
@@ -156,6 +158,12 @@ async function sendCriticalPushAlerts(snapshot: OptionChainSnapshot) {
   if (!criticalAlert) {
     return;
   }
+  const cooldownKey = criticalAlert.id;
+  const now = Date.now();
+  const lastSentAt = pushAlertLastSentAt.get(cooldownKey) ?? 0;
+  if (now - lastSentAt < PUSH_ALERT_COOLDOWN_MS) {
+    return;
+  }
 
   const subscriptions = await listActivePushSubscriptions();
   if (!subscriptions.length) {
@@ -179,6 +187,9 @@ async function sendCriticalPushAlerts(snapshot: OptionChainSnapshot) {
     })
   );
   const failed = results.filter((result) => result.status === "rejected").length;
+  if (failed < subscriptions.length) {
+    pushAlertLastSentAt.set(cooldownKey, now);
+  }
   if (failed) {
     console.warn("Some push notifications failed", {
       underlying: snapshot.underlyingSymbol,

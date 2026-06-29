@@ -6,7 +6,7 @@ import tls from "node:tls";
 import { z } from "zod";
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -480,6 +480,21 @@ app.post("/api/push/subscriptions", async (request, reply) => {
     userAgent: request.headers["user-agent"]
   });
   return { subscription };
+});
+
+app.delete("/api/push/subscriptions", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  const parsed = z.object({ endpoint: z.string().url().optional() }).safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ message: "Invalid push disable request." });
+  }
+
+  await disablePushSubscriptionsForUser(user.id, parsed.data.endpoint);
+  return { disabled: true };
 });
 
 app.get<{

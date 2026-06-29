@@ -11,6 +11,7 @@ import {
   buildMarketStreamUrl,
   cancelPendingPaperOrder,
   closePaperPosition,
+  disableBrowserPush,
   fetchAdminOverview,
   fetchAlertThresholds,
   fetchAuthUser,
@@ -926,6 +927,19 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setIsPushSubmitting(false);
     }
   };
+
+  const disableBrowserNotifications = async () => {
+    setIsPushSubmitting(true);
+    setPushStatus(null);
+    try {
+      await disableBrowserPush();
+      setPushStatus("Browser notifications are disabled for this device.");
+    } catch (error) {
+      setPushStatus(error instanceof Error ? error.message : "Unable to disable browser notifications");
+    } finally {
+      setIsPushSubmitting(false);
+    }
+  };
   const alertCenterHref = buildClientViewHref("alerts", overview.selectedUnderlying, overview.selectedExpiry);
 
   useEffect(() => {
@@ -1314,6 +1328,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           alertSettingsStatus={alertSettingsStatus}
           alertThresholdDraft={alertThresholdDraft}
           authUser={authUser}
+          disableBrowserPush={disableBrowserNotifications}
           enableBrowserPush={enableBrowserPush}
           isPushSubmitting={isPushSubmitting}
           isSavingAlertThresholds={isSavingAlertThresholds}

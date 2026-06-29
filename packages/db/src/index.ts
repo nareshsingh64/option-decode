@@ -22,7 +22,7 @@ export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan }
 export { getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listPcrTrend, listReplaySnapshots, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
 export { cancelPendingPaperOrder, closePaperPosition, getPaperSummary, monitorPaperTradingForSnapshot, placePaperOrder, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
 export type { PaperOrderInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";
-export { disablePushSubscriptionByEndpoint, listActivePushSubscriptions, upsertPushSubscription } from "./push-repository.js";
+export { disablePushSubscriptionByEndpoint, disablePushSubscriptionsForUser, listActivePushSubscriptions, upsertPushSubscription } from "./push-repository.js";
 export type { PushSubscriptionDto, PushSubscriptionInput } from "./push-repository.js";
 export { getDefaultWatchlist, updateDefaultWatchlist } from "./watchlist-repository.js";
 export type { WatchlistDto } from "./watchlist-repository.js";
