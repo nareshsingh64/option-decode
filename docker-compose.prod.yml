@@ -45,14 +45,17 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      # MySQL now runs natively on the EC2 host instead of in a container (see
-      # docs/deploy notes). host.docker.internal + host-gateway is what lets a
-      # Linux container reach the host; this is not automatic like on Docker
-      # Desktop and requires Docker 20.10+.
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@host.docker.internal:3306/${MYSQL_DATABASE}
+      # MySQL now runs natively on the EC2 host instead of in a container.
+      # DB_HOST_GATEWAY is this compose project's bridge network gateway IP
+      # (docker network inspect option-decode_default | grep Gateway) - native
+      # MySQL is bound to that address specifically. We use the literal IP
+      # rather than host.docker.internal/host-gateway because host-gateway
+      # resolved to the *default* docker0 bridge (172.17.0.1) instead of this
+      # project's custom network, and MySQL isn't listening there. Override
+      # via .env.production if the network is ever recreated with a different
+      # subnet.
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${DB_HOST_GATEWAY:-172.18.0.1}:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     expose:
       - "4000"
     healthcheck:
@@ -76,10 +79,8 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@host.docker.internal:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${DB_HOST_GATEWAY:-172.18.0.1}:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy
