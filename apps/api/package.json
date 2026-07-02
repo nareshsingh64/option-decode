@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "dotenv -e ../../.env.local -- tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -15,6 +15,7 @@
     "@option-decode/analytics": "workspace:*",
     "@option-decode/config": "workspace:*",
     "@option-decode/db": "workspace:*",
+    "@option-decode/trading": "workspace:*",
     "@option-decode/utils": "workspace:*",
     "@option-decode/types": "workspace:*",
     "fastify": "^5.1.0",

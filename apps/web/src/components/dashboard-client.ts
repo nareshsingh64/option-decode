@@ -343,14 +343,15 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
   if (!response.ok) {
     throw new Error(`Replay snapshot failed with HTTP ${response.status}`);
   }
-  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot">;
+  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot" | "recommendations">;
   return {
     ...baseOverview,
     selectedUnderlying: payload.snapshot.underlyingSymbol,
     selectedExpiry: payload.snapshot.expiry,
     snapshot: payload.snapshot,
     pressure: payload.pressure,
-    alerts: payload.alerts
+    alerts: payload.alerts,
+    recommendations: payload.recommendations
   };
 }
 

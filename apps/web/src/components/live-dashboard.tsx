@@ -131,6 +131,17 @@ export interface MarketOverview {
     metric: string;
     createdAt: string;
   }>;
+  recommendations: Recommendation[];
+}
+
+export interface Recommendation {
+  id: string;
+  category: "direction" | "strategy" | "timing" | "avoid";
+  priority: "high" | "medium" | "low";
+  title: string;
+  explanation: string;
+  action: string;
+  confidence: number;
 }
 
 export interface PaperSummary {
@@ -453,6 +464,35 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const isMarketStreamConnectedRef = useRef(false);
   const replaySnapshotsRef = useRef<ReplaySnapshotSummary[]>([]);
   const replayIndexRef = useRef(0);
+  // Mirrors of state read inside refreshReplayTimeline so that callback can
+  // have a stable [] dependency list. Previously it closed over `overview`
+  // and `replayStartSnapshotId` directly and was recreated whenever either
+  // changed; since `overview` changes on every poll tick and this function
+  // itself sets `replayStartSnapshotId`, that made the effect that calls it
+  // re-fire in a loop (worse now that listReplaySnapshots caps to a bounded
+  // window — a previously-selected snapshot id can fall out of that window
+  // and get reset every time, which used to never happen when the query
+  // was unbounded).
+  const overviewRef = useRef(overview);
+  const replayExpiryRef = useRef(replayExpiry);
+  const replayStartSnapshotIdRef = useRef(replayStartSnapshotId);
+
+  useEffect(() => {
+    overviewRef.current = overview;
+  }, [overview]);
+
+  // ReplayLab is presentational and calls these setters directly from its
+  // own onChange handlers (Replay Expiry / Start Time selects), so they're
+  // wrapped here to keep replayExpiryRef/replayStartSnapshotIdRef in sync
+  // no matter which code path changes the state.
+  const setReplayExpiryWithRef = useCallback((value: string) => {
+    replayExpiryRef.current = value;
+    setReplayExpiry(value);
+  }, []);
+  const setReplayStartSnapshotIdWithRef = useCallback((value: string) => {
+    replayStartSnapshotIdRef.current = value;
+    setReplayStartSnapshotId(value);
+  }, []);
 
   useEffect(() => {
     try {
@@ -518,7 +558,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     setReplaySnapshots([]);
     setReplayIndex(0);
     setReplayExpiry(initialOverview.selectedExpiry);
+    replayExpiryRef.current = initialOverview.selectedExpiry;
     setReplayStartSnapshotId("");
+    replayStartSnapshotIdRef.current = "";
     replayIndexRef.current = 0;
     replaySnapshotsRef.current = [];
     setIsReplayPlaying(false);
@@ -711,16 +753,19 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const refreshReplayTimeline = useCallback(async () => {
     try {
       setReplayError(null);
-      const snapshots = await fetchReplayTimeline(selectionRef.current.underlying, replayExpiry || selectionRef.current.expiry);
+      const snapshots = await fetchReplayTimeline(selectionRef.current.underlying, replayExpiryRef.current || selectionRef.current.expiry);
       setReplaySnapshots(snapshots);
       replaySnapshotsRef.current = snapshots;
-      const requestedIndex = replayStartSnapshotId ? snapshots.findIndex((snapshot) => snapshot.id === replayStartSnapshotId) : 0;
+      const requestedIndex = replayStartSnapshotIdRef.current
+        ? snapshots.findIndex((snapshot) => snapshot.id === replayStartSnapshotIdRef.current)
+        : 0;
       const nextIndex = Math.max(0, requestedIndex);
       if (snapshots[nextIndex]) {
         replayIndexRef.current = nextIndex;
         setReplayIndex(nextIndex);
+        replayStartSnapshotIdRef.current = snapshots[nextIndex].id;
         setReplayStartSnapshotId(snapshots[nextIndex].id);
-        setReplayOverview(await fetchReplaySnapshot(snapshots[nextIndex].id, overview));
+        setReplayOverview(await fetchReplaySnapshot(snapshots[nextIndex].id, overviewRef.current));
       } else {
         replayIndexRef.current = 0;
         setReplayIndex(0);
@@ -729,7 +774,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     } catch (error) {
       setReplayError(error instanceof Error ? error.message : "Unable to load replay timeline");
     }
-  }, [overview, replayExpiry, replayStartSnapshotId]);
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1187,6 +1232,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setReplayError(null);
       replayIndexRef.current = nextIndex;
       setReplayIndex(nextIndex);
+      replayStartSnapshotIdRef.current = snapshot.id;
       setReplayStartSnapshotId(snapshot.id);
       setReplayOverview(await fetchReplaySnapshot(snapshot.id, overview));
     } catch (error) {
@@ -1226,17 +1272,27 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         watchlistError={watchlistError}
       />
 
-      <section className="grid gap-3 md:grid-cols-4">
-        <MetricCard label={`${overview.snapshot.underlyingSymbol} Spot`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" detail={`ATM ${formatStrike(overview.snapshot.atmStrike)}`} />
-        <MetricCard label="Bullish Pressure" value={`${overview.pressure.bullishPressure}%`} tone="emerald" detail="PE support pressure" />
-        <MetricCard label="Bearish Pressure" value={`${overview.pressure.bearishPressure}%`} tone="red" detail="CE resistance pressure" />
-        <MetricCard label="PCR" value={overview.pressure.pcr?.toFixed(2) ?? "--"} tone="blue" detail={`Updated ${snapshotAge} IST`} />
+      {/* Compact KPI bar — every number here used to also appear
+          separately in the 4-card metric row above and again inside
+          "Trading Command Center" below. Each metric now lives in exactly
+          one place. Not sticky (position: sticky) to avoid any chance of
+          it overlapping/blocking the Market Controls form above it. */}
+      <section className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded border border-terminal-line bg-terminal-panel/95 px-3 py-2 shadow-sm">
+        <KpiChip label={`${overview.snapshot.underlyingSymbol}`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" />
+        <KpiChip label="ATM" value={formatStrike(overview.snapshot.atmStrike)} />
+        <KpiChip label="Bias" value={pressureSummary.bias} tone={pressureSummary.bias === "Bullish" ? "emerald" : pressureSummary.bias === "Bearish" ? "red" : "default"} />
+        <KpiChip label="Bull %" value={`${overview.pressure.bullishPressure}%`} tone="emerald" />
+        <KpiChip label="Bear %" value={`${overview.pressure.bearishPressure}%`} tone="amber" />
+        <KpiChip label="PCR" value={overview.pressure.pcr?.toFixed(2) ?? "--"} />
+        <KpiChip label="Max Pain" value={pressureSummary.maxPainText} />
+        <KpiChip label="Readiness" value={pressureSummary.readiness} tone={pressureSummary.readiness === "Actionable" ? "emerald" : pressureSummary.readiness === "Watch" ? "blue" : "default"} />
+        <KpiChip label="Setup" value={pressureSummary.setupQualityText} tone={pressureSummary.setupQualityText.startsWith("A") ? "emerald" : pressureSummary.setupQualityText.startsWith("Wait") ? "red" : "blue"} />
+        <span className="ml-auto text-xs text-terminal-muted">Updated {snapshotAge} IST</span>
       </section>
 
       {initialView === "dashboard" ? (
         <DashboardMainPanel
           chainStats={chainStats}
-          formatCurrency={formatCurrency}
           formatLarge={formatLarge}
           formatSignedLarge={formatSignedLarge}
           formatStrike={formatStrike}
@@ -1244,9 +1300,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           getActivityToneClass={getActivityToneClass}
           numberFormatMode={numberFormatMode}
           overview={overview}
-          paperSummary={paperSummary}
           pressureSummary={pressureSummary}
-          snapshotAge={snapshotAge}
           strikeMovementRows={strikeMovementRows}
           strikeMovementSummary={strikeMovementSummary}
           tradeInterpretation={tradeInterpretation}
@@ -1436,8 +1490,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       {initialView === "replay" ? (
         <ReplayLab
           replayExpiry={replayExpiry}
-          setReplayExpiry={setReplayExpiry}
-          setReplayStartSnapshotId={setReplayStartSnapshotId}
+          setReplayExpiry={setReplayExpiryWithRef}
+          setReplayStartSnapshotId={setReplayStartSnapshotIdWithRef}
           setReplayOverview={setReplayOverview}
           setReplaySnapshots={setReplaySnapshots}
           replaySnapshotsRef={replaySnapshotsRef}
@@ -1567,5 +1621,16 @@ function MetricCard({ label, value, detail, tone }: { label: string; value: stri
       <p className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</p>
       <p className="mt-1 text-sm text-terminal-muted">{detail}</p>
     </article>
+  );
+}
+
+function KpiChip({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "blue" | "emerald" | "amber" | "red" }) {
+  const toneClass = tone === "emerald" ? "text-terminal-emerald" : tone === "amber" ? "text-terminal-amber" : tone === "red" ? "text-terminal-red" : tone === "blue" ? "text-terminal-blue" : "text-terminal-text";
+
+  return (
+    <span className="flex items-baseline gap-1.5 rounded border border-terminal-line/70 bg-white/[0.03] px-2.5 py-1.5">
+      <span className="text-xs uppercase text-terminal-muted">{label}</span>
+      <span className={`text-sm font-semibold ${toneClass}`}>{value}</span>
+    </span>
   );
 }

@@ -1,4 +1,16 @@
-import type { AlertThresholdConfig, MarketAlert, OptionChainSnapshot, OptionContractTick, PressureScore, PressureZone } from "@option-decode/types";
+import type {
+  AlertThresholdConfig,
+  ChainStats,
+  MarketAlert,
+  MarketBiasSummary,
+  OptionActivityKind,
+  OptionChainSnapshot,
+  OptionContractTick,
+  PressureScore,
+  PressureZone,
+  StrikeMovementRow,
+  TradeInterpretation
+} from "@option-decode/types";
 
 function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
   const oi = toLots(tick.openInterest, tick);
@@ -203,4 +215,225 @@ function getProximityThreshold(underlyingSymbol: string) {
   };
 
   return thresholds[underlyingSymbol.toUpperCase()] ?? 100;
+}
+
+/**
+ * Classifies a leg's OI + LTP behaviour into the standard option-chain
+ * "activity" read: long buildup, writing, short covering, or unwinding.
+ * Previously lived only inside the web dashboard component — belongs here
+ * so both the API and any future strategy/execution code can use it.
+ */
+export function classifyOptionActivity(tick?: OptionContractTick): OptionActivityKind {
+  if (!tick) {
+    return "NEUTRAL";
+  }
+  const oiChange = tick.changeInOpenInterest ?? 0;
+  const ltpChange = tick.lastPriceChange ?? 0;
+  if (oiChange > 0 && ltpChange > 0) return "LONG_BUILDUP";
+  if (oiChange > 0 && ltpChange < 0) return "WRITING";
+  if (oiChange < 0 && ltpChange > 0) return "SHORT_COVERING";
+  if (oiChange < 0 && ltpChange < 0) return "LONG_UNWINDING";
+  return "NEUTRAL";
+}
+
+function optionActivityWeight(tick?: OptionContractTick): number {
+  if (!tick) return 0;
+  return Math.round(Math.abs(toLots(tick.changeInOpenInterest, tick)) + Math.abs(toLots(tick.volume, tick)) * 0.05 + Math.abs(tick.lastPriceChangePercent ?? 0) * 2);
+}
+
+function getBuyerMomentumScore(tick?: OptionContractTick): number {
+  const activity = classifyOptionActivity(tick);
+  const weight = optionActivityWeight(tick);
+  if (!tick || !weight) return 0;
+  const direction = tick.optionType === "CE" ? 1 : -1;
+  if (activity === "LONG_BUILDUP") return direction * weight;
+  if (activity === "SHORT_COVERING") return direction * Math.round(weight * 0.5);
+  if (activity === "WRITING") return -direction * Math.round(weight * 0.6);
+  return 0;
+}
+
+function getSellerSafetyScore(tick?: OptionContractTick): number {
+  const activity = classifyOptionActivity(tick);
+  const weight = optionActivityWeight(tick);
+  if (!tick || !weight) return 0;
+  const supportDirection = tick.optionType === "PE" ? 1 : -1;
+  if (activity === "WRITING") return supportDirection * weight;
+  if (activity === "SHORT_COVERING") return -supportDirection * weight;
+  if (activity === "LONG_BUILDUP") return -supportDirection * Math.round(weight * 0.5);
+  return 0;
+}
+
+function calculateStrikeTrend(tick?: OptionContractTick): number {
+  if (!tick) return 0;
+  const oiTrend = toLots(tick.changeInOpenInterest, tick);
+  const ltpTrend = (tick.lastPriceChangePercent ?? 0) * 2;
+  return Math.round(oiTrend + ltpTrend);
+}
+
+/**
+ * OI breadth: whether total PE OI or CE OI dominates across the whole
+ * chain, plus the single strike carrying the most OI ("max OI magnet").
+ * Referenced throughout the dashboard guide as the "OI Breadth" signal;
+ * previously existed only as ad-hoc client-side math.
+ */
+export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
+  const ceTicks = snapshot.ticks.filter((tick) => tick.optionType === "CE");
+  const peTicks = snapshot.ticks.filter((tick) => tick.optionType === "PE");
+  const totalCeOi = ceTicks.reduce((sum, tick) => sum + (tick.openInterest ?? 0), 0);
+  const totalPeOi = peTicks.reduce((sum, tick) => sum + (tick.openInterest ?? 0), 0);
+  const totalCeChange = ceTicks.reduce((sum, tick) => sum + (tick.changeInOpenInterest ?? 0), 0);
+  const totalPeChange = peTicks.reduce((sum, tick) => sum + (tick.changeInOpenInterest ?? 0), 0);
+  const maxOiTick = [...snapshot.ticks].sort((left, right) => (right.openInterest ?? 0) - (left.openInterest ?? 0))[0];
+  const breadth: ChainStats["breadth"] = totalPeOi > totalCeOi * 1.05 ? "Put Support" : totalCeOi > totalPeOi * 1.05 ? "Call Resistance" : "Balanced";
+
+  return {
+    totalCeOi,
+    totalPeOi,
+    totalCeChange,
+    totalPeChange,
+    breadth,
+    maxOiStrike: maxOiTick?.strikePrice,
+    maxOiOptionType: maxOiTick?.optionType,
+    maxOiValue: maxOiTick?.openInterest
+  };
+}
+
+// Minimum |trendScore| (OI-change-in-lots + 2x LTP-change-%) required before
+// a strike is called "building" rather than "Flat". This used to be (and
+// still is, in the client-side strike-pressure-analytics.ts version of this
+// same logic) the median trend strength of the same ATM +/-2 window being
+// classified, which means a uniform move across every nearby strike (the
+// clearest possible "building" signal) raises the bar right along with it
+// and gets silently reclassified as Flat — the detector can only see a
+// strike that stands out from its neighbors, never a level where the whole
+// zone moves together. This fixed value is a reasonable starting heuristic,
+// not a backtested number — revisit it once the backtest engine can
+// calibrate it against real historical accuracy instead of a guess.
+const STRIKE_TREND_THRESHOLD = 10;
+
+/**
+ * ATM +/-2 strike movement score — the most important trend-reading panel
+ * per the dashboard guide (section 3). Uses the same pressureValue
+ * weighting as the main pressure score/zones so this panel can never
+ * contradict the bullish/bearish % shown elsewhere on the same screen.
+ */
+export function calculateStrikeMovement(snapshot: OptionChainSnapshot): StrikeMovementRow[] {
+  const strikes = [...new Set(snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
+  const atmIndex = strikes.findIndex((strike) => strike === snapshot.atmStrike);
+  if (atmIndex < 0) {
+    return [];
+  }
+
+  const findTick = (strike: number, optionType: "CE" | "PE") => snapshot.ticks.find((tick) => tick.strikePrice === strike && tick.optionType === optionType);
+  const window = strikes.slice(Math.max(0, atmIndex - 2), atmIndex + 3);
+  const peAverageVolume = averageLotsVolume(snapshot.ticks.filter((tick) => tick.optionType === "PE"));
+  const ceAverageVolume = averageLotsVolume(snapshot.ticks.filter((tick) => tick.optionType === "CE"));
+
+  return window
+    .map((strike): StrikeMovementRow => {
+      const ce = findTick(strike, "CE");
+      const pe = findTick(strike, "PE");
+      const peScore = Math.round(Math.max(0, pressureValue(pe ?? emptyTick("PE", strike), peAverageVolume)));
+      const ceScore = Math.round(Math.max(0, pressureValue(ce ?? emptyTick("CE", strike), ceAverageVolume)));
+      const combinedScore = peScore + ceScore;
+      const netScore = peScore - ceScore;
+      const netScorePercent = combinedScore >= 10 ? Math.round((netScore / combinedScore) * 100) : 0;
+      const trendScore = calculateStrikeTrend(pe) - calculateStrikeTrend(ce);
+      const trendDirection: -1 | 0 | 1 = Math.abs(trendScore) >= STRIKE_TREND_THRESHOLD ? (Math.sign(trendScore) as -1 | 0 | 1) : 0;
+
+      return {
+        strike,
+        isAtm: strike === snapshot.atmStrike,
+        distance: strikes.indexOf(strike) - atmIndex,
+        peScore,
+        ceScore,
+        netScore,
+        netScorePercent,
+        trendScore,
+        trendDirection,
+        bias: combinedScore < 10 ? "Balanced" : netScore > 0 ? "Up / support" : netScore < 0 ? "Down / resistance" : "Balanced",
+        trend: trendDirection > 0 ? "Increasing support" : trendDirection < 0 ? "Increasing resistance" : "Flat",
+        ceActivity: classifyOptionActivity(ce),
+        peActivity: classifyOptionActivity(pe),
+        buyerMomentumScore: getBuyerMomentumScore(ce) + getBuyerMomentumScore(pe),
+        sellerSafetyScore: getSellerSafetyScore(ce) + getSellerSafetyScore(pe)
+      };
+    })
+    .sort((left, right) => right.strike - left.strike);
+}
+
+function emptyTick(optionType: "CE" | "PE", strikePrice: number): OptionContractTick {
+  return {
+    tradingDate: "",
+    tickTime: "",
+    underlyingSymbol: "",
+    expiry: "",
+    optionType,
+    strikePrice
+  };
+}
+
+/** Aggregate buyer-momentum vs. seller-safety score across the ATM +/-2 window. */
+export function calculateTradeInterpretation(rows: StrikeMovementRow[]): TradeInterpretation {
+  return {
+    buyerScore: rows.reduce((sum, row) => sum + row.buyerMomentumScore, 0),
+    sellerScore: rows.reduce((sum, row) => sum + row.sellerSafetyScore, 0)
+  };
+}
+
+/**
+ * The core "predict market direction" read: combines the pressure gap,
+ * PCR, proximity to Max Pain, and proximity to support/resistance into a
+ * single bias/readiness/conviction/setup-quality verdict. Previously
+ * computed only inside the React dashboard component and therefore
+ * untestable and un-callable from anywhere else (including a future
+ * strategy engine). Returns raw categorical/numeric fields only —
+ * locale-formatted display strings are a presentation concern and belong
+ * in the caller (web UI or API response formatter).
+ */
+export function calculateMarketBias(snapshot: OptionChainSnapshot, pressure: PressureScore): MarketBiasSummary {
+  const pressureGap = pressure.bullishPressure - pressure.bearishPressure;
+  const absGap = Math.abs(pressureGap);
+  const support = pressure.supportZones[0];
+  const resistance = pressure.resistanceZones[0];
+  const supportDistance = support ? Math.abs(snapshot.spotPrice - support.strikePrice) : undefined;
+  const resistanceDistance = resistance ? Math.abs(resistance.strikePrice - snapshot.spotPrice) : undefined;
+
+  const bias: MarketBiasSummary["bias"] = pressureGap >= 6 ? "Bullish" : pressureGap <= -6 ? "Bearish" : "Balanced";
+  const readiness: MarketBiasSummary["readiness"] = absGap >= 8 ? "Actionable" : absGap >= 4 ? "Watch" : "Wait";
+  const conviction: MarketBiasSummary["conviction"] = absGap >= 20 ? "High" : absGap >= 10 ? "Moderate" : absGap >= 5 ? "Low" : "Neutral";
+
+  const pcr = pressure.pcr;
+  const pcrContext: MarketBiasSummary["pcrContext"] =
+    pcr === undefined ? undefined : pcr >= 1.25 ? "strong-put-support" : pcr >= 1.05 ? "mild-put-support" : pcr <= 0.75 ? "strong-call-resistance" : pcr <= 0.95 ? "mild-call-resistance" : undefined;
+
+  const maxPain = pressure.maxPain;
+  const maxPainDistancePercent = maxPain !== undefined && snapshot.spotPrice > 0 ? (Math.abs(snapshot.spotPrice - maxPain) / snapshot.spotPrice) * 100 : undefined;
+  const nearMaxPain = maxPainDistancePercent !== undefined && maxPainDistancePercent <= 1.0;
+
+  let setupScore = 0;
+  if (absGap >= 8) setupScore += 2;
+  else if (absGap >= 4) setupScore += 1;
+  if (pcr !== undefined && (pcr >= 1.1 || pcr <= 0.9)) setupScore += 1;
+  if (nearMaxPain) setupScore += 1;
+  if (supportDistance !== undefined && supportDistance <= 150) setupScore += 1;
+  if (resistanceDistance !== undefined && resistanceDistance <= 150) setupScore += 1;
+
+  const setupQuality: MarketBiasSummary["setupQuality"] =
+    setupScore >= 5 ? "A+ Setup" : setupScore >= 4 ? "A Setup" : setupScore >= 3 ? "B Setup" : setupScore >= 2 ? "C Setup" : "No Edge";
+
+  return {
+    bias,
+    pressureGap,
+    absGap,
+    readiness,
+    conviction,
+    setupScore,
+    setupQuality,
+    pcrContext,
+    nearMaxPain,
+    maxPainDistancePercent,
+    supportDistance,
+    resistanceDistance
+  };
 }

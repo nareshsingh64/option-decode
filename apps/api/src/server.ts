@@ -4,7 +4,8 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
+import { calculateMarketBias, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
+import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
@@ -339,6 +340,9 @@ app.get<{
   const pressure = calculatePressureScore(snapshot);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
+  const strikeMovement = calculateStrikeMovement(snapshot);
+  const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
+  const marketBias = calculateMarketBias(snapshot, pressure);
 
   return {
     underlyings: visibleUnderlyings,
@@ -349,7 +353,8 @@ app.get<{
     ticker: marketAux.ticker,
     snapshot,
     pressure,
-    alerts
+    alerts,
+    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
 });
 
@@ -630,10 +635,14 @@ app.get<{
   const pressure = calculatePressureScore(snapshot);
   const user = await getRequestUser(request.headers.cookie);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
+  const strikeMovement = calculateStrikeMovement(snapshot);
+  const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
+  const marketBias = calculateMarketBias(snapshot, pressure);
   return {
     snapshot,
     pressure,
-    alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined)
+    alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined),
+    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
 });
 

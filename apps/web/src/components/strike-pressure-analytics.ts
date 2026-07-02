@@ -15,16 +15,16 @@ export function buildStrikeMovementRows(overview: MarketOverview) {
   }
 
   const windowStrikes = strikes.slice(Math.max(0, atmIndex - 2), atmIndex + 3);
-  const trendSamples = windowStrikes
-    .flatMap((strike) => {
-      const ce = findOptionTick(overview, strike, "CE");
-      const pe = findOptionTick(overview, strike, "PE");
-      return [Math.abs(strikeTrendScore(ce)), Math.abs(strikeTrendScore(pe))];
-    })
-    .filter((score) => score > 0)
-    .sort((left, right) => left - right);
-  const medianTrend = trendSamples.length ? trendSamples[Math.floor(trendSamples.length / 2)] ?? 8 : 8;
-  const trendThreshold = Math.max(4, medianTrend);
+  // Minimum |trendScore| required before a strike is called "building"
+  // rather than "Flat". This used to be the median trend strength of the
+  // SAME window being classified, which meant a uniform move across every
+  // nearby strike (the clearest possible "building" signal) raised the bar
+  // right along with it and got silently reclassified as Flat — the
+  // detector could only see a strike that stood out from its neighbors,
+  // never a level where the whole zone moved together. Matches the fixed
+  // threshold used by the server-side calculateStrikeMovement in
+  // @option-decode/analytics so both can't disagree on the same signal.
+  const trendThreshold = 10;
 
   return windowStrikes
     .map((strike, index, windowStrikes) => {

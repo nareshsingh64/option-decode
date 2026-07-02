@@ -147,39 +147,48 @@ export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, cli
   const tradingDate = dateOnly(snapshot.tradingDate);
   const snapshotTime = new Date(snapshot.snapshotTime);
 
-  const saved = await client.$transaction(async (tx: Prisma.TransactionClient) => {
-    const underlying = await tx.underlying.upsert({
-      where: { symbol: snapshot.underlyingSymbol },
-      update: { active: true },
-      create: {
-        symbol: snapshot.underlyingSymbol,
-        displayName: snapshot.underlyingSymbol,
-        exchange: "NSE"
-      }
-    });
+  // Underlying/expiry/contract metadata upserts run against the pool
+  // (not inside the transaction below) and the per-tick contract upserts
+  // run concurrently instead of one-at-a-time. This used to be ~100-200
+  // sequential awaits on a single connection inside one interactive
+  // transaction (Prisma transactions are pinned to one connection, so they
+  // can't run concurrently anyway) — every 30s, per underlying. Contract
+  // metadata (lot size / security id / active flag) is idempotent, so it's
+  // safe for it to happen outside the atomic snapshot write: if it's ever
+  // interrupted, the next snapshot save corrects it.
+  const underlying = await client.underlying.upsert({
+    where: { symbol: snapshot.underlyingSymbol },
+    update: { active: true },
+    create: {
+      symbol: snapshot.underlyingSymbol,
+      displayName: snapshot.underlyingSymbol,
+      exchange: "NSE"
+    }
+  });
 
-    const expiry = await tx.expiry.upsert({
-      where: {
-        underlyingId_expiryDate: {
-          underlyingId: underlying.id,
-          expiryDate
-        }
-      },
-      update: {
-        expiryLabel: snapshot.expiry,
-        active: true
-      },
-      create: {
+  const expiry = await client.expiry.upsert({
+    where: {
+      underlyingId_expiryDate: {
         underlyingId: underlying.id,
-        expiryDate,
-        expiryLabel: snapshot.expiry
+        expiryDate
       }
-    });
+    },
+    update: {
+      expiryLabel: snapshot.expiry,
+      active: true
+    },
+    create: {
+      underlyingId: underlying.id,
+      expiryDate,
+      expiryLabel: snapshot.expiry
+    }
+  });
 
-    const storedLotSize = await getLotSizeForExpiry(snapshot.underlyingSymbol, snapshot.expiry, tx);
-    for (const tick of snapshot.ticks) {
+  const storedLotSize = await getLotSizeForExpiry(snapshot.underlyingSymbol, snapshot.expiry, client);
+  await Promise.all(
+    snapshot.ticks.map((tick) => {
       const lotSize = storedLotSize ?? tick.lotSize;
-      await tx.optionContract.upsert({
+      return client.optionContract.upsert({
         where: {
           expiryId_optionType_strikePrice: {
             expiryId: expiry.id,
@@ -201,8 +210,10 @@ export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, cli
           active: true
         }
       });
-    }
+    })
+  );
 
+  const saved = await client.$transaction(async (tx: Prisma.TransactionClient) => {
     const createdSnapshot = await tx.optionChainSnapshot.create({
       data: {
         tradingDate,

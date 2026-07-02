@@ -81,6 +81,78 @@ export interface AlertThresholdConfig {
   pressureCritical?: number;
 }
 
+export type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
+
+export type OiBreadth = "Put Support" | "Call Resistance" | "Balanced";
+
+export interface ChainStats {
+  totalCeOi: number;
+  totalPeOi: number;
+  totalCeChange: number;
+  totalPeChange: number;
+  breadth: OiBreadth;
+  maxOiStrike?: number;
+  maxOiOptionType?: OptionType;
+  maxOiValue?: number;
+}
+
+export interface StrikeMovementRow {
+  strike: number;
+  isAtm: boolean;
+  distance: number;
+  peScore: number;
+  ceScore: number;
+  netScore: number;
+  netScorePercent: number;
+  trendScore: number;
+  trendDirection: -1 | 0 | 1;
+  bias: "Balanced" | "Up / support" | "Down / resistance";
+  trend: "Increasing support" | "Increasing resistance" | "Flat";
+  ceActivity: OptionActivityKind;
+  peActivity: OptionActivityKind;
+  buyerMomentumScore: number;
+  sellerSafetyScore: number;
+}
+
+export interface TradeInterpretation {
+  buyerScore: number;
+  sellerScore: number;
+}
+
+export type MarketBias = "Bullish" | "Bearish" | "Balanced";
+export type TradeReadiness = "Actionable" | "Watch" | "Wait";
+export type MarketConviction = "High" | "Moderate" | "Low" | "Neutral";
+export type SetupQuality = "A+ Setup" | "A Setup" | "B Setup" | "C Setup" | "No Edge";
+export type PcrContext = "strong-put-support" | "mild-put-support" | "strong-call-resistance" | "mild-call-resistance";
+
+export interface MarketBiasSummary {
+  bias: MarketBias;
+  pressureGap: number;
+  absGap: number;
+  readiness: TradeReadiness;
+  conviction: MarketConviction;
+  setupScore: number;
+  setupQuality: SetupQuality;
+  pcrContext?: PcrContext;
+  nearMaxPain: boolean;
+  maxPainDistancePercent?: number;
+  supportDistance?: number;
+  resistanceDistance?: number;
+}
+
+export type RecommendationCategory = "direction" | "strategy" | "timing" | "avoid";
+export type RecommendationPriority = "high" | "medium" | "low";
+
+export interface Recommendation {
+  id: string;
+  category: RecommendationCategory;
+  priority: RecommendationPriority;
+  title: string;
+  explanation: string;
+  action: string;
+  confidence: number;
+}
+
 export interface PaperOrderRequest {
   userId: string;
   underlyingSymbol: UnderlyingSymbol;

@@ -1,9 +1,8 @@
-import { BellRing, LineChart, ShieldCheck, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
+import { TradeRecommendations } from "./trade-recommendations";
 
 interface DashboardMainPanelProps {
   chainStats: any;
-  formatCurrency: (value: number) => string;
   formatLarge: (value?: number, mode?: any) => string;
   formatSignedLarge: (value?: number, mode?: any) => string;
   formatStrike: (value: number) => string;
@@ -11,9 +10,7 @@ interface DashboardMainPanelProps {
   getActivityToneClass: (activity: any) => string;
   numberFormatMode: any;
   overview: any;
-  paperSummary: any;
   pressureSummary: any;
-  snapshotAge: string;
   strikeMovementRows: any[];
   strikeMovementSummary: any;
   tradeInterpretation: any;
@@ -21,7 +18,6 @@ interface DashboardMainPanelProps {
 
 export function DashboardMainPanel({
   chainStats,
-  formatCurrency,
   formatLarge,
   formatSignedLarge,
   formatStrike,
@@ -29,85 +25,76 @@ export function DashboardMainPanel({
   getActivityToneClass,
   numberFormatMode,
   overview,
-  paperSummary,
   pressureSummary,
-  snapshotAge,
   strikeMovementRows,
   strikeMovementSummary,
   tradeInterpretation
 }: DashboardMainPanelProps) {
   return (
     <section className="grid gap-4">
-      <Panel title="Trading Command Center">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <StatusTile icon={<ShieldCheck size={18} />} label="Market Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone={pressureSummary.bias === "Bullish" ? "green" : pressureSummary.bias === "Bearish" ? "red" : "blue"} />
-          <StatusTile icon={<LineChart size={18} />} label="PCR Live" value={pressureSummary.pcrText} detail={pressureSummary.pcrDetail} tone={pressureSummary.pcrTone} />
-          <StatusTile icon={<LineChart size={18} />} label="Max Pain" value={pressureSummary.maxPainText} detail={pressureSummary.maxPainDistanceText} tone="blue" />
-          <StatusTile icon={<ShieldCheck size={18} />} label="Conviction" value={pressureSummary.conviction} detail={`${pressureSummary.convictionScore}% ${pressureSummary.convictionDetail}`} tone={pressureSummary.convictionTone} />
-          <StatusTile icon={<BellRing size={18} />} label="Setup Quality" value={pressureSummary.setupQualityText} detail={pressureSummary.setupQualityDetail} tone={pressureSummary.setupQualityTone} />
-          <StatusTile icon={<WalletCards size={18} />} label="Paper P/L" value={formatCurrency((paperSummary?.stats.realizedPnl ?? 0) + (paperSummary?.stats.markToMarketPnl ?? 0))} />
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
+      <Panel title="Market Detail">
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
           <SignalCell label="Nearest Support" value={pressureSummary.nearestSupportText} detail={pressureSummary.supportDistanceText} tone="green" />
           <SignalCell label="Nearest Resistance" value={pressureSummary.nearestResistanceText} detail={pressureSummary.resistanceDistanceText} tone="red" />
-          <SignalCell label="Trade Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="blue" />
+          <SignalCell label="OI Breadth" value={chainStats.breadth} detail={`CE ${formatLarge(chainStats.totalCeOi, numberFormatMode)} · PE ${formatLarge(chainStats.totalPeOi, numberFormatMode)}`} tone="blue" />
+          <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={tradeInterpretation.buyerScore !== 0 ? `Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}` : "Neutral across ATM strikes"} tone={tradeInterpretation.buyerScore >= 8 ? "green" : tradeInterpretation.buyerScore <= -8 ? "red" : "blue"} />
+          <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={tradeInterpretation.sellerScore !== 0 ? `Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}` : "Neutral across ATM strikes"} tone={tradeInterpretation.sellerScore >= 8 ? "green" : tradeInterpretation.sellerScore <= -8 ? "red" : "blue"} />
         </div>
+        {pressureSummary.setupQualityText && !pressureSummary.setupQualityText.startsWith("Wait") && (
+          <div className="mt-2 rounded border border-terminal-blue/40 bg-terminal-blue/10 px-3 py-1.5 text-xs text-terminal-blue">
+            <span className="font-semibold">Setup: </span>{pressureSummary.setupQualityDetail}
+          </div>
+        )}
       </Panel>
       <Panel title="ATM +/-2 Strike Movement Score">
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.35fr)]">
-          <div className="grid gap-2">
-            {strikeMovementRows.map((row) => (
-              <div key={row.strike} className={`grid gap-2 rounded border px-3 py-2 sm:grid-cols-[4.5rem_minmax(6rem,0.8fr)_minmax(6rem,1fr)_minmax(6rem,1fr)_minmax(7rem,0.8fr)] sm:items-center ${row.isAtm ? "border-terminal-blue/60 bg-terminal-blue/10" : "border-terminal-line bg-white/[0.03]"}`}>
-                <div>
-                  <p className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</p>
-                  <p className="font-semibold text-terminal-text">{formatStrike(row.strike)}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase text-terminal-muted">Net score</p>
-                  <p className={`font-semibold ${row.toneClass}`}>{formatSignedLarge(row.netScore, numberFormatMode)} / {row.netScorePercent}%</p>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded bg-white/10">
-                    <div className={`h-full rounded ${row.netScore > 0 ? "bg-terminal-emerald" : row.netScore < 0 ? "bg-terminal-red" : "bg-terminal-blue"}`} style={{ width: `${row.scoreBarPercent}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs uppercase text-terminal-muted">Move bias</p>
-                  <p className={`font-semibold ${row.toneClass}`}>{row.bias}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase text-terminal-muted">Score trend</p>
-                  <p className={`font-semibold ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</p>
-                </div>
-                <div className="text-sm text-terminal-muted sm:text-right">
-                  <p><span className={getActivityToneClass(row.peActivity)}>{getActivityLabel(row.peActivity)}</span> PE {formatLarge(row.peScore, numberFormatMode)}</p>
-                  <p><span className={getActivityToneClass(row.ceActivity)}>{getActivityLabel(row.ceActivity)}</span> CE {formatLarge(row.ceScore, numberFormatMode)}</p>
-                  <p className={row.buyerMomentumScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>B {formatSignedLarge(row.buyerMomentumScore, numberFormatMode)}</p>
-                  <p className={row.sellerSafetyScore >= 0 ? "text-terminal-emerald" : "text-terminal-red"}>S {formatSignedLarge(row.sellerSafetyScore, numberFormatMode)}</p>
-                </div>
-              </div>
-            ))}
-            {!strikeMovementRows.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-center text-sm text-terminal-muted">No ATM strike score available.</p> : null}
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem]">
+          <div className="overflow-x-auto rounded border border-terminal-line">
+            <table className="w-full min-w-[32rem] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-terminal-line text-left text-xs uppercase text-terminal-muted">
+                  <th className="px-2 py-2 font-medium">Strike</th>
+                  <th className="px-2 py-2 font-medium">Net Score</th>
+                  <th className="px-2 py-2 font-medium">Bias</th>
+                  <th className="px-2 py-2 font-medium">Trend</th>
+                  <th className="px-2 py-2 font-medium">Activity</th>
+                  <th className="px-2 py-2 text-right font-medium">PE / CE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {strikeMovementRows.map((row) => (
+                  <tr key={row.strike} className={`border-b border-terminal-line/60 last:border-b-0 ${row.isAtm ? "bg-terminal-blue/10" : ""}`}>
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <span className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</span>{" "}
+                      <span className="font-semibold text-terminal-text">{formatStrike(row.strike)}</span>
+                    </td>
+                    <td className={`whitespace-nowrap px-2 py-2 font-semibold ${row.toneClass}`}>
+                      {formatSignedLarge(row.netScore, numberFormatMode)} <span className="text-terminal-muted">({row.netScorePercent}%)</span>
+                    </td>
+                    <td className={`whitespace-nowrap px-2 py-2 ${row.toneClass}`}>{row.bias}</td>
+                    <td className={`whitespace-nowrap px-2 py-2 ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</td>
+                    <td className="whitespace-nowrap px-2 py-2 text-terminal-muted">{getActivityLabel(row.ceActivity)} CE · {getActivityLabel(row.peActivity)} PE</td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right text-terminal-muted">
+                      {formatLarge(row.peScore, numberFormatMode)} / {formatLarge(row.ceScore, numberFormatMode)}
+                    </td>
+                  </tr>
+                ))}
+                {!strikeMovementRows.length ? (
+                  <tr>
+                    <td colSpan={6} className="px-2 py-4 text-center text-terminal-muted">No ATM strike score available.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
-          <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 text-sm">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={`Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}`} tone={tradeInterpretation.buyerScore > 8 ? "green" : tradeInterpretation.buyerScore < -8 ? "red" : "blue"} />
-              <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={`Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}`} tone={tradeInterpretation.sellerScore > 8 ? "green" : tradeInterpretation.sellerScore < -8 ? "red" : "blue"} />
-            </div>
+          <div className="grid gap-2 rounded border border-terminal-line bg-white/[0.03] p-3 text-sm">
             <SummaryLine label="Likely pull" value={strikeMovementSummary.bias} />
             <SummaryLine label="Strongest strike" value={strikeMovementSummary.strongestStrike} />
-            <SummaryLine label="Building score" value={strikeMovementSummary.trend} />
-            <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. The trend uses OI and LTP change to show whether that pressure is building or fading near ATM.</p>
+            <SummaryLine label="Building" value={strikeMovementSummary.trend} />
+            <p className="text-xs leading-5 text-terminal-muted">Positive score means PE support is stronger than CE resistance at that strike. Negative score means CE resistance is stronger. Buyer/Seller scores are shown in Market Detail above.</p>
           </div>
         </div>
       </Panel>
-      <Panel title="Session Snapshot">
-        <div className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-5">
-          <CompactSummary label="Snapshot" value={`${snapshotAge} IST`} />
-          <CompactSummary label="Expiry" value={overview.snapshot.expiry} />
-          <CompactSummary label="CE OI" value={formatLarge(chainStats.totalCeOi, numberFormatMode)} />
-          <CompactSummary label="PE OI" value={formatLarge(chainStats.totalPeOi, numberFormatMode)} />
-          <CompactSummary label="Max OI" value={chainStats.maxOiStrikeText} />
-        </div>
-      </Panel>
+      <TradeRecommendations recommendations={overview.recommendations} />
     </section>
   );
 }
@@ -142,24 +129,4 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CompactSummary({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded border border-terminal-line bg-white/[0.03] px-3 py-2">
-      <p className="text-[0.65rem] uppercase text-terminal-muted">{label}</p>
-      <p className="mt-1 truncate font-semibold text-terminal-text">{value}</p>
-    </div>
-  );
-}
 
-function StatusTile({ icon, label, value, detail, tone = "blue" }: { icon: ReactNode; label: string; value: string; detail?: string; tone?: "blue" | "green" | "red" }) {
-  const toneClass = tone === "green" ? "text-terminal-emerald" : tone === "red" ? "text-terminal-red" : "text-terminal-blue";
-
-  return (
-    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
-      <div className={`flex items-center gap-2 ${toneClass}`}>{icon}</div>
-      <p className="mt-3 text-xs uppercase text-terminal-muted">{label}</p>
-      <p className={`mt-1 font-semibold ${toneClass}`}>{value}</p>
-      {detail ? <p className="mt-1 text-xs text-terminal-muted">{detail}</p> : null}
-    </div>
-  );
-}
