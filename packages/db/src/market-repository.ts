@@ -141,6 +141,25 @@ function labelToDate(label: string): Date {
   return dateOnly(label);
 }
 
+// Expiry rows are upserted with active:true every time the worker captures a
+// snapshot for that expiry, but a past expiry is never flipped back to
+// inactive once the worker rolls on to the next contract. Left unfiltered,
+// listStoredExpiries would keep returning long-expired dates forever (sorted
+// oldest-first), which gets picked as "the" default expiry by callers and
+// then fails to match any current snapshot - silently falling back to demo
+// or empty data. Filtering to expiryDate >= today (IST, matching the
+// exchange calendar) keeps the list limited to contracts that can actually
+// still have live data.
+function todayInMarketTimezone(): Date {
+  const isoDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+  return dateOnly(isoDate);
+}
+
 export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, client: PrismaClient = prisma): Promise<string> {
   const pressure = calculatePressureScore(snapshot);
   const expiryDate = labelToDate(snapshot.expiry);
@@ -276,7 +295,8 @@ export async function listStoredExpiries(underlyingSymbol = "NIFTY", client: DbC
       underlying: {
         symbol: underlyingSymbol
       },
-      active: true
+      active: true,
+      expiryDate: { gte: todayInMarketTimezone() }
     },
     orderBy: { expiryDate: "asc" }
   });
