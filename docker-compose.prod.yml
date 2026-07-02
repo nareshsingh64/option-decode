@@ -45,8 +45,14 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      # MySQL now runs natively on the EC2 host instead of in a container (see
+      # docs/deploy notes). host.docker.internal + host-gateway is what lets a
+      # Linux container reach the host; this is not automatic like on Docker
+      # Desktop and requires Docker 20.10+.
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@host.docker.internal:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     expose:
       - "4000"
     healthcheck:
@@ -55,8 +61,6 @@ services:
       timeout: 5s
       retries: 12
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -72,11 +76,11 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@host.docker.internal:3306/${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -95,25 +99,6 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
-  mysql:
-    image: mysql:8.4
-    command: ["--mysql-native-password=ON"]
-    env_file:
-      - .env.production
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    volumes:
-      - option_decode_mysql:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   redis:
     image: redis:7-alpine
     volumes:
@@ -126,5 +111,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  option_decode_mysql:
   option_decode_redis:

@@ -442,11 +442,12 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [orderLots, setOrderLots] = useState("1");
   const [orderStopLoss, setOrderStopLoss] = useState("");
   const [orderTarget, setOrderTarget] = useState("");
+  const [orderTrailingStop, setOrderTrailingStop] = useState(true);
   const [isOrderStopLossEdited, setIsOrderStopLossEdited] = useState(false);
   const [isOrderTargetEdited, setIsOrderTargetEdited] = useState(false);
-  const [positionRiskDrafts, setPositionRiskDrafts] = useState<Record<string, { stopLoss: string; trailDistance: string; targetPrice: string }>>({});
+  const [positionRiskDrafts, setPositionRiskDrafts] = useState<Record<string, { stopLoss: string; trailDistance: string; targetPrice: string; trailingStop: boolean }>>({});
   const [updatingRiskPositionId, setUpdatingRiskPositionId] = useState<string | null>(null);
-  const [pendingOrderDrafts, setPendingOrderDrafts] = useState<Record<string, { lots: string; requestedPrice: string; stopLoss: string; targetPrice: string }>>({});
+  const [pendingOrderDrafts, setPendingOrderDrafts] = useState<Record<string, { lots: string; requestedPrice: string; stopLoss: string; targetPrice: string; trailingStop: boolean }>>({});
   const [updatingPendingOrderId, setUpdatingPendingOrderId] = useState<string | null>(null);
   const [cancelingPendingOrderId, setCancelingPendingOrderId] = useState<string | null>(null);
   const [numberFormatMode, setNumberFormatMode] = useState<NumberFormatMode>("indian");
@@ -1021,7 +1022,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         lots: Number(orderLots),
         requestedPrice: normalizeTradablePrice(orderEntryPrice),
         stopLoss: normalizeTradablePrice(orderStopLossValue),
-        trailingStop: true,
+        trailingStop: orderTrailingStop,
         trailDistance: normalizeTradablePrice(orderTrailDistanceValue),
         targetPrice: normalizeTradablePrice(orderTargetValue),
         strategyName: "Dashboard pressure setup",
@@ -1057,7 +1058,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       lots: String(order.lots),
       requestedPrice: formatTradablePrice(order.requestedPrice),
       stopLoss: formatTradablePrice(order.stopLoss),
-      targetPrice: formatTradablePrice(order.targetPrice)
+      targetPrice: formatTradablePrice(order.targetPrice),
+      trailingStop: order.trailingStop
     };
     const requestedPrice = normalizeTradablePrice(Number(draft.requestedPrice || order.requestedPrice));
     const stopLoss = normalizeTradablePrice(Number(draft.stopLoss || order.stopLoss));
@@ -1071,7 +1073,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         lots: Math.max(1, Math.floor(Number(draft.lots || order.lots))),
         requestedPrice,
         stopLoss,
-        trailingStop: true,
+        trailingStop: draft.trailingStop ?? order.trailingStop,
         trailDistance,
         targetPrice
       }));
@@ -1112,8 +1114,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       const trailDistance = normalizeTradablePrice(Number(draft.trailDistance));
       const position = paperSummary?.openPositions.find((openPosition) => openPosition.id === positionId);
       const referencePrice = position ? position.bestPrice : 0;
-      const stopLoss = position ? getTrailingStopLoss(position.action, referencePrice, trailDistance) : normalizeTradablePrice(Number(draft.stopLoss));
-      setPaperSummary(await updatePaperPositionRisk(positionId, stopLoss, normalizeTradablePrice(Number(draft.targetPrice)), trailDistance));
+      const trailingStop = draft.trailingStop ?? position?.trailingStop ?? true;
+      const stopLoss = position && trailingStop ? getTrailingStopLoss(position.action, referencePrice, trailDistance) : normalizeTradablePrice(Number(draft.stopLoss));
+      setPaperSummary(await updatePaperPositionRisk(positionId, stopLoss, normalizeTradablePrice(Number(draft.targetPrice)), trailDistance, trailingStop));
     } catch (error) {
       setPaperError(error instanceof Error ? error.message : "Unable to update position risk");
     } finally {
@@ -1455,6 +1458,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           formatTradablePrice={formatTradablePrice}
           orderStopLoss={orderStopLoss}
           setOrderStopLoss={setOrderStopLoss}
+          orderTrailingStop={orderTrailingStop}
+          setOrderTrailingStop={setOrderTrailingStop}
           orderTrailDistanceValue={orderTrailDistanceValue}
           orderTarget={orderTarget}
           setOrderTarget={setOrderTarget}

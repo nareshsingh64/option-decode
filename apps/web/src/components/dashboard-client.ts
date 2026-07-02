@@ -448,7 +448,7 @@ export async function cancelPendingPaperOrder(orderId: string): Promise<PaperSum
   return response.json() as Promise<PaperSummary>;
 }
 
-export async function updatePaperPositionRisk(positionId: string, stopLoss: number, targetPrice: number, trailDistance: number): Promise<PaperSummary> {
+export async function updatePaperPositionRisk(positionId: string, stopLoss: number, targetPrice: number, trailDistance: number, trailingStop: boolean): Promise<PaperSummary> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/paper/positions/${positionId}/risk`, {
     method: "PATCH",
@@ -456,7 +456,7 @@ export async function updatePaperPositionRisk(positionId: string, stopLoss: numb
       "content-type": "application/json"
     },
     credentials: "include",
-    body: JSON.stringify({ stopLoss, trailDistance, targetPrice })
+    body: JSON.stringify({ stopLoss, trailDistance, targetPrice, trailingStop })
   });
 
   if (!response.ok) {

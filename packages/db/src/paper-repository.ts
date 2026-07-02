@@ -317,12 +317,15 @@ export async function closePaperPosition(positionId: string, user: AuthUserDto, 
     throw new Error("Open paper position was not found.");
   }
 
-  await closePositionRecord(position, exitReason, client);
+  const closed = await closePositionRecord(position, exitReason, client);
+  if (!closed) {
+    throw new Error("Position was already closed.");
+  }
 
   return getPaperSummary(user, client);
 }
 
-export async function updatePaperPositionRisk(positionId: string, user: AuthUserDto, stopLoss: number, targetPrice: number, trailDistance?: number, client: PrismaClient = prisma): Promise<PaperSummary> {
+export async function updatePaperPositionRisk(positionId: string, user: AuthUserDto, stopLoss: number, targetPrice: number, trailDistance?: number, trailingStop?: boolean, client: PrismaClient = prisma): Promise<PaperSummary> {
   const includeAllUsers = user.role === "ADMIN";
   const position = await client.paperPosition.findFirst({
     where: {
@@ -343,6 +346,10 @@ export async function updatePaperPositionRisk(positionId: string, user: AuthUser
   const bestPrice = position.bestPrice?.toNumber() ?? currentPrice;
   const nextBestPrice = position.action === "BUY" ? Math.max(bestPrice, currentPrice, entryPrice) : Math.min(bestPrice, currentPrice, entryPrice);
   const nextTrailDistance = normalizeTradablePrice(trailDistance ?? Math.abs(nextBestPrice - nextStopLoss));
+  // Preserve the position's existing trailing-stop setting unless the caller explicitly
+  // says otherwise. This used to be hardcoded to `true`, which silently re-enabled
+  // trailing on every risk save even for positions the user had switched to a fixed stop.
+  const nextTrailingStop = trailingStop ?? position.trailingStop;
 
   if (position.action === "BUY" && nextTargetPrice <= entryPrice) {
     throw new Error("Target must be above entry price for BUY positions.");
@@ -355,7 +362,7 @@ export async function updatePaperPositionRisk(positionId: string, user: AuthUser
     where: { id: position.id },
     data: {
       stopLoss: nextStopLoss,
-      trailingStop: true,
+      trailingStop: nextTrailingStop,
       trailDistance: nextTrailDistance,
       bestPrice: nextBestPrice,
       targetPrice: nextTargetPrice
@@ -419,18 +426,13 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
       const targetPrice = normalizeTradablePrice(order.targetPrice.toNumber());
       const now = new Date();
 
-      await client.$transaction(async (tx) => {
-        const currentOrder = await tx.paperOrder.findUnique({
-          where: { id: order.id },
-          select: { status: true }
-        });
-
-        if (currentOrder?.status !== "PENDING") {
-          return false;
-        }
-
-        await tx.paperOrder.update({
-          where: { id: order.id },
+      return client.$transaction(async (tx) => {
+        // Conditional update: only proceeds if this order is still PENDING at the moment
+        // the write is applied. This is the atomicity guard that prevents two concurrent
+        // callers (e.g. the worker's snapshot monitor and a browser's summary poll landing
+        // at the same moment) from both creating a position for the same order.
+        const updateResult = await tx.paperOrder.updateMany({
+          where: { id: order.id, status: "PENDING" },
           data: {
             status: "FILLED",
             filledPrice,
@@ -439,6 +441,11 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
             targetPrice
           }
         });
+
+        if (updateResult.count === 0) {
+          // Another concurrent request already filled or cancelled this order.
+          return false;
+        }
 
         await tx.paperPosition.create({
           data: {
@@ -536,8 +543,10 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
         });
 
         if (updatedPosition?.status === "OPEN") {
-          await closePositionRecord(updatedPosition, hitTarget ? "TARGET" : "STOP_LOSS", client);
-          return { checked: true, closed: true };
+          const closed = await closePositionRecord(updatedPosition, hitTarget ? "TARGET" : "STOP_LOSS", client);
+          if (closed) {
+            return { checked: true, closed: true };
+          }
         }
       }
 
@@ -561,7 +570,7 @@ async function closePositionRecord(
   },
   exitReason: string,
   client: PrismaClient
-) {
+): Promise<boolean> {
   const entryPrice = position.entryPrice.toNumber();
   const exitPrice = position.currentPrice.toNumber();
   const direction = position.action === "BUY" ? 1 : -1;
@@ -570,9 +579,13 @@ async function closePositionRecord(
   const netPnl = grossPnl - charges;
   const now = new Date();
 
-  await client.$transaction(async (tx) => {
-    await tx.paperPosition.update({
-      where: { id: position.id },
+  return client.$transaction(async (tx) => {
+    // Conditional update: only proceeds if this position is still OPEN at the moment
+    // the write is applied, preventing a manual "Exit" click from racing with the
+    // worker's automatic stop-loss/target close (or two concurrent refreshes) into
+    // creating two paperTrade rows for the same position.
+    const updateResult = await tx.paperPosition.updateMany({
+      where: { id: position.id, status: "OPEN" },
       data: {
         status: "CLOSED",
         realizedPnl: netPnl,
@@ -580,6 +593,11 @@ async function closePositionRecord(
         exitReason
       }
     });
+
+    if (updateResult.count === 0) {
+      // Another concurrent request already closed this position.
+      return false;
+    }
 
     await tx.paperTrade.create({
       data: {
@@ -594,6 +612,8 @@ async function closePositionRecord(
         closedAt: now
       }
     });
+
+    return true;
   });
 }
 
@@ -890,7 +910,10 @@ function getDynamicTrailingStopLoss(action: string, optionType: OptionType, entr
       return normalizeTradablePrice(action === "BUY" ? entryPrice + targetMove * 0.5 : entryPrice - targetMove * 0.5);
     }
     if (progress >= 0.5) {
-      return normalizeTradablePrice(action === "BUY" ? entryPrice + 3 : Math.max(0, entryPrice - 3));
+      // Scaled to targetMove like the tiers above (was a hardcoded "+3 points" that ignored
+      // the instrument's actual premium scale, giving back nearly all gains on higher-priced
+      // contracts before the halfway profit-lock kicked in).
+      return normalizeTradablePrice(action === "BUY" ? entryPrice + targetMove * 0.25 : Math.max(0, entryPrice - targetMove * 0.25));
     }
   }
 

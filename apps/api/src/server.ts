@@ -822,7 +822,8 @@ app.post<{
 const positionRiskSchema = z.object({
   stopLoss: z.coerce.number().nonnegative(),
   trailDistance: z.coerce.number().nonnegative().optional(),
-  targetPrice: z.coerce.number().nonnegative()
+  targetPrice: z.coerce.number().nonnegative(),
+  trailingStop: z.boolean().optional()
 });
 
 app.patch<{
@@ -841,7 +842,7 @@ app.patch<{
   }
 
   try {
-    return await updatePaperPositionRisk(request.params.id, user, parsed.data.stopLoss, parsed.data.targetPrice, parsed.data.trailDistance);
+    return await updatePaperPositionRisk(request.params.id, user, parsed.data.stopLoss, parsed.data.targetPrice, parsed.data.trailDistance, parsed.data.trailingStop);
   } catch (error) {
     return reply.status(400).send({ message: error instanceof Error ? error.message : "Unable to update position risk" });
   }
