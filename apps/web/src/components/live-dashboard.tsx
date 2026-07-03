@@ -1299,6 +1299,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           formatLarge={formatLarge}
           formatSignedLarge={formatSignedLarge}
           formatStrike={formatStrike}
+          formatTime={formatIstShortDateTime}
           getActivityLabel={getActivityLabel}
           getActivityToneClass={getActivityToneClass}
           numberFormatMode={numberFormatMode}

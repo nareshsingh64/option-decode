@@ -17,23 +17,43 @@ interface Recommendation {
   confidence: number;
 }
 
+// Recommendations are recomputed fresh every time the market-overview API
+// responds, but they're derived entirely from ONE option-chain snapshot -
+// there's no independent "generated at" moment worth stamping per card.
+// What actually matters (and what prompted this) is: which snapshot are
+// these based on? Outside market hours, or if the worker's capture has
+// lagged, that can be a much older snapshot than "just now" - so the panel
+// shows the snapshot's own timestamp and flags it if it's stale enough that
+// acting on it without checking would be a mistake.
+const STALE_AFTER_MS = 5 * 60 * 1000;
+
 interface TradeRecommendationsProps {
   recommendations: Recommendation[];
+  snapshotTime: string;
+  formatTime: (value: string) => string;
 }
 
-export function TradeRecommendations({ recommendations }: TradeRecommendationsProps) {
+export function TradeRecommendations({ recommendations, snapshotTime, formatTime }: TradeRecommendationsProps) {
   const recs = recommendations.slice(0, 5);
   if (!recs.length) return null;
 
+  const snapshotMs = Date.parse(snapshotTime);
+  const ageMs = Number.isFinite(snapshotMs) ? Date.now() - snapshotMs : undefined;
+  const isStale = ageMs !== undefined && ageMs > STALE_AFTER_MS;
+
   return (
     <section className="rounded border border-terminal-line bg-terminal-panel/80 p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold">Trade Recommendations</h2>
         <span className="rounded bg-white/[0.05] px-2 py-0.5 text-[0.65rem] text-terminal-muted">
           OI · PCR · Max Pain · Strike scores
         </span>
       </div>
-      <div className="mt-4 grid gap-1.5">
+      <div className={`mt-2 inline-flex items-center gap-1.5 rounded px-2 py-1 text-[0.7rem] ${isStale ? "bg-amber-500/10 text-amber-400" : "text-terminal-muted"}`}>
+        <span>Based on data as of {formatTime(snapshotTime)} IST</span>
+        {isStale ? <span className="font-semibold uppercase">· Not live, check before acting</span> : null}
+      </div>
+      <div className="mt-3 grid gap-1.5">
         {recs.map((rec) => <RecommendationCard key={rec.id} rec={rec} />)}
       </div>
       <p className="mt-2 text-[0.65rem] text-terminal-muted">Generated from option chain signals — not financial advice.</p>

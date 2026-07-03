@@ -6,6 +6,7 @@ interface DashboardMainPanelProps {
   formatLarge: (value?: number, mode?: any) => string;
   formatSignedLarge: (value?: number, mode?: any) => string;
   formatStrike: (value: number) => string;
+  formatTime: (value: string) => string;
   getActivityLabel: (activity: any) => string;
   getActivityToneClass: (activity: any) => string;
   numberFormatMode: any;
@@ -21,6 +22,7 @@ export function DashboardMainPanel({
   formatLarge,
   formatSignedLarge,
   formatStrike,
+  formatTime,
   getActivityLabel,
   getActivityToneClass,
   numberFormatMode,
@@ -94,7 +96,7 @@ export function DashboardMainPanel({
           </div>
         </div>
       </Panel>
-      <TradeRecommendations recommendations={overview.recommendations} />
+      <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} />
     </section>
   );
 }
