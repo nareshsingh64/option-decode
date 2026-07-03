@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
+import type { ChainRow, OptionActivityKind } from "./option-chain-builders";
 
 interface OptionChainTableProps {
   atmStrike: number;
-  chainRows: any[];
+  chainRows: ChainRow[];
   chainTableMode: "standard" | "greeks";
   renderIvDeltaCell: (iv: number | undefined, delta: number | undefined, align: "left" | "right") => ReactNode;
   renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
-  renderLtpStack: (ltp: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity: any) => ReactNode;
+  renderLtpStack: (ltp: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity?: OptionActivityKind) => ReactNode;
   formatOptionalNumber: (value: number | undefined, decimals: number) => string;
 }
 
@@ -20,9 +21,9 @@ export function OptionChainTable({
   formatOptionalNumber
 }: OptionChainTableProps) {
   return (
-    <div className="max-w-full overflow-x-auto">
+    <div className="max-h-[70vh] max-w-full overflow-auto">
       <table className={`w-full border-collapse text-xs xl:text-sm ${chainTableMode === "greeks" ? "min-w-[1160px]" : "min-w-[980px]"}`}>
-        <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
+        <thead className="sticky top-0 z-10 bg-terminal-panel text-xs uppercase text-terminal-muted shadow-sm">
           {chainTableMode === "standard" ? (
             <tr>
               <th className="px-2 py-3 text-left">CE IV/Δ</th>

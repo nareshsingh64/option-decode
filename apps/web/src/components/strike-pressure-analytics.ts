@@ -185,6 +185,8 @@ export function buildZoneRows(overview: MarketOverview) {
   ];
 }
 
+export type ZoneRow = ReturnType<typeof buildZoneRows>[number];
+
 export function buildPressureSummary(overview: MarketOverview) {
   const pressureGap = overview.pressure.bullishPressure - overview.pressure.bearishPressure;
   const pressureGapAbs = Math.abs(pressureGap);

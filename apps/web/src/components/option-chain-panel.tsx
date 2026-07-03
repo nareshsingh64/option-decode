@@ -1,29 +1,46 @@
 import type { ReactNode } from "react";
 import { Clock3 } from "lucide-react";
+import type { MarketOverview } from "./live-dashboard";
 import { OptionChainTable } from "./option-chain-table";
+import type { ChainRow, ChainStats, NumberFormatMode, OptionActivityKind, TopStrikeRow, VixStrikeRange } from "./option-chain-builders";
+import type { ZoneRow } from "./strike-pressure-analytics";
+
+type VisibleStrikeMode = "vix" | "atm";
+type ChainTableMode = "standard" | "greeks";
 
 interface OptionChainPanelProps {
-  overview: any;
-  formatStrike: any;
-  chainRange: any;
-  visibleStrikeMode: any;
-  setVisibleStrikeMode: any;
-  chainTableMode: any;
-  setChainTableMode: any;
-  isMarketStreamConnected: any;
-  chainStats: any;
-  formatLarge: any;
-  numberFormatMode: any;
-  formatSignedLarge: any;
-  oiBuildupChart: any;
-  ivSkewChart: any;
-  chainRows: any;
-  formatOptionalNumber: any;
-  renderIvDeltaCell: any;
-  renderLtpStack: any;
-  renderPressureCell: any;
-  topStrikeRows: any;
-  zoneRows: any;
+  overview: MarketOverview;
+  formatStrike: (value: number) => string;
+  chainRange: VixStrikeRange;
+  visibleStrikeMode: VisibleStrikeMode;
+  setVisibleStrikeMode: (mode: VisibleStrikeMode) => void;
+  chainTableMode: ChainTableMode;
+  setChainTableMode: (mode: ChainTableMode) => void;
+  isMarketStreamConnected: boolean;
+  chainStats: ChainStats;
+  formatLarge: (value?: number, mode?: NumberFormatMode) => string;
+  numberFormatMode: NumberFormatMode;
+  formatSignedLarge: (value?: number, mode?: NumberFormatMode) => string;
+  oiBuildupChart: ReactNode;
+  ivSkewChart: ReactNode;
+  chainRows: ChainRow[];
+  formatOptionalNumber: (value: number | undefined, decimals: number) => string;
+  renderIvDeltaCell: (iv: number | undefined, delta: number | undefined, align: "left" | "right") => ReactNode;
+  renderLtpStack: (value: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity?: OptionActivityKind) => ReactNode;
+  renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
+  topStrikeRows: TopStrikeRow[];
+  zoneRows: ZoneRow[];
+}
+
+function describeChainRange(chainRange: VixStrikeRange, requestedMode: VisibleStrikeMode) {
+  if (chainRange.rangeMode === "atm") {
+    return "ATM +/-6 strikes";
+  }
+
+  const rangeText = `VIX range ${chainRange.lower.toLocaleString("en-IN", { maximumFractionDigits: 0 })}-${chainRange.upper.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+  const vixText = chainRange.vixAvailable ? `using India VIX ${chainRange.vix.toFixed(2)}%` : "India VIX unavailable, using 15% default";
+  const fallbackNote = requestedMode === "atm" ? " (ATM strike not found in chain, showing VIX range instead)" : "";
+  return `${rangeText} ${vixText}${fallbackNote}`;
 }
 
 export function OptionChainPanel(props: OptionChainPanelProps) {
@@ -60,9 +77,7 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
             <p className="mt-1 text-sm text-terminal-muted">
               {overview.snapshot.underlyingSymbol} expiry {overview.snapshot.expiry}, ATM {formatStrike(overview.snapshot.atmStrike)}
             </p>
-            <p className="mt-1 text-xs text-terminal-muted">
-              VIX range {formatStrike(chainRange.lower)}-{formatStrike(chainRange.upper)} using India VIX {chainRange.vix.toFixed(2)}%
-            </p>
+            <p className="mt-1 text-xs text-terminal-muted">{describeChainRange(chainRange, visibleStrikeMode)}</p>
           </div>
           <div className="flex items-center gap-2 text-xs text-terminal-muted">
             <label className="flex h-9 items-center gap-2 rounded border border-terminal-line bg-terminal-input px-3">
@@ -102,7 +117,7 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
       <div className="grid gap-3">
         <TerminalPanel title={`${overview.snapshot.underlyingSymbol} Option Chain - Top Strikes`}>
           <div className="grid gap-1">
-            {topStrikeRows.map((row: any) => (
+            {topStrikeRows.map((row) => (
               <div key={`${row.strike}-${row.optionType}`} className="grid grid-cols-[minmax(5rem,1fr)_minmax(6rem,1fr)_minmax(4rem,0.5fr)] items-center border-b border-terminal-line/80 py-2 last:border-b-0">
                 <span className="text-sm font-medium text-terminal-muted">{formatLarge(row.openInterest, numberFormatMode)} OI</span>
                 <span className="text-center text-sm font-semibold text-terminal-text">
@@ -117,7 +132,7 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
         </TerminalPanel>
         <TerminalPanel title="Support & Resistance Zones">
           <div className="grid gap-1">
-            {zoneRows.map((row: any) => (
+            {zoneRows.map((row) => (
               <div key={row.label} className={`grid grid-cols-[3rem_minmax(6rem,1fr)_minmax(5rem,0.7fr)] items-center rounded px-2 py-2 ${row.isCurrent ? "bg-terminal-blue/15" : ""}`}>
                 <span className={`text-sm font-semibold ${row.tone === "green" ? "text-terminal-emerald" : row.tone === "red" ? "text-terminal-red" : "text-terminal-blue"}`}>{row.label}</span>
                 <span className={`text-center text-sm font-semibold ${row.isCurrent ? "text-terminal-blue" : "text-terminal-text"}`}>{formatStrike(row.value)}</span>

@@ -1,14 +1,28 @@
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
+import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
 
+export type { OptionActivityKind };
 export type NumberFormatMode = "indian" | "metric";
 export type QuantityDisplayMode = "lots" | "numbers";
-type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
+
+// Used only as a stand-in for the expected-move calculation when the real
+// India VIX quote is unavailable. Callers must check vixAvailable before
+// trusting/displaying `vix` - this default exists purely so the strike
+// range still renders something, not because 15% is a real reading.
+const DEFAULT_VIX_FALLBACK = 15;
 
 export interface VixStrikeRange {
   lower: number;
   upper: number;
   expectedMove: number;
   vix: number;
+  vixAvailable: boolean;
+  // "atm": centered on the live ATM strike (what the caller asked for).
+  // "vix": derived from the VIX expected-move formula instead - either
+  // because the caller asked for VIX mode directly, or because ATM mode
+  // was requested but the current ATM strike couldn't be located in the
+  // chain, and this is a silent-fallback path callers should surface.
+  rangeMode: "atm" | "vix";
 }
 
 export interface DisplayPreferences {
@@ -18,7 +32,8 @@ export interface DisplayPreferences {
 
 export function buildVixStrikeRange(overview: MarketOverview): VixStrikeRange {
   const spot = overview.snapshot.spotPrice;
-  const vix = overview.indiaVix && overview.indiaVix > 0 ? overview.indiaVix : 15;
+  const vixAvailable = Boolean(overview.indiaVix && overview.indiaVix > 0);
+  const vix = vixAvailable ? (overview.indiaVix as number) : DEFAULT_VIX_FALLBACK;
   const daysToExpiry = getDaysToExpiry(overview.snapshot.expiry, overview.snapshot.snapshotTime);
   const expectedMove = spot > 0 ? spot * (vix / 100) * Math.sqrt(daysToExpiry / 365) : 0;
 
@@ -26,7 +41,9 @@ export function buildVixStrikeRange(overview: MarketOverview): VixStrikeRange {
     lower: Math.max(0, spot - expectedMove),
     upper: spot + expectedMove,
     expectedMove,
-    vix
+    vix,
+    vixAvailable,
+    rangeMode: "vix"
   };
 }
 
@@ -34,6 +51,9 @@ export function buildAtmStrikeRange(overview: MarketOverview): VixStrikeRange {
   const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
   const atmIndex = strikes.findIndex((strike) => strike === overview.snapshot.atmStrike);
   if (atmIndex < 0) {
+    // ATM strike isn't in the current chain (stale/mismatched snapshot) -
+    // fall back to the VIX-derived range. rangeMode stays "vix" so callers
+    // that asked for "atm" can detect the fallback happened and say so.
     return buildVixStrikeRange(overview);
   }
   const visibleStrikes = strikes.slice(Math.max(0, atmIndex - 6), atmIndex + 7);
@@ -41,7 +61,9 @@ export function buildAtmStrikeRange(overview: MarketOverview): VixStrikeRange {
     lower: visibleStrikes[0] ?? overview.snapshot.atmStrike,
     upper: visibleStrikes[visibleStrikes.length - 1] ?? overview.snapshot.atmStrike,
     expectedMove: Math.abs((visibleStrikes[visibleStrikes.length - 1] ?? overview.snapshot.atmStrike) - overview.snapshot.atmStrike),
-    vix: overview.indiaVix && overview.indiaVix > 0 ? overview.indiaVix : 15
+    vix: overview.indiaVix && overview.indiaVix > 0 ? overview.indiaVix : DEFAULT_VIX_FALLBACK,
+    vixAvailable: Boolean(overview.indiaVix && overview.indiaVix > 0),
+    rangeMode: "atm"
   };
 }
 
@@ -240,6 +262,14 @@ export function buildTopStrikeRows(overview: MarketOverview, preferences: Displa
     }));
 }
 
+// Deliberately NOT reusing @option-decode/analytics' calculateChainStats
+// here: that server-side version always sums raw contract-count OI, while
+// this client version needs to optionally convert to lots depending on the
+// user's quantityDisplayMode preference. The breadth-dominance ratio (1.05)
+// below must stay in sync with the same constant in
+// packages/analytics/src/index.ts's calculateChainStats - if one changes,
+// update the other, or "OI Breadth" can disagree between this page and any
+// server-computed view of the same snapshot.
 export function buildChainStats(overview: MarketOverview, preferences: DisplayPreferences) {
   const ceTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "CE");
   const peTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "PE");
@@ -262,26 +292,9 @@ export function buildChainStats(overview: MarketOverview, preferences: DisplayPr
   };
 }
 
-function classifyOptionActivity(tick?: OverviewTick): OptionActivityKind {
-  if (!tick) {
-    return "NEUTRAL";
-  }
-  const oiChange = tick.changeInOpenInterest ?? 0;
-  const ltpChange = tick.lastPriceChange ?? 0;
-  if (oiChange > 0 && ltpChange > 0) {
-    return "LONG_BUILDUP";
-  }
-  if (oiChange > 0 && ltpChange < 0) {
-    return "WRITING";
-  }
-  if (oiChange < 0 && ltpChange > 0) {
-    return "SHORT_COVERING";
-  }
-  if (oiChange < 0 && ltpChange < 0) {
-    return "LONG_UNWINDING";
-  }
-  return "NEUTRAL";
-}
+export type ChainStats = ReturnType<typeof buildChainStats>;
+export type ChainRow = ReturnType<typeof buildChainRows>[number];
+export type TopStrikeRow = ReturnType<typeof buildTopStrikeRows>[number];
 
 function formatStrike(value: number) {
   return value.toLocaleString("en-IN", { maximumFractionDigits: 0 });
