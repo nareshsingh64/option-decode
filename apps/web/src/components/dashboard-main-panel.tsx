@@ -16,6 +16,11 @@ interface DashboardMainPanelProps {
   strikeMovementRows: any[];
   strikeMovementSummary: any;
   tradeInterpretation: any;
+  // Trade Recommendations doesn't make sense in Replay Lab - it's framed
+  // around "act now" (stale-data warnings, "not financial advice" for
+  // live decisions), which is misleading when you're deliberately looking
+  // at old data. Defaults to true so the live dashboard is unaffected.
+  showRecommendations?: boolean;
 }
 
 export function DashboardMainPanel({
@@ -31,7 +36,8 @@ export function DashboardMainPanel({
   pressureSummary,
   strikeMovementRows,
   strikeMovementSummary,
-  tradeInterpretation
+  tradeInterpretation,
+  showRecommendations = true
 }: DashboardMainPanelProps) {
   return (
     <section className="grid gap-4">
@@ -98,7 +104,7 @@ export function DashboardMainPanel({
           </div>
         </div>
       </Panel>
-      <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} />
+      {showRecommendations ? <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} /> : null}
     </section>
   );
 }

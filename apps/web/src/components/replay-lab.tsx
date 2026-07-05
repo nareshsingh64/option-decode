@@ -1,5 +1,4 @@
-import type { ReactNode } from "react";
-import { Clock3, Pause, Play, ShieldCheck, SkipBack, SkipForward } from "lucide-react";
+import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { CalendarDatePicker } from "./calendar-date-picker";
 import { DashboardMainPanel } from "./dashboard-main-panel";
 
@@ -29,7 +28,6 @@ interface ReplayLabProps {
   replayIndex: any;
   replaySpeedMs: any;
   setReplaySpeedMs: any;
-  handleReplaySnapshot: any;
   replayError: any;
   replayChainRange: any;
   formatStrike: any;
@@ -79,7 +77,6 @@ export function ReplayLab(props: ReplayLabProps) {
     replayIndex,
     replaySpeedMs,
     setReplaySpeedMs,
-    handleReplaySnapshot,
     replayError,
     replayChainRange,
     formatStrike,
@@ -154,11 +151,6 @@ export function ReplayLab(props: ReplayLabProps) {
             Load Replay
           </button>
         </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <StatusTile icon={<Play size={18} />} label="Replay" value={isReplayPlaying ? "Playing" : replayOverview ? "Paused" : "Ready"} />
-          <StatusTile icon={<Clock3 size={18} />} label="Snapshots" value={String(replaySnapshots.length)} />
-          <StatusTile icon={<ShieldCheck size={18} />} label="Data Source" value="Stored ticks" />
-        </div>
         <div className="grid gap-3 md:grid-cols-4">
           <SignalCell label="Replay Spot" value={formatPrice((replayOverview ?? overview).snapshot.spotPrice)} detail={`${formatIstTime((replayOverview ?? overview).snapshot.snapshotTime)} IST`} tone="blue" />
           <SignalCell label="Move From Open" value={formatCurrency(replayStats.moveFromStart)} detail={replayStats.movePercentText} tone={replayStats.moveFromStart >= 0 ? "green" : "red"} />
@@ -194,9 +186,8 @@ export function ReplayLab(props: ReplayLabProps) {
             </div>
             {/* Scrubber for jumping anywhere within the loaded day's
                 snapshots - a day can hold ~750 points at the ~30s capture
-                cadence, far too many for a dropdown to be usable. Dragging
-                this is the primary way to pick a time; the chip strip
-                below is for quick visual jumps by spot price. */}
+                cadence, far too many for a dropdown or a chip list to be
+                usable. Dragging this is the only way to pick a time. */}
             <input
               type="range"
               min={0}
@@ -209,23 +200,7 @@ export function ReplayLab(props: ReplayLabProps) {
               aria-label="Replay time scrubber"
             />
           </div>
-        </div>
-        <div className="grid gap-2">
-          <div className="flex items-center justify-between">
-            <span className="font-semibold">Snapshot Timeline</span>
-            <button className="min-h-9 rounded border border-terminal-line px-3 py-1.5 text-xs text-terminal-muted transition hover:border-terminal-blue hover:text-terminal-text" type="button" onClick={refreshReplayTimeline}>
-              Reload
-            </button>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {replaySnapshots.map((snapshot: any) => (
-              <button key={snapshot.id} className={`shrink-0 rounded border px-3 py-2 text-left transition ${replayOverview?.snapshot.snapshotTime === snapshot.snapshotTime ? "border-terminal-blue bg-terminal-blue/15 text-terminal-blue" : "border-terminal-line bg-white/[0.03] text-terminal-muted hover:border-terminal-blue hover:text-terminal-text"}`} type="button" onClick={() => handleReplaySnapshot(snapshot.id)}>
-                <span className="block text-xs">{formatIstTime(snapshot.snapshotTime)}</span>
-                <span className="block text-[0.7rem]">{formatPrice(snapshot.spotPrice)}</span>
-              </button>
-            ))}
-            {!replaySnapshots.length ? <p className="rounded border border-terminal-line bg-white/[0.03] px-3 py-4 text-terminal-muted">No stored snapshots found.</p> : null}
-          </div>
+          {!replaySnapshots.length ? <p className="text-terminal-muted">No stored snapshots found for this expiry/day. Pick another day or click Load Replay.</p> : null}
           {replayError ? <p className="text-terminal-red">{replayError}</p> : null}
         </div>
         <DashboardMainPanel
@@ -242,19 +217,16 @@ export function ReplayLab(props: ReplayLabProps) {
           strikeMovementRows={replayStrikeMovementRowsForPanel}
           strikeMovementSummary={replayStrikeMovementSummary}
           tradeInterpretation={replayTradeInterpretation}
+          showRecommendations={false}
         />
         <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
             <div>
-              <h2 className="text-base font-semibold">Replay Snapshot</h2>
-              <p className="mt-1 text-sm text-terminal-muted">
-                {(replayOverview ?? overview).snapshot.underlyingSymbol} {(replayOverview ?? overview).snapshot.expiry} at {formatIstTime((replayOverview ?? overview).snapshot.snapshotTime)} IST
-              </p>
+              <h2 className="text-base font-semibold">Option Chain</h2>
               <p className="mt-1 text-xs text-terminal-muted">
                 VIX range {formatStrike(replayChainRange.lower)}-{formatStrike(replayChainRange.upper)} using India VIX {replayChainRange.vix.toFixed(2)}%
               </p>
             </div>
-            <span className="text-sm font-semibold text-terminal-blue">Spot {formatPrice((replayOverview ?? overview).snapshot.spotPrice)}</span>
           </div>
           <div className="max-w-full overflow-x-auto">
             <table className="w-full min-w-[1080px] border-collapse text-sm">
@@ -296,19 +268,6 @@ export function ReplayLab(props: ReplayLabProps) {
       </div>
       </div>
     </section>
-  );
-}
-
-function StatusTile({ icon, label, value, detail, tone = "blue" }: { icon: ReactNode; label: string; value: string; detail?: string; tone?: "blue" | "green" | "red" }) {
-  const toneClass = tone === "green" ? "text-terminal-emerald" : tone === "red" ? "text-terminal-red" : "text-terminal-blue";
-
-  return (
-    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
-      <div className={`flex items-center gap-2 ${toneClass}`}>{icon}</div>
-      <p className="mt-3 text-xs uppercase text-terminal-muted">{label}</p>
-      <p className={`mt-1 font-semibold ${toneClass}`}>{value}</p>
-      {detail ? <p className="mt-1 text-xs text-terminal-muted">{detail}</p> : null}
-    </div>
   );
 }
 

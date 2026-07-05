@@ -1299,11 +1299,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   };
 
-  const handleReplaySnapshot = async (snapshotId: string) => {
-    const nextIndex = replaySnapshots.findIndex((snapshot) => snapshot.id === snapshotId);
-    await loadReplaySnapshotAtIndex(Math.max(0, nextIndex));
-  };
-
   const handleDismissAlert = (alertId: string) => {
     setDismissedAlertIds((ids) => (ids.includes(alertId) ? ids : [...ids, alertId]));
   };
@@ -1575,7 +1570,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           replayIndex={replayIndex}
           replaySpeedMs={replaySpeedMs}
           setReplaySpeedMs={setReplaySpeedMs}
-          handleReplaySnapshot={handleReplaySnapshot}
           replayError={replayError}
           replayChainRange={replayChainRange}
           formatStrike={formatStrike}
