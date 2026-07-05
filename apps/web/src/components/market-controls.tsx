@@ -1,5 +1,7 @@
 import { Play, Plus, RefreshCw } from "lucide-react";
 import type { FormEvent } from "react";
+import { useState } from "react";
+import { ExpiryDatePicker } from "./expiry-date-picker";
 
 interface MarketTickerItem {
   symbol: string;
@@ -88,17 +90,11 @@ export function MarketControls({
             </label>
             <label className="grid gap-1 text-xs uppercase text-terminal-muted">
               Expiry
-              <select name="expiry" defaultValue={overview.selectedExpiry} className="h-10 min-w-40 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none transition focus:border-terminal-blue">
-                {overview.expiries.length ? (
-                  overview.expiries.map((expiry: string) => (
-                    <option key={expiry} value={expiry}>
-                      {expiry}
-                    </option>
-                  ))
-                ) : (
-                  <option value={overview.selectedExpiry}>{overview.selectedExpiry}</option>
-                )}
-              </select>
+              {/* A separate child component (rather than local state right
+                  here) so the surrounding form's key={selectedUnderlying-
+                  selectedExpiry} remount resets its staged value, the same
+                  way the old defaultValue-based <select> used to. */}
+              <ExpiryFormField expiries={overview.expiries} initialValue={overview.selectedExpiry} name="expiry" />
             </label>
             <button className="h-10 rounded border border-terminal-blue bg-terminal-blue px-4 text-sm font-semibold text-white transition hover:opacity-90" type="submit">
               Apply
@@ -118,6 +114,18 @@ export function MarketControls({
       </section>
     </>
   );
+}
+
+// Stages the picked expiry locally until the surrounding form submits.
+// Declared as its own component (rather than useState directly inside
+// MarketControls) so the parent form's key={selectedUnderlying-
+// selectedExpiry} remount - which already exists to reset the old
+// uncontrolled <select>'s defaultValue - also resets this staged value the
+// same way when the underlying/expiry changes from elsewhere (e.g. the
+// watchlist "Play" button).
+function ExpiryFormField({ expiries, initialValue, name }: { expiries: string[]; initialValue: string; name: string }) {
+  const [value, setValue] = useState(initialValue);
+  return <ExpiryDatePicker expiries={expiries} value={value} onChange={setValue} name={name} />;
 }
 
 function MarketTicker({ items }: { items: MarketTickerItem[] }) {

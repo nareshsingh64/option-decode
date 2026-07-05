@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Clock3, Pause, Play, ShieldCheck, SkipBack, SkipForward } from "lucide-react";
+import { ExpiryDatePicker } from "./expiry-date-picker";
 
 interface ReplayLabProps {
   replayExpiry: any;
@@ -80,20 +81,20 @@ export function ReplayLab(props: ReplayLabProps) {
         <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-[minmax(10rem,0.5fr)_minmax(12rem,0.7fr)_auto] md:items-end">
           <label className="grid gap-1 text-xs uppercase text-terminal-muted">
             Replay Expiry
-            <select value={replayExpiry} onChange={(event) => {
-              setReplayExpiry(event.target.value);
-              setReplayStartSnapshotId("");
-              setReplayOverview(null);
-              setReplaySnapshots([]);
-              replaySnapshotsRef.current = [];
-              setReplayIndex(0);
-              replayIndexRef.current = 0;
-              setIsReplayPlaying(false);
-            }} className="h-10 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none focus:border-terminal-blue">
-              {overview.expiries.length ? overview.expiries.map((expiry: any) => (
-                <option key={expiry} value={expiry}>{expiry}</option>
-              )) : <option value={overview.selectedExpiry}>{overview.selectedExpiry}</option>}
-            </select>
+            <ExpiryDatePicker
+              expiries={overview.expiries}
+              value={replayExpiry}
+              onChange={(nextExpiry) => {
+                setReplayExpiry(nextExpiry);
+                setReplayStartSnapshotId("");
+                setReplayOverview(null);
+                setReplaySnapshots([]);
+                replaySnapshotsRef.current = [];
+                setReplayIndex(0);
+                replayIndexRef.current = 0;
+                setIsReplayPlaying(false);
+              }}
+            />
           </label>
           <label className="grid gap-1 text-xs uppercase text-terminal-muted">
             Start Time
