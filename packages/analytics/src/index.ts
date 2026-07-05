@@ -3,6 +3,8 @@ import type {
   ChainStats,
   MarketAlert,
   MarketBiasSummary,
+  MarketPulse,
+  MarketPulsePoint,
   OptionActivityKind,
   OptionChainSnapshot,
   OptionContractTick,
@@ -435,5 +437,95 @@ export function calculateMarketBias(snapshot: OptionChainSnapshot, pressure: Pre
     maxPainDistancePercent,
     supportDistance,
     resistanceDistance
+  };
+}
+
+// Below this % move per minute in spot price, we call the market "flat"
+// rather than nudging direction one way or the other from noise.
+const MARKET_PULSE_FLAT_THRESHOLD_PERCENT_PER_MIN = 0.01;
+
+/** Ordinary least-squares slope of y over x - "how fast y is changing per
+ * unit of x" - fit through every point in the window rather than just
+ * comparing the first and last sample. This matters here because capture
+ * isn't perfectly smooth: a single noisy snapshot (a brief bid/ask jump)
+ * would swing a first-vs-last comparison a lot more than it swings a line
+ * fit through the whole window. Returns undefined if x has no spread
+ * (e.g. every sample landed at the same elapsed-minutes value). */
+function linearSlope(x: number[], y: number[]): number | undefined {
+  const n = x.length;
+  if (n < 2) return undefined;
+  const xMean = x.reduce((sum, value) => sum + value, 0) / n;
+  const yMean = y.reduce((sum, value) => sum + value, 0) / n;
+  let numerator = 0;
+  let denominator = 0;
+  for (let i = 0; i < n; i++) {
+    numerator += (x[i] - xMean) * (y[i] - yMean);
+    denominator += (x[i] - xMean) ** 2;
+  }
+  return denominator === 0 ? undefined : numerator / denominator;
+}
+
+/**
+ * "Market pulse": how fast the market is moving right now, not just where
+ * it stands. Takes a chronological window of recent samples - typically
+ * the last few minutes of already-captured snapshots, fetched via
+ * @option-decode/db#listRecentPressureHistory - and fits a trend line
+ * through spot price, net pressure (bullish - bearish), and PCR to get a
+ * rate-of-change per minute for each.
+ *
+ * Deliberately reuses already-persisted PressureScore/snapshot history
+ * instead of introducing a new capture cadence or table: the worker
+ * already writes a row roughly every 30s, which is plenty of resolution
+ * for a per-minute reading. The rate is computed over actual elapsed time
+ * between samples (not a fixed assumption of "N samples per minute"),
+ * since capture can gap by a few minutes under load.
+ *
+ * Returns null when there's not enough of a time spread in the window to
+ * measure a rate from (fewer than 2 samples, or they all share a
+ * timestamp).
+ */
+export function calculateMarketPulse(points: MarketPulsePoint[]): MarketPulse | null {
+  if (points.length < 2) return null;
+
+  const sorted = [...points].sort((left, right) => Date.parse(left.scoreTime) - Date.parse(right.scoreTime));
+  const startMs = Date.parse(sorted[0].scoreTime);
+  const endMs = Date.parse(sorted[sorted.length - 1].scoreTime);
+  const windowMinutes = (endMs - startMs) / 60000;
+  if (windowMinutes <= 0) return null;
+
+  const minutesElapsed = sorted.map((point) => (Date.parse(point.scoreTime) - startMs) / 60000);
+
+  const spotRatePerMin = linearSlope(
+    minutesElapsed,
+    sorted.map((point) => point.spotPrice)
+  );
+  const startSpot = sorted[0].spotPrice;
+  const spotRatePercentPerMin = spotRatePerMin !== undefined && startSpot > 0 ? (spotRatePerMin / startSpot) * 100 : undefined;
+
+  const pressureNetRatePerMin = linearSlope(
+    minutesElapsed,
+    sorted.map((point) => point.bullishPressure - point.bearishPressure)
+  );
+
+  const pcrSamples = sorted.filter((point) => point.pcr !== undefined);
+  const pcrRatePerMin =
+    pcrSamples.length >= 2
+      ? linearSlope(
+          pcrSamples.map((point) => (Date.parse(point.scoreTime) - startMs) / 60000),
+          pcrSamples.map((point) => point.pcr as number)
+        )
+      : undefined;
+
+  const direction: MarketPulse["direction"] =
+    spotRatePercentPerMin === undefined || Math.abs(spotRatePercentPerMin) < MARKET_PULSE_FLAT_THRESHOLD_PERCENT_PER_MIN ? "flat" : spotRatePercentPerMin > 0 ? "up" : "down";
+
+  return {
+    windowMinutes: Math.round(windowMinutes * 10) / 10,
+    sampleCount: sorted.length,
+    spotRatePerMin,
+    spotRatePercentPerMin,
+    pressureNetRatePerMin,
+    pcrRatePerMin,
+    direction
   };
 }

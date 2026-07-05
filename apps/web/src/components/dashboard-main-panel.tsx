@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { MarketPulse } from "@option-decode/types";
 import { TradeRecommendations } from "./trade-recommendations";
 
 interface DashboardMainPanelProps {
@@ -35,12 +36,13 @@ export function DashboardMainPanel({
   return (
     <section className="grid gap-4">
       <Panel title="Market Detail">
-        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
           <SignalCell label="Nearest Support" value={pressureSummary.nearestSupportText} detail={pressureSummary.supportDistanceText} tone="green" />
           <SignalCell label="Nearest Resistance" value={pressureSummary.nearestResistanceText} detail={pressureSummary.resistanceDistanceText} tone="red" />
           <SignalCell label="OI Breadth" value={chainStats.breadth} detail={`CE ${formatLarge(chainStats.totalCeOi, numberFormatMode)} · PE ${formatLarge(chainStats.totalPeOi, numberFormatMode)}`} tone="blue" />
           <SignalCell label="Buyer Momentum" value={tradeInterpretation.buyerText} detail={tradeInterpretation.buyerScore !== 0 ? `Score ${formatSignedLarge(tradeInterpretation.buyerScore, numberFormatMode)}` : "Neutral across ATM strikes"} tone={tradeInterpretation.buyerScore >= 8 ? "green" : tradeInterpretation.buyerScore <= -8 ? "red" : "blue"} />
           <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={tradeInterpretation.sellerScore !== 0 ? `Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}` : "Neutral across ATM strikes"} tone={tradeInterpretation.sellerScore >= 8 ? "green" : tradeInterpretation.sellerScore <= -8 ? "red" : "blue"} />
+          <MarketPulseCell pulse={overview.marketPulse} />
         </div>
         {pressureSummary.setupQualityText && !pressureSummary.setupQualityText.startsWith("Wait") && (
           <div className="mt-2 rounded border border-terminal-blue/40 bg-terminal-blue/10 px-3 py-1.5 text-xs text-terminal-blue">
@@ -118,6 +120,40 @@ function SignalCell({ label, value, detail, tone }: { label: string; value: stri
       <p className="text-xs uppercase text-terminal-muted">{label}</p>
       <p className={`mt-2 text-lg font-semibold ${toneClass}`}>{value}</p>
       <p className="mt-1 text-xs text-terminal-muted">{detail}</p>
+    </div>
+  );
+}
+
+// Renders the server-computed market-pulse rate-of-change (see
+// @option-decode/analytics#calculateMarketPulse). Kept as its own cell
+// rather than folded into SignalCell since it needs to gracefully show
+// "not enough data yet" (e.g. right after market open, before the 5-minute
+// lookback window has any history) instead of always having a value.
+function MarketPulseCell({ pulse }: { pulse?: MarketPulse | null }) {
+  if (!pulse || pulse.spotRatePerMin === undefined) {
+    return (
+      <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+        <p className="text-xs uppercase text-terminal-muted">Market Pulse</p>
+        <p className="mt-2 text-lg font-semibold text-terminal-muted">--</p>
+        <p className="mt-1 text-xs text-terminal-muted">Not enough recent history yet</p>
+      </div>
+    );
+  }
+
+  const icon = pulse.direction === "up" ? "▲" : pulse.direction === "down" ? "▼" : "•";
+  const toneClass = pulse.direction === "up" ? "text-terminal-emerald" : pulse.direction === "down" ? "text-terminal-red" : "text-terminal-blue";
+  const sign = pulse.spotRatePerMin > 0 ? "+" : "";
+  const percentText = pulse.spotRatePercentPerMin !== undefined ? `${sign}${pulse.spotRatePercentPerMin.toFixed(2)}%/min` : "Rate of change";
+
+  return (
+    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+      <p className="text-xs uppercase text-terminal-muted">Market Pulse</p>
+      <p className={`mt-2 text-lg font-semibold ${toneClass}`}>
+        {icon} {sign}{pulse.spotRatePerMin.toFixed(1)} pts/min
+      </p>
+      <p className="mt-1 text-xs text-terminal-muted">
+        {percentText} · {pulse.sampleCount} samples / {pulse.windowMinutes}m
+      </p>
     </div>
   );
 }

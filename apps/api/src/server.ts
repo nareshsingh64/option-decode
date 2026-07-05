@@ -4,12 +4,12 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculateMarketBias, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
+import { calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
-import type { OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
+import type { MarketPulse, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 
@@ -28,6 +28,12 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
 const MARKET_AUX_CACHE_MS = 5_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 const MARKET_EXPIRIES_CACHE_MS = 10_000;
+const MARKET_PULSE_CACHE_MS = 10_000;
+// How far back to look for the market-pulse rate-of-change calculation.
+// Long enough that a couple of noisy ~30s snapshots don't dominate the
+// trend line, short enough to still describe "right now" rather than the
+// whole session.
+const MARKET_PULSE_WINDOW_MS = 5 * 60 * 1000;
 const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
 const LIVE_SNAPSHOT_STALE_MS = 90_000;
 const MARKET_STREAM_TICKER_MS = 5_000;
@@ -45,6 +51,7 @@ const marketAuxCache = new Map<
   }
 >();
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
+const marketPulseCache = new Map<string, HotCacheEntry<MarketPulse | null>>();
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tickerSymbolsCache = new Map<string, HotCacheEntry<string[] | undefined>>();
 const marketStreamClients = new Map<number, MarketStreamClient>();
@@ -337,12 +344,14 @@ app.get<{
     getCachedExpiriesOrEmpty(requestedUnderlying),
     userPromise
   ]);
+  const marketPulsePromise = getCachedMarketPulse(snapshot.underlyingSymbol, snapshot.expiry);
   const pressure = calculatePressureScore(snapshot);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
   const strikeMovement = calculateStrikeMovement(snapshot);
   const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
   const marketBias = calculateMarketBias(snapshot, pressure);
+  const marketPulse = await marketPulsePromise;
 
   return {
     underlyings: visibleUnderlyings,
@@ -353,6 +362,7 @@ app.get<{
     ticker: marketAux.ticker,
     snapshot,
     pressure,
+    marketPulse,
     alerts,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
@@ -1103,6 +1113,19 @@ async function getExpiriesOrEmpty(underlyingSymbol: string) {
 async function getCachedLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string) {
   const cacheKey = `${underlyingSymbol}:${expiry ?? ""}`;
   return getHotCacheValue(marketSnapshotCache, cacheKey, MARKET_SNAPSHOT_CACHE_MS, () => getLatestSnapshotOrDemo(underlyingSymbol, expiry));
+}
+
+async function getCachedMarketPulse(underlyingSymbol: string, expiry: string) {
+  const cacheKey = `${underlyingSymbol}:${expiry}`;
+  return getHotCacheValue(marketPulseCache, cacheKey, MARKET_PULSE_CACHE_MS, async () => {
+    try {
+      const history = await listRecentPressureHistory(underlyingSymbol, expiry, Date.now() - MARKET_PULSE_WINDOW_MS);
+      return calculateMarketPulse(history);
+    } catch (error) {
+      app.log.warn({ error, underlyingSymbol, expiry }, "Unable to compute market pulse");
+      return null;
+    }
+  });
 }
 
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {

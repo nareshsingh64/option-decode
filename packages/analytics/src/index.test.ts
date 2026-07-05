@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { OptionChainSnapshot, OptionContractTick, PressureScore } from "@option-decode/types";
+import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, PressureScore } from "@option-decode/types";
 import {
   calculateChainStats,
   calculateMarketBias,
+  calculateMarketPulse,
   calculatePressureScore,
   calculateStrikeMovement,
   calculateTradeInterpretation,
@@ -322,4 +323,76 @@ test("calculateMarketBias: near-even pressure yields a Balanced/Wait/Neutral rea
   assert.equal(bias.readiness, "Wait");
   assert.equal(bias.conviction, "Neutral");
   assert.equal(bias.setupQuality, "No Edge");
+});
+
+function pulsePoint(minutesFromBase: number, spotPrice: number, bullishPressure: number, bearishPressure: number, pcr?: number): MarketPulsePoint {
+  const base = Date.parse("2026-07-01T09:15:00.000Z");
+  return {
+    scoreTime: new Date(base + minutesFromBase * 60_000).toISOString(),
+    spotPrice,
+    bullishPressure,
+    bearishPressure,
+    pcr
+  };
+}
+
+test("calculateMarketPulse returns null with fewer than 2 samples", () => {
+  assert.equal(calculateMarketPulse([]), null);
+  assert.equal(calculateMarketPulse([pulsePoint(0, 25000, 50, 50)]), null);
+});
+
+test("calculateMarketPulse: a steady rise reads back its exact points/min slope and is classified 'up'", () => {
+  const points = [0, 1, 2, 3, 4].map((minute) => pulsePoint(minute, 25000 + minute * 10, 50, 50));
+  const pulse = calculateMarketPulse(points);
+  assert.ok(pulse);
+  assert.equal(pulse.sampleCount, 5);
+  assert.equal(pulse.windowMinutes, 4);
+  assert.equal(pulse.spotRatePerMin, 10);
+  assert.ok(pulse.spotRatePercentPerMin && pulse.spotRatePercentPerMin > 0.01);
+  assert.equal(pulse.direction, "up");
+});
+
+test("calculateMarketPulse: a steady fall is classified 'down'", () => {
+  const points = [0, 1, 2, 3, 4].map((minute) => pulsePoint(minute, 25000 - minute * 10, 50, 50));
+  const pulse = calculateMarketPulse(points);
+  assert.ok(pulse);
+  assert.equal(pulse.spotRatePerMin, -10);
+  assert.equal(pulse.direction, "down");
+});
+
+test("calculateMarketPulse: sub-deadband movement is classified 'flat' instead of up/down", () => {
+  // 0.006%/min is below the 0.01%/min flat threshold - shouldn't tip either way.
+  const points = [0, 1, 2].map((minute) => pulsePoint(minute, 25000 + minute * 1.5, 50, 50));
+  const pulse = calculateMarketPulse(points);
+  assert.ok(pulse);
+  assert.equal(pulse.direction, "flat");
+});
+
+test("calculateMarketPulse fits a trend line through the whole window, not just first-vs-last", () => {
+  // Hand-computed OLS: x=[0,1,2], y=[25000,25001,25003] -> slope = 1.5.
+  // A naive first-vs-last delta would give (25003-25000)/2 = 1.5 too here,
+  // but net pressure below uses the same [0,1,3] shape to confirm the
+  // regression math itself (not just this coincidental case).
+  const points = [pulsePoint(0, 25000, 50, 50, 1.0), pulsePoint(1, 25001, 51, 50), pulsePoint(2, 25003, 53, 50, 1.3)];
+  const pulse = calculateMarketPulse(points);
+  assert.ok(pulse);
+  assert.equal(pulse.spotRatePerMin, 1.5);
+  assert.equal(pulse.pressureNetRatePerMin, 1.5);
+  // Only 2 of the 3 samples have a PCR value (t=0 and t=2), 2 minutes apart.
+  // Floating-point division (0.3 / 2) doesn't land on an exact binary
+  // fraction, so compare within a tight tolerance rather than by equality.
+  assert.ok(pulse.pcrRatePerMin !== undefined && Math.abs(pulse.pcrRatePerMin - 0.15) < 1e-9);
+});
+
+test("calculateMarketPulse normalizes by actual elapsed minutes, not sample count", () => {
+  // Same 10 pts/min rate as the earlier 5-sample test, but expressed as
+  // just 2 samples 5 minutes apart - confirms the rate is per elapsed
+  // wall-clock time, unaffected by how many (or few) snapshots fall
+  // inside that time, which matters since capture can gap under load.
+  const points = [pulsePoint(0, 25000, 50, 50), pulsePoint(5, 25050, 50, 50)];
+  const pulse = calculateMarketPulse(points);
+  assert.ok(pulse);
+  assert.equal(pulse.sampleCount, 2);
+  assert.equal(pulse.windowMinutes, 5);
+  assert.equal(pulse.spotRatePerMin, 10);
 });

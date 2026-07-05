@@ -153,6 +153,26 @@ export interface Recommendation {
   confidence: number;
 }
 
+export interface MarketPulsePoint {
+  scoreTime: string;
+  spotPrice: number;
+  bullishPressure: number;
+  bearishPressure: number;
+  pcr?: number;
+}
+
+export type MarketPulseDirection = "up" | "down" | "flat";
+
+export interface MarketPulse {
+  windowMinutes: number;
+  sampleCount: number;
+  spotRatePerMin?: number;
+  spotRatePercentPerMin?: number;
+  pressureNetRatePerMin?: number;
+  pcrRatePerMin?: number;
+  direction: MarketPulseDirection;
+}
+
 export interface PaperOrderRequest {
   userId: string;
   underlyingSymbol: UnderlyingSymbol;

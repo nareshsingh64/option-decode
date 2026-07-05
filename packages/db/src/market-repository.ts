@@ -1,5 +1,5 @@
 import { calculatePressureScore } from "@option-decode/analytics";
-import type { OptionChainSnapshot, OptionContractTick } from "@option-decode/types";
+import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick } from "@option-decode/types";
 import type { OptionType, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./index.js";
@@ -480,6 +480,45 @@ export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?:
     bullishPressure: row.bullishPressure,
     bearishPressure: row.bearishPressure,
     maxPain: row.maxPain?.toNumber()
+  }));
+}
+
+/**
+ * Recent (spotPrice + bullish/bearish pressure + PCR) samples for a
+ * trailing time window, used to compute the "market pulse" rate-of-change
+ * indicator. Pulls from PressureScore (already persisted by the worker on
+ * every capture) joined to its snapshot's spotPrice, so no new capture job
+ * or table is needed - this is purely a read over history that already
+ * exists. Filtered by actual elapsed time (sinceMs), not a row count,
+ * since capture isn't on a perfectly even cadence and a count-based
+ * window would silently cover a different amount of real time whenever
+ * there's a gap.
+ */
+export async function listRecentPressureHistory(underlyingSymbol = "NIFTY", requestedExpiry: string | undefined, sinceMs: number, client: DbClient = prisma): Promise<MarketPulsePoint[]> {
+  const rows = await client.pressureScore.findMany({
+    where: {
+      underlyingSymbol,
+      scoreTime: { gte: new Date(sinceMs) },
+      ...(requestedExpiry ? { expiryLabel: requestedExpiry } : {})
+    },
+    orderBy: { scoreTime: "asc" },
+    select: {
+      scoreTime: true,
+      bullishPressure: true,
+      bearishPressure: true,
+      pcr: true,
+      snapshot: {
+        select: { spotPrice: true }
+      }
+    }
+  });
+
+  return rows.map((row) => ({
+    scoreTime: row.scoreTime.toISOString(),
+    spotPrice: row.snapshot.spotPrice.toNumber(),
+    bullishPressure: row.bullishPressure,
+    bearishPressure: row.bearishPressure,
+    pcr: toNumber(row.pcr)
   }));
 }
 
