@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Clock3, Pause, Play, ShieldCheck, SkipBack, SkipForward } from "lucide-react";
-import { ExpiryDatePicker } from "./expiry-date-picker";
+import { CalendarDatePicker } from "./calendar-date-picker";
+import { DashboardMainPanel } from "./dashboard-main-panel";
 
 interface ReplayLabProps {
   replayExpiry: any;
@@ -17,6 +18,7 @@ interface ReplayLabProps {
   replaySnapshots: any;
   loadReplaySnapshotAtIndex: any;
   formatIstTime: any;
+  formatIstShortDateTime: any;
   formatPrice: any;
   refreshReplayTimeline: any;
   isReplayPlaying: any;
@@ -35,6 +37,20 @@ interface ReplayLabProps {
   renderIvDeltaCell: any;
   renderPressureCell: any;
   renderLtpStack: any;
+  replayTradingDate: any;
+  setReplayTradingDate: any;
+  replayTradingDates: any;
+  refreshReplayTradingDatesFor: any;
+  replayChainStats: any;
+  replayPressureSummary: any;
+  replayStrikeMovementRowsForPanel: any;
+  replayStrikeMovementSummary: any;
+  replayTradeInterpretation: any;
+  formatLarge: any;
+  formatSignedLarge: any;
+  getActivityLabel: any;
+  getActivityToneClass: any;
+  numberFormatMode: any;
 }
 
 export function ReplayLab(props: ReplayLabProps) {
@@ -49,10 +65,10 @@ export function ReplayLab(props: ReplayLabProps) {
     replayIndexRef,
     setIsReplayPlaying,
     overview,
-    replayStartSnapshotId,
     replaySnapshots,
     loadReplaySnapshotAtIndex,
     formatIstTime,
+    formatIstShortDateTime,
     formatPrice,
     refreshReplayTimeline,
     isReplayPlaying,
@@ -70,45 +86,69 @@ export function ReplayLab(props: ReplayLabProps) {
     replayChainRows,
     renderIvDeltaCell,
     renderPressureCell,
-    renderLtpStack
+    renderLtpStack,
+    replayTradingDate,
+    setReplayTradingDate,
+    replayTradingDates,
+    refreshReplayTradingDatesFor,
+    replayChainStats,
+    replayPressureSummary,
+    replayStrikeMovementRowsForPanel,
+    replayStrikeMovementSummary,
+    replayTradeInterpretation,
+    formatLarge,
+    formatSignedLarge,
+    getActivityLabel,
+    getActivityToneClass,
+    numberFormatMode
   } = props;
+
+  // Shared reset used whenever Expiry or Day changes: the previously
+  // loaded timeline/snapshot no longer applies to the new selection, and
+  // an explicit "Load Replay" click is what actually fetches the new
+  // combination - same pattern the old expiry-only select already used.
+  function resetReplayTimelineState() {
+    setReplayStartSnapshotId("");
+    setReplayOverview(null);
+    setReplaySnapshots([]);
+    replaySnapshotsRef.current = [];
+    setReplayIndex(0);
+    replayIndexRef.current = 0;
+    setIsReplayPlaying(false);
+  }
 
   return (
     <section className="rounded border border-terminal-line bg-terminal-panel/80 p-4">
       <h2 className="text-base font-semibold">Replay Lab</h2>
       <div className="mt-4">
       <div className="grid gap-4 text-sm">
-        <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-[minmax(10rem,0.5fr)_minmax(12rem,0.7fr)_auto] md:items-end">
+        <div className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-3 md:grid-cols-[minmax(10rem,0.4fr)_minmax(10rem,0.4fr)_auto] md:items-end">
           <label className="grid gap-1 text-xs uppercase text-terminal-muted">
             Replay Expiry
-            <ExpiryDatePicker
-              expiries={overview.expiries}
+            <CalendarDatePicker
+              availableDates={overview.expiries}
               value={replayExpiry}
+              placeholder="Select expiry"
+              emptyLabel="No stored expiries available yet."
               onChange={(nextExpiry) => {
                 setReplayExpiry(nextExpiry);
-                setReplayStartSnapshotId("");
-                setReplayOverview(null);
-                setReplaySnapshots([]);
-                replaySnapshotsRef.current = [];
-                setReplayIndex(0);
-                replayIndexRef.current = 0;
-                setIsReplayPlaying(false);
+                resetReplayTimelineState();
+                void refreshReplayTradingDatesFor(nextExpiry);
               }}
             />
           </label>
           <label className="grid gap-1 text-xs uppercase text-terminal-muted">
-            Start Time
-            <select value={replayStartSnapshotId} onChange={(event) => {
-              setReplayStartSnapshotId(event.target.value);
-              const nextIndex = replaySnapshots.findIndex((snapshot: any) => snapshot.id === event.target.value);
-              if (nextIndex >= 0) {
-                void loadReplaySnapshotAtIndex(nextIndex);
-              }
-            }} className="h-10 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none focus:border-terminal-blue">
-              {replaySnapshots.length ? replaySnapshots.map((snapshot: any) => (
-                <option key={snapshot.id} value={snapshot.id}>{formatIstTime(snapshot.snapshotTime)} IST - {formatPrice(snapshot.spotPrice)}</option>
-              )) : <option value="">Load snapshots first</option>}
-            </select>
+            Replay Day
+            <CalendarDatePicker
+              availableDates={replayTradingDates}
+              value={replayTradingDate}
+              placeholder="Select a day"
+              emptyLabel="No stored trading days for this expiry yet."
+              onChange={(nextDate) => {
+                setReplayTradingDate(nextDate);
+                resetReplayTimelineState();
+              }}
+            />
           </label>
           <button className="h-10 rounded border border-terminal-blue bg-terminal-blue px-4 text-sm font-semibold text-white transition hover:opacity-90" type="button" onClick={refreshReplayTimeline}>
             Load Replay
@@ -149,12 +189,25 @@ export function ReplayLab(props: ReplayLabProps) {
           </div>
           <div className="grid gap-2">
             <div className="flex items-center justify-between text-xs text-terminal-muted">
-              <span>{replaySnapshots[replayIndex] ? formatIstTime(replaySnapshots[replayIndex].snapshotTime) : "--"} IST</span>
+              <span className="text-sm font-semibold text-terminal-text">{replaySnapshots[replayIndex] ? formatIstTime(replaySnapshots[replayIndex].snapshotTime) : "--"} IST</span>
               <span>{replaySnapshots.length ? `${replayIndex + 1} / ${replaySnapshots.length}` : "0 / 0"}</span>
             </div>
-            <div className="h-2 rounded bg-white/10">
-              <div className="h-2 rounded bg-terminal-blue transition-all" style={{ width: `${replaySnapshots.length > 1 ? (replayIndex / (replaySnapshots.length - 1)) * 100 : 0}%` }} />
-            </div>
+            {/* Scrubber for jumping anywhere within the loaded day's
+                snapshots - a day can hold ~750 points at the ~30s capture
+                cadence, far too many for a dropdown to be usable. Dragging
+                this is the primary way to pick a time; the chip strip
+                below is for quick visual jumps by spot price. */}
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, replaySnapshots.length - 1)}
+              value={replayIndex}
+              disabled={!replaySnapshots.length}
+              onChange={(event) => loadReplaySnapshotAtIndex(Number(event.target.value))}
+              className="h-2 w-full cursor-pointer disabled:cursor-not-allowed"
+              style={{ accentColor: "var(--terminal-blue)" }}
+              aria-label="Replay time scrubber"
+            />
           </div>
         </div>
         <div className="grid gap-2">
@@ -175,6 +228,21 @@ export function ReplayLab(props: ReplayLabProps) {
           </div>
           {replayError ? <p className="text-terminal-red">{replayError}</p> : null}
         </div>
+        <DashboardMainPanel
+          chainStats={replayChainStats}
+          formatLarge={formatLarge}
+          formatSignedLarge={formatSignedLarge}
+          formatStrike={formatStrike}
+          formatTime={formatIstShortDateTime}
+          getActivityLabel={getActivityLabel}
+          getActivityToneClass={getActivityToneClass}
+          numberFormatMode={numberFormatMode}
+          overview={replayOverview ?? overview}
+          pressureSummary={replayPressureSummary}
+          strikeMovementRows={replayStrikeMovementRowsForPanel}
+          strikeMovementSummary={replayStrikeMovementSummary}
+          tradeInterpretation={replayTradeInterpretation}
+        />
         <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
             <div>

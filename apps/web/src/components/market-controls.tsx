@@ -1,7 +1,7 @@
 import { Play, Plus, RefreshCw } from "lucide-react";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import { ExpiryDatePicker } from "./expiry-date-picker";
+import { CalendarDatePicker } from "./calendar-date-picker";
 
 interface MarketTickerItem {
   symbol: string;
@@ -125,7 +125,7 @@ export function MarketControls({
 // watchlist "Play" button).
 function ExpiryFormField({ expiries, initialValue, name }: { expiries: string[]; initialValue: string; name: string }) {
   const [value, setValue] = useState(initialValue);
-  return <ExpiryDatePicker expiries={expiries} value={value} onChange={setValue} name={name} />;
+  return <CalendarDatePicker availableDates={expiries} value={value} onChange={setValue} name={name} placeholder="Select expiry" emptyLabel="No stored expiries available yet." />;
 }
 
 function MarketTicker({ items }: { items: MarketTickerItem[] }) {

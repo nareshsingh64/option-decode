@@ -3,6 +3,7 @@
 import { Clock3, Pause, SkipBack, SkipForward } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import type { MarketPulse } from "@option-decode/types";
 import { AccountPanel } from "./account-panel";
 import { AdminPanel } from "./admin-panel";
 import { AlertCenter } from "./alert-center";
@@ -21,6 +22,7 @@ import {
   fetchPaperSummary,
   fetchReplaySnapshot,
   fetchReplayTimeline,
+  fetchReplayTradingDates,
   logoutAuthUser,
   placePaperOrder,
   registerBrowserPush,
@@ -132,6 +134,7 @@ export interface MarketOverview {
     createdAt: string;
   }>;
   recommendations: Recommendation[];
+  marketPulse?: MarketPulse | null;
 }
 
 export interface Recommendation {
@@ -430,6 +433,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [replaySpeedMs, setReplaySpeedMs] = useState(1500);
   const [replayExpiry, setReplayExpiry] = useState(initialOverview.selectedExpiry);
   const [replayStartSnapshotId, setReplayStartSnapshotId] = useState("");
+  const [replayTradingDates, setReplayTradingDates] = useState<string[]>([]);
+  const [replayTradingDate, setReplayTradingDate] = useState("");
   const [alertFilter, setAlertFilter] = useState<"all" | "critical" | "warning" | "info" | "dismissed">("all");
   const [dismissedAlertIds, setDismissedAlertIds] = useState<string[]>([]);
   const [newWatchSymbol, setNewWatchSymbol] = useState("");
@@ -477,15 +482,17 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const overviewRef = useRef(overview);
   const replayExpiryRef = useRef(replayExpiry);
   const replayStartSnapshotIdRef = useRef(replayStartSnapshotId);
+  const replayTradingDateRef = useRef(replayTradingDate);
 
   useEffect(() => {
     overviewRef.current = overview;
   }, [overview]);
 
   // ReplayLab is presentational and calls these setters directly from its
-  // own onChange handlers (Replay Expiry / Start Time selects), so they're
-  // wrapped here to keep replayExpiryRef/replayStartSnapshotIdRef in sync
-  // no matter which code path changes the state.
+  // own onChange handlers (Replay Expiry / Replay Day pickers), so they're
+  // wrapped here to keep replayExpiryRef/replayStartSnapshotIdRef/
+  // replayTradingDateRef in sync no matter which code path changes the
+  // state.
   const setReplayExpiryWithRef = useCallback((value: string) => {
     replayExpiryRef.current = value;
     setReplayExpiry(value);
@@ -493,6 +500,29 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const setReplayStartSnapshotIdWithRef = useCallback((value: string) => {
     replayStartSnapshotIdRef.current = value;
     setReplayStartSnapshotId(value);
+  }, []);
+  const setReplayTradingDateWithRef = useCallback((value: string) => {
+    replayTradingDateRef.current = value;
+    setReplayTradingDate(value);
+  }, []);
+
+  // Fetches which trading days actually have stored data for a given
+  // expiry (used by the Replay Day calendar), and re-picks a default day
+  // (the most recent one) since the previously-selected day may not exist
+  // for a newly-picked expiry. Stable [] deps, same reasoning as
+  // refreshReplayTimeline below - reads the underlying from a ref so it
+  // doesn't need to be recreated (and re-fire any effect it's a dependency
+  // of) whenever `overview` changes.
+  const refreshReplayTradingDatesFor = useCallback(async (expiry: string) => {
+    try {
+      const dates = await fetchReplayTradingDates(selectionRef.current.underlying, expiry || selectionRef.current.expiry);
+      setReplayTradingDates(dates);
+      const defaultDate = dates[dates.length - 1] ?? "";
+      replayTradingDateRef.current = defaultDate;
+      setReplayTradingDate(defaultDate);
+    } catch (error) {
+      setReplayError(error instanceof Error ? error.message : "Unable to load replay trading dates");
+    }
   }, []);
 
   useEffect(() => {
@@ -562,6 +592,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     replayExpiryRef.current = initialOverview.selectedExpiry;
     setReplayStartSnapshotId("");
     replayStartSnapshotIdRef.current = "";
+    setReplayTradingDate("");
+    replayTradingDateRef.current = "";
+    setReplayTradingDates([]);
     replayIndexRef.current = 0;
     replaySnapshotsRef.current = [];
     setIsReplayPlaying(false);
@@ -754,7 +787,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const refreshReplayTimeline = useCallback(async () => {
     try {
       setReplayError(null);
-      const snapshots = await fetchReplayTimeline(selectionRef.current.underlying, replayExpiryRef.current || selectionRef.current.expiry);
+      const snapshots = await fetchReplayTimeline(selectionRef.current.underlying, replayExpiryRef.current || selectionRef.current.expiry, replayTradingDateRef.current || undefined);
       setReplaySnapshots(snapshots);
       replaySnapshotsRef.current = snapshots;
       const requestedIndex = replayStartSnapshotIdRef.current
@@ -776,6 +809,18 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setReplayError(error instanceof Error ? error.message : "Unable to load replay timeline");
     }
   }, []);
+
+  // Only needed once, when the Replay tab is first opened: there's no
+  // trading day selected yet, so we can't call refreshReplayTimeline until
+  // we know which days exist and have picked a default one. Subsequent
+  // expiry/day changes are handled imperatively in ReplayLab's own
+  // onChange handlers instead (see refreshReplayTradingDatesFor), each
+  // still requiring an explicit "Load Replay" click to actually fetch -
+  // this just gets that first load working without one.
+  const initializeReplayView = useCallback(async () => {
+    await refreshReplayTradingDatesFor(replayExpiryRef.current || selectionRef.current.expiry);
+    await refreshReplayTimeline();
+  }, [refreshReplayTradingDatesFor, refreshReplayTimeline]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -819,7 +864,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       refreshPaperSummary();
     }
     if (initialView === "replay") {
-      refreshReplayTimeline();
+      initializeReplayView();
     }
     if (initialView === "admin") {
       refreshAdminOverview();
@@ -827,7 +872,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     if (initialView === "settings" && authUser) {
       refreshAlertThresholds();
     }
-  }, [authUser, initialView, refreshAdminOverview, refreshAlertThresholds, refreshPaperSummary, refreshReplayTimeline]);
+  }, [authUser, initialView, initializeReplayView, refreshAdminOverview, refreshAlertThresholds, refreshPaperSummary]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -904,6 +949,16 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const strikeMovementRows = useMemo(() => buildStrikeMovementRows(overview), [overview]);
   const strikeMovementSummary = useMemo(() => buildStrikeMovementSummary(strikeMovementRows), [strikeMovementRows]);
   const tradeInterpretation = useMemo(() => buildTradeInterpretation(strikeMovementRows), [strikeMovementRows]);
+  // Replay-scoped equivalents of the four hooks above, so the Replay tab's
+  // Market Detail panel reflects whichever historical snapshot is loaded
+  // instead of always showing the live dashboard's current data - same
+  // "replayOverview ?? overview" fallback already used by
+  // replayChainRange/replayChainRows/replayStats.
+  const replayChainStats = useMemo(() => buildChainStats(replayOverview ?? overview, displayPreferences), [displayPreferences, overview, replayOverview]);
+  const replayPressureSummary = useMemo(() => buildPressureSummary(replayOverview ?? overview), [overview, replayOverview]);
+  const replayStrikeMovementRowsForPanel = useMemo(() => buildStrikeMovementRows(replayOverview ?? overview), [overview, replayOverview]);
+  const replayStrikeMovementSummary = useMemo(() => buildStrikeMovementSummary(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
+  const replayTradeInterpretation = useMemo(() => buildTradeInterpretation(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
   const strikeChoices = useMemo(() => buildStrikeChoices(overview), [overview]);
   const orderTick = useMemo(() => findOptionTick(overview, Number(orderStrike), orderOptionType), [orderOptionType, orderStrike, overview]);
   const marketEntryPrice = orderTick?.lastPrice ?? 0;
@@ -1509,6 +1564,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           replaySnapshots={replaySnapshots}
           loadReplaySnapshotAtIndex={loadReplaySnapshotAtIndex}
           formatIstTime={formatIstTime}
+          formatIstShortDateTime={formatIstShortDateTime}
           formatPrice={formatPrice}
           refreshReplayTimeline={refreshReplayTimeline}
           isReplayPlaying={isReplayPlaying}
@@ -1527,6 +1583,20 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           renderIvDeltaCell={renderIvDeltaCell}
           renderPressureCell={renderPressureCell}
           renderLtpStack={renderLtpStack}
+          replayTradingDate={replayTradingDate}
+          setReplayTradingDate={setReplayTradingDateWithRef}
+          replayTradingDates={replayTradingDates}
+          refreshReplayTradingDatesFor={refreshReplayTradingDatesFor}
+          replayChainStats={replayChainStats}
+          replayPressureSummary={replayPressureSummary}
+          replayStrikeMovementRowsForPanel={replayStrikeMovementRowsForPanel}
+          replayStrikeMovementSummary={replayStrikeMovementSummary}
+          replayTradeInterpretation={replayTradeInterpretation}
+          formatLarge={formatLarge}
+          formatSignedLarge={formatSignedLarge}
+          getActivityLabel={getActivityLabel}
+          getActivityToneClass={getActivityToneClass}
+          numberFormatMode={numberFormatMode}
         />
       ) : null}
     </div>

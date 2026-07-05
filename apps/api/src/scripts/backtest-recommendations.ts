@@ -81,9 +81,7 @@ interface FiredRecommendation {
 }
 
 async function loadDaySnapshots(underlying: string, tradingDate: string): Promise<OptionChainSnapshot[]> {
-  const summaries = (await listReplaySnapshots(underlying))
-    .filter((row) => row.tradingDate === tradingDate)
-    .sort((a, b) => a.snapshotTime.localeCompare(b.snapshotTime));
+  const summaries = (await listReplaySnapshots(underlying, undefined, tradingDate)).sort((a, b) => a.snapshotTime.localeCompare(b.snapshotTime));
 
   const snapshots: OptionChainSnapshot[] = [];
   for (const row of summaries) {

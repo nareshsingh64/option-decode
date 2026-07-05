@@ -425,8 +425,14 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
   };
 }
 
-export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedExpiry?: string, client: DbClient = prisma) {
-  const snapshots = await client.optionChainSnapshot.findMany({
+/**
+ * Distinct trading days that have at least one stored snapshot for the
+ * given underlying/expiry - backs the Replay Lab's day picker so it can
+ * show a calendar where only days with real data are selectable, the same
+ * way the expiry picker only allows dates with stored expiries.
+ */
+export async function listReplayTradingDates(underlyingSymbol = "NIFTY", requestedExpiry?: string, client: DbClient = prisma): Promise<string[]> {
+  const rows = await client.optionChainSnapshot.findMany({
     where: {
       underlyingSymbol,
       ...(requestedExpiry
@@ -437,7 +443,32 @@ export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedE
           }
         : {})
     },
+    distinct: ["tradingDate"],
+    select: { tradingDate: true },
+    orderBy: { tradingDate: "asc" }
+  });
+
+  return rows.map((row) => row.tradingDate.toISOString().slice(0, 10));
+}
+
+export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedExpiry?: string, tradingDate?: string, client: DbClient = prisma) {
+  const snapshots = await client.optionChainSnapshot.findMany({
+    where: {
+      underlyingSymbol,
+      ...(requestedExpiry
+        ? {
+            expiry: {
+              expiryLabel: requestedExpiry
+            }
+          }
+        : {}),
+      ...(tradingDate ? { tradingDate: dateOnly(tradingDate) } : {})
+    },
     orderBy: { snapshotTime: "desc" },
+    // Safety cap: a single trading day tops out around ~750 snapshots at
+    // the current ~30s capture cadence, so this only ever kicks in if a
+    // caller omits tradingDate and the expiry has many days of history.
+    take: 2000,
     include: {
       expiry: true
     }
@@ -493,12 +524,18 @@ export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?:
  * since capture isn't on a perfectly even cadence and a count-based
  * window would silently cover a different amount of real time whenever
  * there's a gap.
+ *
+ * `untilMs` is optional and defaults to no upper bound (i.e. "now" for the
+ * live dashboard, since there's no future data to accidentally include).
+ * Replay passes it explicitly so a historical snapshot's pulse is anchored
+ * at that snapshot's own time instead of pulling in every reading between
+ * then and the actual present.
  */
-export async function listRecentPressureHistory(underlyingSymbol = "NIFTY", requestedExpiry: string | undefined, sinceMs: number, client: DbClient = prisma): Promise<MarketPulsePoint[]> {
+export async function listRecentPressureHistory(underlyingSymbol = "NIFTY", requestedExpiry: string | undefined, sinceMs: number, untilMs?: number, client: DbClient = prisma): Promise<MarketPulsePoint[]> {
   const rows = await client.pressureScore.findMany({
     where: {
       underlyingSymbol,
-      scoreTime: { gte: new Date(sinceMs) },
+      scoreTime: { gte: new Date(sinceMs), ...(untilMs !== undefined ? { lte: new Date(untilMs) } : {}) },
       ...(requestedExpiry ? { expiryLabel: requestedExpiry } : {})
     },
     orderBy: { scoreTime: "asc" },

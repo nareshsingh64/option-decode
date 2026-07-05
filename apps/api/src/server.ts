@@ -7,7 +7,7 @@ import { z } from "zod";
 import { calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { MarketPulse, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -624,11 +624,26 @@ app.get<{
     underlying?: string;
     expiry?: string;
   };
-}>("/api/replay/timeline", async (request) => {
+}>("/api/replay/trading-dates", async (request) => {
   const requestedUnderlying = normalizeUnderlying(request.query.underlying);
   const requestedExpiry = request.query.expiry?.trim() || undefined;
   return {
-    snapshots: await listReplaySnapshots(requestedUnderlying, requestedExpiry)
+    tradingDates: await listReplayTradingDates(requestedUnderlying, requestedExpiry)
+  };
+});
+
+app.get<{
+  Querystring: {
+    underlying?: string;
+    expiry?: string;
+    tradingDate?: string;
+  };
+}>("/api/replay/timeline", async (request) => {
+  const requestedUnderlying = normalizeUnderlying(request.query.underlying);
+  const requestedExpiry = request.query.expiry?.trim() || undefined;
+  const requestedTradingDate = request.query.tradingDate?.trim() || undefined;
+  return {
+    snapshots: await listReplaySnapshots(requestedUnderlying, requestedExpiry, requestedTradingDate)
   };
 });
 
@@ -648,9 +663,11 @@ app.get<{
   const strikeMovement = calculateStrikeMovement(snapshot);
   const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
   const marketBias = calculateMarketBias(snapshot, pressure);
+  const marketPulse = await computeMarketPulseAsOf(snapshot.underlyingSymbol, snapshot.expiry, Date.parse(snapshot.snapshotTime));
   return {
     snapshot,
     pressure,
+    marketPulse,
     alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined),
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
@@ -1115,17 +1132,24 @@ async function getCachedLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: 
   return getHotCacheValue(marketSnapshotCache, cacheKey, MARKET_SNAPSHOT_CACHE_MS, () => getLatestSnapshotOrDemo(underlyingSymbol, expiry));
 }
 
+// Shared by both the live dashboard (asOfMs = now) and replay (asOfMs =
+// the historical snapshot's own time) so a replayed pulse reading is
+// anchored to "what the trailing 5 minutes looked like at that moment in
+// history", not accidentally pulled forward to include readings between
+// then and the actual present.
+async function computeMarketPulseAsOf(underlyingSymbol: string, expiry: string, asOfMs: number) {
+  try {
+    const history = await listRecentPressureHistory(underlyingSymbol, expiry, asOfMs - MARKET_PULSE_WINDOW_MS, asOfMs);
+    return calculateMarketPulse(history);
+  } catch (error) {
+    app.log.warn({ error, underlyingSymbol, expiry, asOfMs }, "Unable to compute market pulse");
+    return null;
+  }
+}
+
 async function getCachedMarketPulse(underlyingSymbol: string, expiry: string) {
   const cacheKey = `${underlyingSymbol}:${expiry}`;
-  return getHotCacheValue(marketPulseCache, cacheKey, MARKET_PULSE_CACHE_MS, async () => {
-    try {
-      const history = await listRecentPressureHistory(underlyingSymbol, expiry, Date.now() - MARKET_PULSE_WINDOW_MS);
-      return calculateMarketPulse(history);
-    } catch (error) {
-      app.log.warn({ error, underlyingSymbol, expiry }, "Unable to compute market pulse");
-      return null;
-    }
-  });
+  return getHotCacheValue(marketPulseCache, cacheKey, MARKET_PULSE_CACHE_MS, () => computeMarketPulseAsOf(underlyingSymbol, expiry, Date.now()));
 }
 
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {

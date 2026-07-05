@@ -319,11 +319,30 @@ export async function updateAdminUserDisabled(userId: string, disabled: boolean)
   }
 }
 
-export async function fetchReplayTimeline(underlying: string, expiry: string): Promise<ReplaySnapshotSummary[]> {
+export async function fetchReplayTradingDates(underlying: string, expiry: string): Promise<string[]> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const search = new URLSearchParams({ underlying });
   if (expiry) {
     search.set("expiry", expiry);
+  }
+  const response = await fetch(`${apiUrl}/api/replay/trading-dates?${search.toString()}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`Replay trading dates failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { tradingDates: string[] };
+  return payload.tradingDates;
+}
+
+export async function fetchReplayTimeline(underlying: string, expiry: string, tradingDate?: string): Promise<ReplaySnapshotSummary[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ underlying });
+  if (expiry) {
+    search.set("expiry", expiry);
+  }
+  if (tradingDate) {
+    search.set("tradingDate", tradingDate);
   }
   const response = await fetch(`${apiUrl}/api/replay/timeline?${search.toString()}`, {
     cache: "no-store"
@@ -343,7 +362,7 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
   if (!response.ok) {
     throw new Error(`Replay snapshot failed with HTTP ${response.status}`);
   }
-  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot" | "recommendations">;
+  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot" | "recommendations" | "marketPulse">;
   return {
     ...baseOverview,
     selectedUnderlying: payload.snapshot.underlyingSymbol,
@@ -351,7 +370,8 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
     snapshot: payload.snapshot,
     pressure: payload.pressure,
     alerts: payload.alerts,
-    recommendations: payload.recommendations
+    recommendations: payload.recommendations,
+    marketPulse: payload.marketPulse
   };
 }
 
