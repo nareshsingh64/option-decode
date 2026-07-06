@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import type { MarketPulse } from "@option-decode/types";
 import { TradeRecommendations } from "./trade-recommendations";
 
@@ -39,6 +40,8 @@ export function DashboardMainPanel({
   tradeInterpretation,
   showRecommendations = true
 }: DashboardMainPanelProps) {
+  const previousStrikeScores = usePreviousStrikeScores(strikeMovementRows);
+
   return (
     <section className="grid gap-4">
       <Panel title="Market Detail">
@@ -71,23 +74,29 @@ export function DashboardMainPanel({
                 </tr>
               </thead>
               <tbody>
-                {strikeMovementRows.map((row) => (
-                  <tr key={row.strike} className={`border-b border-terminal-line/60 last:border-b-0 ${row.isAtm ? "bg-terminal-blue/10" : ""}`}>
-                    <td className="whitespace-nowrap px-2 py-2">
-                      <span className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</span>{" "}
-                      <span className="font-semibold text-terminal-text">{formatStrike(row.strike)}</span>
-                    </td>
-                    <td className={`whitespace-nowrap px-2 py-2 font-semibold ${row.toneClass}`}>
-                      {formatSignedLarge(row.netScore, numberFormatMode)} <span className="text-terminal-muted">({row.netScorePercent}%)</span>
-                    </td>
-                    <td className={`whitespace-nowrap px-2 py-2 ${row.toneClass}`}>{row.bias}</td>
-                    <td className={`whitespace-nowrap px-2 py-2 ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</td>
-                    <td className="whitespace-nowrap px-2 py-2 text-terminal-muted">{getActivityLabel(row.ceActivity)} CE · {getActivityLabel(row.peActivity)} PE</td>
-                    <td className="whitespace-nowrap px-2 py-2 text-right text-terminal-muted">
-                      {formatLarge(row.peScore, numberFormatMode)} / {formatLarge(row.ceScore, numberFormatMode)}
-                    </td>
-                  </tr>
-                ))}
+                {strikeMovementRows.map((row) => {
+                  const previous = previousStrikeScores.get(row.strike);
+                  const peMoveDirection = previous ? compareScore(row.peScore, previous.pe) : null;
+                  const ceMoveDirection = previous ? compareScore(row.ceScore, previous.ce) : null;
+
+                  return (
+                    <tr key={row.strike} className={`border-b border-terminal-line/60 last:border-b-0 ${row.isAtm ? "bg-terminal-blue/10" : ""}`}>
+                      <td className="whitespace-nowrap px-2 py-2">
+                        <span className="text-xs uppercase text-terminal-muted">{row.distanceLabel}</span>{" "}
+                        <span className="font-semibold text-terminal-text">{formatStrike(row.strike)}</span>
+                      </td>
+                      <td className={`whitespace-nowrap px-2 py-2 font-semibold ${row.toneClass}`}>
+                        {formatSignedLarge(row.netScore, numberFormatMode)} <span className="text-terminal-muted">({row.netScorePercent}%)</span>
+                      </td>
+                      <td className={`whitespace-nowrap px-2 py-2 ${row.toneClass}`}>{row.bias}</td>
+                      <td className={`whitespace-nowrap px-2 py-2 ${row.trendToneClass}`}>{row.trendIcon} {row.trend}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-terminal-muted">{getActivityLabel(row.ceActivity)} CE · {getActivityLabel(row.peActivity)} PE</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right text-terminal-muted">
+                        {formatLarge(row.peScore, numberFormatMode)} <TrendTriangle direction={peMoveDirection} /> / {formatLarge(row.ceScore, numberFormatMode)} <TrendTriangle direction={ceMoveDirection} />
+                      </td>
+                    </tr>
+                  );
+                })}
                 {!strikeMovementRows.length ? (
                   <tr>
                     <td colSpan={6} className="px-2 py-4 text-center text-terminal-muted">No ATM strike score available.</td>
@@ -162,6 +171,43 @@ function MarketPulseCell({ pulse }: { pulse?: MarketPulse | null }) {
       </p>
     </div>
   );
+}
+
+type ScoreMoveDirection = "up" | "down" | "flat";
+
+function compareScore(current: number, previous: number): ScoreMoveDirection {
+  return current > previous ? "up" : current < previous ? "down" : "flat";
+}
+
+// Tracks each strike's PE/CE score from the previous render so the table can
+// show a filled triangle when a strike's number moves between refreshes.
+// Reads ref.current during render (still holding last render's values) then
+// updates it in an effect after paint - the standard "usePrevious" pattern -
+// so this never mutates a ref mid-render.
+function usePreviousStrikeScores(rows: { strike: number; peScore: number; ceScore: number }[]) {
+  const ref = useRef<Map<number, { pe: number; ce: number }>>(new Map());
+  const previous = ref.current;
+
+  useEffect(() => {
+    const next = new Map<number, { pe: number; ce: number }>();
+    rows.forEach((row) => next.set(row.strike, { pe: row.peScore, ce: row.ceScore }));
+    ref.current = next;
+  }, [rows]);
+
+  return previous;
+}
+
+// Filled triangle marking whether a strike's PE/CE score rose or fell since
+// the last refresh. Renders nothing on the first render (no prior value yet)
+// or when the score hasn't moved.
+function TrendTriangle({ direction }: { direction: ScoreMoveDirection | null }) {
+  if (direction === "up") {
+    return <span className="text-terminal-emerald" aria-label="Increasing" title="Increasing since last refresh">▲</span>;
+  }
+  if (direction === "down") {
+    return <span className="text-terminal-red" aria-label="Decreasing" title="Decreasing since last refresh">▼</span>;
+  }
+  return null;
 }
 
 function SummaryLine({ label, value }: { label: string; value: string }) {
