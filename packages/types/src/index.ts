@@ -143,6 +143,21 @@ export interface MarketBiasSummary {
 export type RecommendationCategory = "direction" | "strategy" | "timing" | "avoid";
 export type RecommendationPriority = "high" | "medium" | "low";
 
+// A concrete, tradable version of a recommendation's strike-level guidance:
+// which instrument, at what premium, with a stop-loss and target already
+// computed. See @option-decode/trading#buildTradeSetup for how these are
+// derived (strike-width-through-delta stop distance, 2:1 reward:risk
+// target) - it's a heuristic sized for a paper-trading dashboard, not a
+// pricing model, so treat it as a starting point rather than gospel.
+export interface RecommendedTradeSetup {
+  optionType: OptionType;
+  strike: number;
+  entryPrice: number;
+  stopLoss: number;
+  target: number;
+  riskRewardRatio: number;
+}
+
 export interface Recommendation {
   id: string;
   category: RecommendationCategory;
@@ -151,6 +166,7 @@ export interface Recommendation {
   explanation: string;
   action: string;
   confidence: number;
+  tradeSetup?: RecommendedTradeSetup;
 }
 
 export interface MarketPulsePoint {

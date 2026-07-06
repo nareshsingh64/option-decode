@@ -7,6 +7,15 @@ import { useState } from "react";
 // and included in the market-overview/replay-snapshot responses. This
 // component is a pure renderer — no business logic, so there's nothing
 // here that can drift from what the API actually decided.
+interface RecommendedTradeSetup {
+  optionType: "CE" | "PE";
+  strike: number;
+  entryPrice: number;
+  stopLoss: number;
+  target: number;
+  riskRewardRatio: number;
+}
+
 interface Recommendation {
   id: string;
   category: "direction" | "strategy" | "timing" | "avoid";
@@ -15,6 +24,7 @@ interface Recommendation {
   explanation: string;
   action: string;
   confidence: number;
+  tradeSetup?: RecommendedTradeSetup;
 }
 
 // Recommendations are recomputed fresh every time the market-overview API
@@ -88,6 +98,7 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
         <span className="shrink-0 text-[0.65rem] text-terminal-muted">{rec.confidence}%</span>
         <ChevronDown size={14} className={`shrink-0 text-terminal-muted transition-transform ${expanded ? "rotate-180" : ""}`} />
       </button>
+      {rec.tradeSetup ? <TradeSetupRow setup={rec.tradeSetup} /> : null}
       {expanded && (
         <div className="px-2.5 pb-2.5">
           <p className="text-xs leading-5 text-terminal-muted">{rec.explanation}</p>
@@ -97,6 +108,32 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Shown regardless of expand/collapse state - unlike the rationale text,
+// this is the actionable part the user asked to see up front: exactly
+// which instrument, at what premium, with the stop-loss/target already
+// worked out. See @option-decode/trading#buildTradeSetup for how these
+// numbers are derived (delta-based stop distance, 2:1 reward:risk) - it's
+// a heuristic starting point, not a guarantee, hence the note.
+function TradeSetupRow({ setup }: { setup: RecommendedTradeSetup }) {
+  return (
+    <div className="mx-2.5 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs">
+      <span className="font-semibold text-terminal-text">
+        {setup.strike.toLocaleString("en-IN")} {setup.optionType}
+      </span>
+      <span className="text-terminal-muted">
+        Entry <span className="font-medium text-terminal-text">₹{setup.entryPrice.toFixed(2)}</span>
+      </span>
+      <span className="text-terminal-red">
+        SL <span className="font-medium">₹{setup.stopLoss.toFixed(2)}</span>
+      </span>
+      <span className="text-terminal-emerald">
+        Target <span className="font-medium">₹{setup.target.toFixed(2)}</span>
+      </span>
+      <span className="text-terminal-muted">1:{setup.riskRewardRatio}</span>
     </div>
   );
 }

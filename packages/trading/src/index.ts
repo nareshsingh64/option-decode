@@ -1,4 +1,4 @@
-import type { MarketBiasSummary, OptionChainSnapshot, PaperOrderRequest, PressureScore, PressureZone, Recommendation, StrikeMovementRow, TradeInterpretation } from "@option-decode/types";
+import type { MarketBiasSummary, OptionChainSnapshot, OptionType, PaperOrderRequest, PressureScore, PressureZone, Recommendation, RecommendedTradeSetup, StrikeMovementRow, TradeInterpretation } from "@option-decode/types";
 import { randomUUID } from "node:crypto";
 
 export interface PaperOrder extends PaperOrderRequest {
@@ -40,6 +40,72 @@ const PCR_CONTEXT_TEXT: Record<NonNullable<MarketBiasSummary["pcrContext"]>, str
 
 function strike(value: number): string {
   return value.toLocaleString("en-IN");
+}
+
+// Stop-loss distance (in premium terms) is clamped to this % band of entry
+// premium. Delta-implied distance is only a linear approximation of how the
+// premium moves, and gets unreliable at the extremes (deep ITM/OTM strikes,
+// or very low-delta far strikes producing a near-zero stop) - the clamp
+// keeps the suggested stop within a range that's actually usable as a real
+// order price.
+const STOP_LOSS_MIN_PERCENT = 0.1;
+const STOP_LOSS_MAX_PERCENT = 0.3;
+const REWARD_RISK_RATIO = 2;
+// Used only when a tick is missing delta (shouldn't normally happen once a
+// contract has any trading activity) - a moderate near-the-money default
+// rather than skipping the trade setup entirely.
+const DEFAULT_DELTA_FALLBACK = 0.4;
+
+function roundToTick(value: number, tickSize = 0.05): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Number((Math.round(value / tickSize) * tickSize).toFixed(2));
+}
+
+// The distance between adjacent listed strikes - used as the "one level
+// against you" distance for sizing a stop-loss. Falls back to 50 (the
+// common NIFTY strike gap) if the chain doesn't have enough strikes to
+// measure it, which should only happen with malformed/incomplete snapshot
+// data.
+function getStrikeInterval(ticks: { strikePrice: number }[]): number {
+  const strikes = [...new Set(ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
+  for (let i = 1; i < strikes.length; i += 1) {
+    const diff = strikes[i] - strikes[i - 1];
+    if (diff > 0) {
+      return diff;
+    }
+  }
+  return 50;
+}
+
+/**
+ * Turns a directional recommendation's chosen strike into a concrete,
+ * tradable entry/stop-loss/target - see the RecommendedTradeSetup doc
+ * comment in @option-decode/types for the reasoning. Returns undefined
+ * when the strike has no live premium to anchor an entry to (e.g. a
+ * stale/incomplete snapshot), rather than fabricate a price.
+ */
+function buildTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, strikePrice: number): RecommendedTradeSetup | undefined {
+  const tick = snapshot.ticks.find((candidate) => candidate.strikePrice === strikePrice && candidate.optionType === optionType);
+  if (!tick?.lastPrice || tick.lastPrice <= 0) {
+    return undefined;
+  }
+
+  const entryPrice = tick.lastPrice;
+  const delta = Math.abs(tick.delta ?? DEFAULT_DELTA_FALLBACK) || DEFAULT_DELTA_FALLBACK;
+  const strikeInterval = getStrikeInterval(snapshot.ticks);
+  const rawStopDistance = delta * strikeInterval;
+  const stopDistance = Math.min(entryPrice * STOP_LOSS_MAX_PERCENT, Math.max(entryPrice * STOP_LOSS_MIN_PERCENT, rawStopDistance));
+
+  return {
+    optionType,
+    strike: strikePrice,
+    entryPrice: roundToTick(entryPrice),
+    stopLoss: roundToTick(Math.max(0.05, entryPrice - stopDistance)),
+    target: roundToTick(entryPrice + stopDistance * REWARD_RISK_RATIO),
+    riskRewardRatio: REWARD_RISK_RATIO
+  };
 }
 
 /** Short rationale clause built from the raw market-bias fields — the
@@ -99,7 +165,8 @@ export function calculateTradeRecommendations(
       action: support
         ? `Consider buying CE at or above ${strike(support.strikePrice)} strike. Avoid selling PE below this support level.`
         : "Consider CE buying strategies on dips. Avoid short CE positions against this pressure.",
-      confidence: Math.min(95, 55 + convictionScore / 2)
+      confidence: Math.min(95, 55 + convictionScore / 2),
+      tradeSetup: buildTradeSetup(snapshot, "CE", support?.strikePrice ?? atm)
     });
   }
 
@@ -113,7 +180,8 @@ export function calculateTradeRecommendations(
       action: resistance
         ? `Consider buying PE at or below ${strike(resistance.strikePrice)} strike. Avoid selling CE above this resistance.`
         : "Consider PE buying strategies on rallies. Avoid short PE positions against this resistance.",
-      confidence: Math.min(95, 55 + convictionScore / 2)
+      confidence: Math.min(95, 55 + convictionScore / 2),
+      tradeSetup: buildTradeSetup(snapshot, "PE", resistance?.strikePrice ?? atm)
     });
   }
 
@@ -164,7 +232,8 @@ export function calculateTradeRecommendations(
       title: `Strong support at ${strike(support.strikePrice)}`,
       explanation: `Spot is only ${supportDist.toFixed(0)} pts above major PE support at ${strike(support.strikePrice)} (score: ${strike(support.score)} lots). PE writers are actively defending this level.`,
       action: `Buy CE at or near ${strike(support.strikePrice)} for a bounce trade. Stop loss below ${strike(support.strikePrice)}. Avoid shorting CE here.`,
-      confidence: 75
+      confidence: 75,
+      tradeSetup: buildTradeSetup(snapshot, "CE", support.strikePrice)
     });
   }
 
@@ -176,7 +245,8 @@ export function calculateTradeRecommendations(
       title: `Strong resistance at ${strike(resistance.strikePrice)}`,
       explanation: `Spot is only ${resistanceDist.toFixed(0)} pts below major CE resistance at ${strike(resistance.strikePrice)} (score: ${strike(resistance.score)} lots). Heavy call writing is capping upside.`,
       action: `Buy PE near ${strike(resistance.strikePrice)} for a rejection trade. Stop loss above ${strike(resistance.strikePrice)}. Avoid buying CE unless resistance breaks on volume.`,
-      confidence: 75
+      confidence: 75,
+      tradeSetup: buildTradeSetup(snapshot, "PE", resistance.strikePrice)
     });
   }
 
