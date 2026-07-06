@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useMemo, useRef } from "react";
 import type { MarketPulse } from "@option-decode/types";
 import { TradeRecommendations } from "./trade-recommendations";
 
@@ -40,7 +40,7 @@ export function DashboardMainPanel({
   tradeInterpretation,
   showRecommendations = true
 }: DashboardMainPanelProps) {
-  const previousStrikeScores = usePreviousStrikeScores(strikeMovementRows);
+  const strikeTrends = useStrikeScoreTrends(strikeMovementRows);
 
   return (
     <section className="grid gap-4">
@@ -75,9 +75,9 @@ export function DashboardMainPanel({
               </thead>
               <tbody>
                 {strikeMovementRows.map((row) => {
-                  const previous = previousStrikeScores.get(row.strike);
-                  const peMoveDirection = previous ? compareScore(row.peScore, previous.pe) : null;
-                  const ceMoveDirection = previous ? compareScore(row.ceScore, previous.ce) : null;
+                  const trend = strikeTrends.get(row.strike);
+                  const peMoveDirection = trend?.peDirection ?? "flat";
+                  const ceMoveDirection = trend?.ceDirection ?? "flat";
 
                   return (
                     <tr key={row.strike} className={`border-b border-terminal-line/60 last:border-b-0 ${row.isAtm ? "bg-terminal-blue/10" : ""}`}>
@@ -175,37 +175,55 @@ function MarketPulseCell({ pulse }: { pulse?: MarketPulse | null }) {
 
 type ScoreMoveDirection = "up" | "down" | "flat";
 
-function compareScore(current: number, previous: number): ScoreMoveDirection {
-  return current > previous ? "up" : current < previous ? "down" : "flat";
+interface StrikeTrendState {
+  pe: number;
+  peDirection: ScoreMoveDirection;
+  ce: number;
+  ceDirection: ScoreMoveDirection;
 }
 
-// Tracks each strike's PE/CE score from the previous render so the table can
-// show a filled triangle when a strike's number moves between refreshes.
-// Reads ref.current during render (still holding last render's values) then
-// updates it in an effect after paint - the standard "usePrevious" pattern -
-// so this never mutates a ref mid-render.
-function usePreviousStrikeScores(rows: { strike: number; peScore: number; ceScore: number }[]) {
-  const ref = useRef<Map<number, { pe: number; ce: number }>>(new Map());
-  const previous = ref.current;
+// Tracks, per strike, which way its PE/CE score last moved - and keeps
+// showing that direction even after the score stops changing, rather than
+// only flashing a triangle for the one render where the number actually
+// moved. A plain "did it change since last render" comparison made the
+// arrow disappear a couple seconds later once the next refresh landed with
+// the same value, which read as a bug ("appears then disappears"). Here the
+// stored direction only gets overwritten when the score actually moves
+// again (up or down); an unchanged score keeps whatever direction it had.
+//
+// Stored in a ref (not state) and mutated inside useMemo: this is the
+// "remember across renders, recompute only when inputs change" pattern -
+// intentional here because we want the derived direction map available
+// synchronously on the same render as the new row data, not one render
+// behind (as a useEffect-based update would give us).
+function useStrikeScoreTrends(rows: { strike: number; peScore: number; ceScore: number }[]) {
+  const ref = useRef<Map<number, StrikeTrendState>>(new Map());
 
-  useEffect(() => {
-    const next = new Map<number, { pe: number; ce: number }>();
-    rows.forEach((row) => next.set(row.strike, { pe: row.peScore, ce: row.ceScore }));
+  return useMemo(() => {
+    const previous = ref.current;
+    const next = new Map<number, StrikeTrendState>();
+
+    rows.forEach((row) => {
+      const prior = previous.get(row.strike);
+      const peDirection: ScoreMoveDirection = !prior || row.peScore === prior.pe ? (prior?.peDirection ?? "flat") : row.peScore > prior.pe ? "up" : "down";
+      const ceDirection: ScoreMoveDirection = !prior || row.ceScore === prior.ce ? (prior?.ceDirection ?? "flat") : row.ceScore > prior.ce ? "up" : "down";
+      next.set(row.strike, { pe: row.peScore, peDirection, ce: row.ceScore, ceDirection });
+    });
+
     ref.current = next;
+    return next;
   }, [rows]);
-
-  return previous;
 }
 
-// Filled triangle marking whether a strike's PE/CE score rose or fell since
-// the last refresh. Renders nothing on the first render (no prior value yet)
-// or when the score hasn't moved.
-function TrendTriangle({ direction }: { direction: ScoreMoveDirection | null }) {
+// Filled triangle showing which way a strike's PE/CE score last moved.
+// Stays on screen (rather than fading after one render) until the score
+// moves the other way - see useStrikeScoreTrends above.
+function TrendTriangle({ direction }: { direction: ScoreMoveDirection }) {
   if (direction === "up") {
-    return <span className="text-terminal-emerald" aria-label="Increasing" title="Increasing since last refresh">▲</span>;
+    return <span className="text-terminal-emerald" aria-label="Increasing" title="Increasing">▲</span>;
   }
   if (direction === "down") {
-    return <span className="text-terminal-red" aria-label="Decreasing" title="Decreasing since last refresh">▼</span>;
+    return <span className="text-terminal-red" aria-label="Decreasing" title="Decreasing">▼</span>;
   }
   return null;
 }
