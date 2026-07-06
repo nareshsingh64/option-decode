@@ -156,6 +156,16 @@ export interface RecommendedTradeSetup {
   stopLoss: number;
   target: number;
   riskRewardRatio: number;
+  // Underlying spot level at which P&L = 0 if held to expiry: the textbook
+  // strike ± premium number every broker quotes.
+  breakevenAtExpiry: number;
+  // Underlying spot level at which P&L = 0 RIGHT NOW, i.e. accounting for
+  // the time value still left in the premium — computed via a Black-Scholes
+  // model (see @option-decode/trading/option-pricing). Always a smaller
+  // required move than breakevenAtExpiry while time remains, since time
+  // value covers part of the distance; converges to breakevenAtExpiry as
+  // expiry approaches.
+  breakevenToday: number;
 }
 
 export interface Recommendation {

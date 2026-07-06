@@ -12,6 +12,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "baseUrl": ".",
     "paths": {
       "@option-decode/analytics": ["packages/analytics/src/index.ts"],

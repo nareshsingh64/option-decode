@@ -14,6 +14,8 @@ interface RecommendedTradeSetup {
   stopLoss: number;
   target: number;
   riskRewardRatio: number;
+  breakevenAtExpiry: number;
+  breakevenToday: number;
 }
 
 interface Recommendation {
@@ -120,20 +122,30 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
 // a heuristic starting point, not a guarantee, hence the note.
 function TradeSetupRow({ setup }: { setup: RecommendedTradeSetup }) {
   return (
-    <div className="mx-2.5 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs">
-      <span className="font-semibold text-terminal-text">
-        {setup.strike.toLocaleString("en-IN")} {setup.optionType}
-      </span>
-      <span className="text-terminal-muted">
-        Entry <span className="font-medium text-terminal-text">₹{setup.entryPrice.toFixed(2)}</span>
-      </span>
-      <span className="text-terminal-red">
-        SL <span className="font-medium">₹{setup.stopLoss.toFixed(2)}</span>
-      </span>
-      <span className="text-terminal-emerald">
-        Target <span className="font-medium">₹{setup.target.toFixed(2)}</span>
-      </span>
-      <span className="text-terminal-muted">1:{setup.riskRewardRatio}</span>
+    <div className="mx-2.5 mb-2 rounded border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-semibold text-terminal-text">
+          {setup.strike.toLocaleString("en-IN")} {setup.optionType}
+        </span>
+        <span className="text-terminal-muted">
+          Entry <span className="font-medium text-terminal-text">₹{setup.entryPrice.toFixed(2)}</span>
+        </span>
+        <span className="text-terminal-red">
+          SL <span className="font-medium">₹{setup.stopLoss.toFixed(2)}</span>
+        </span>
+        <span className="text-terminal-emerald">
+          Target <span className="font-medium">₹{setup.target.toFixed(2)}</span>
+        </span>
+        <span className="text-terminal-muted">1:{setup.riskRewardRatio}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-terminal-muted">
+        <span>
+          Breakeven today <span className="font-medium text-terminal-text">₹{setup.breakevenToday.toFixed(2)}</span>
+        </span>
+        <span>
+          At expiry <span className="font-medium text-terminal-text">₹{setup.breakevenAtExpiry.toFixed(2)}</span>
+        </span>
+      </div>
     </div>
   );
 }

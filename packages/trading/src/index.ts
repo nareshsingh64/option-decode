@@ -1,5 +1,6 @@
 import type { MarketBiasSummary, OptionChainSnapshot, OptionType, PaperOrderRequest, PressureScore, PressureZone, Recommendation, RecommendedTradeSetup, StrikeMovementRow, TradeInterpretation } from "@option-decode/types";
 import { randomUUID } from "node:crypto";
+import { blackScholesDelta, DEFAULT_IMPLIED_VOLATILITY, DEFAULT_RISK_FREE_RATE, getYearsToExpiry, solveBreakevenSpot } from "./option-pricing.ts";
 
 export interface PaperOrder extends PaperOrderRequest {
   id: string;
@@ -81,8 +82,8 @@ function getStrikeInterval(ticks: { strikePrice: number }[]): number {
 
 /**
  * Turns a directional recommendation's chosen strike into a concrete,
- * tradable entry/stop-loss/target - see the RecommendedTradeSetup doc
- * comment in @option-decode/types for the reasoning. Returns undefined
+ * tradable entry/stop-loss/target/breakeven - see the RecommendedTradeSetup
+ * doc comment in @option-decode/types for the reasoning. Returns undefined
  * when the strike has no live premium to anchor an entry to (e.g. a
  * stale/incomplete snapshot), rather than fabricate a price.
  */
@@ -93,10 +94,25 @@ function buildTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, 
   }
 
   const entryPrice = tick.lastPrice;
-  const delta = Math.abs(tick.delta ?? DEFAULT_DELTA_FALLBACK) || DEFAULT_DELTA_FALLBACK;
+  const asOfMs = Date.parse(snapshot.snapshotTime);
+  const yearsToExpiry = getYearsToExpiry(snapshot.expiry, Number.isFinite(asOfMs) ? asOfMs : Date.now());
+  const volatility = (tick.impliedVolatility ?? DEFAULT_IMPLIED_VOLATILITY * 100) / 100;
+
+  // Prefer the broker feed's own delta; fall back to the Black-Scholes
+  // value (computed from the tick's own IV) rather than a flat guess -
+  // this only degrades to a flat guess in the very unlikely case that both
+  // are unusable (e.g. a malformed spot/strike/vol produces a non-finite
+  // result).
+  const modelDelta = blackScholesDelta(optionType, snapshot.spotPrice, strikePrice, yearsToExpiry, DEFAULT_RISK_FREE_RATE, volatility);
+  const rawDelta = tick.delta ?? modelDelta;
+  const delta = Math.abs(Number.isFinite(rawDelta) ? rawDelta : DEFAULT_DELTA_FALLBACK) || DEFAULT_DELTA_FALLBACK;
+
   const strikeInterval = getStrikeInterval(snapshot.ticks);
   const rawStopDistance = delta * strikeInterval;
   const stopDistance = Math.min(entryPrice * STOP_LOSS_MAX_PERCENT, Math.max(entryPrice * STOP_LOSS_MIN_PERCENT, rawStopDistance));
+
+  const breakevenAtExpiry = optionType === "CE" ? strikePrice + entryPrice : strikePrice - entryPrice;
+  const solvedBreakevenToday = solveBreakevenSpot(optionType, strikePrice, entryPrice, yearsToExpiry, DEFAULT_RISK_FREE_RATE, volatility);
 
   return {
     optionType,
@@ -104,7 +120,11 @@ function buildTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, 
     entryPrice: roundToTick(entryPrice),
     stopLoss: roundToTick(Math.max(0.05, entryPrice - stopDistance)),
     target: roundToTick(entryPrice + stopDistance * REWARD_RISK_RATIO),
-    riskRewardRatio: REWARD_RISK_RATIO
+    riskRewardRatio: REWARD_RISK_RATIO,
+    breakevenAtExpiry: roundToTick(Math.max(0.05, breakevenAtExpiry)),
+    // Falls back to the at-expiry number if the solver couldn't bracket a
+    // root (extreme/degenerate inputs) rather than show nothing.
+    breakevenToday: roundToTick(Math.max(0.05, solvedBreakevenToday ?? breakevenAtExpiry))
   };
 }
 

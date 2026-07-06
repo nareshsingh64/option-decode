@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { MarketBiasSummary, OptionChainSnapshot, OptionContractTick, PressureScore, StrikeMovementRow, TradeInterpretation } from "@option-decode/types";
 import { calculateTradeRecommendations } from "./index.ts";
+import { blackScholesDelta, DEFAULT_IMPLIED_VOLATILITY, DEFAULT_RISK_FREE_RATE, getYearsToExpiry } from "./option-pricing.ts";
 
 function tick(overrides: Partial<OptionContractTick> & Pick<OptionContractTick, "optionType" | "strikePrice">): OptionContractTick {
   return {
@@ -112,6 +113,13 @@ test("bullish-bias recommendation includes a trade setup anchored to the support
   assert.equal(setup.stopLoss, 75);
   assert.equal(setup.target, 150);
   assert.equal(setup.riskRewardRatio, 2);
+
+  // Breakeven: the textbook expiry number is strike + premium exactly...
+  assert.equal(setup.breakevenAtExpiry, supportStrike + 100);
+  // ...while today's (time-value-aware) breakeven should require a smaller
+  // upward move, since there's over three weeks of time value left in the
+  // premium (snapshot is 2026-07-01, expiry 2026-07-31).
+  assert.ok(setup.breakevenToday < setup.breakevenAtExpiry, `expected breakevenToday (${setup.breakevenToday}) < breakevenAtExpiry (${setup.breakevenAtExpiry})`);
 });
 
 test("trade setup stop distance is clamped to at least 10% of premium when delta is very low", () => {
@@ -138,15 +146,23 @@ test("trade setup stop distance is clamped to at most 30% of premium when delta 
   assert.equal(setup.target, 160);
 });
 
-test("trade setup falls back to a moderate default delta when the tick has none", () => {
+test("trade setup falls back to the Black-Scholes model delta (from the tick's IV) when the tick has no delta of its own", () => {
   const ticks = chainTicks.map((candidate) => (candidate.optionType === "CE" && candidate.strikePrice === supportStrike ? { ...candidate, delta: undefined } : candidate));
+  const snap = snapshot(ticks, 24010, supportStrike);
 
-  const recs = calculateTradeRecommendations(snapshot(ticks, 24010, supportStrike), bullishPressure, bullishMarketBias(), [strikeMovementRow({ netScore: 5 })], noInterpretation);
-
+  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow({ netScore: 5 })], noInterpretation);
   const setup = recs.find((candidate) => candidate.id === "bullish-bias")!.tradeSetup!;
-  // Fallback delta 0.4 * strike interval 50 = 20 points, inside the clamp band.
-  assert.equal(setup.stopLoss, 80);
-  assert.equal(setup.target, 140);
+
+  // No delta and no impliedVolatility on this tick, so buildTradeSetup
+  // should fall back to a model delta computed from DEFAULT_IMPLIED_VOLATILITY
+  // - independently recomputed here rather than hardcoded, so this test
+  // actually verifies the fallback wiring rather than just a magic number.
+  const yearsToExpiry = getYearsToExpiry(snap.expiry, Date.parse(snap.snapshotTime));
+  const expectedDelta = Math.abs(blackScholesDelta("CE", snap.spotPrice, supportStrike, yearsToExpiry, DEFAULT_RISK_FREE_RATE, DEFAULT_IMPLIED_VOLATILITY));
+  const expectedStopDistance = Math.min(100 * 0.3, Math.max(100 * 0.1, expectedDelta * 50));
+
+  assert.ok(Math.abs(setup.stopLoss - (100 - expectedStopDistance)) < 0.05, `expected stopLoss ~${100 - expectedStopDistance}, got ${setup.stopLoss}`);
+  assert.ok(Math.abs(setup.target - (100 + expectedStopDistance * 2)) < 0.05, `expected target ~${100 + expectedStopDistance * 2}, got ${setup.target}`);
 });
 
 test("recommendation omits tradeSetup (without throwing) when the strike has no live premium", () => {
