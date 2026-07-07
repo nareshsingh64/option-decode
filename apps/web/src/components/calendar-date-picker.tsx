@@ -1,5 +1,6 @@
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Generic calendar-style date picker used everywhere the dashboard lets
@@ -14,6 +15,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
  * control in this app already works. When `name` is set, it also renders a
  * hidden input so it can drop into an existing native <form> (see
  * market-controls.tsx) without changing how that form is submitted/read.
+ *
+ * The popover itself is rendered through a portal into document.body
+ * (positioned via the trigger button's own bounding rect) rather than as a
+ * plain `position: absolute` child. This picker now also gets used inside
+ * the Paper Order Ticket, whose table sits in an `overflow-x-auto`
+ * wrapper - and setting overflow-x on an element makes the browser clip
+ * overflow-y too (a standard CSS behavior, not a bug in that wrapper), so
+ * a plain absolutely-positioned popover got silently clipped/hidden there.
+ * Escaping via a portal sidesteps that regardless of which ancestor might
+ * clip in the future.
  */
 interface CalendarDatePickerProps {
   availableDates: string[];
@@ -50,6 +61,9 @@ function formatDisplayDate(value: string, placeholder: string): string {
 export function CalendarDatePicker({ availableDates, value, onChange, name, disabled, placeholder = "Select a date", emptyLabel = "No dates available yet." }: CalendarDatePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPosition, setPopoverPosition] = useState<{ top: number; left: number } | null>(null);
 
   const availableSet = useMemo(() => new Set(availableDates), [availableDates]);
   const sortedDates = useMemo(() => [...availableDates].sort(), [availableDates]);
@@ -72,22 +86,58 @@ export function CalendarDatePicker({ availableDates, value, onChange, name, disa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
+  // Popover is portaled to document.body (see component doc comment above),
+  // so it's no longer a DOM descendant of containerRef - a click inside it
+  // has to be excluded separately or it would look like an "outside" click
+  // and close itself immediately.
   useEffect(() => {
     if (!isOpen) return;
     function handleClickOutside(event: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target) || popoverRef.current?.contains(target)) {
+        return;
       }
+      setIsOpen(false);
     }
     function handleEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setIsOpen(false);
     }
+    // The popover's position is computed once, on open (below). Rather than
+    // tracking every scroll/resize to keep it glued to the trigger, just
+    // close it if the page scrolls or resizes while it's open - simpler,
+    // and avoids ever showing a stale-positioned popover. `capture: true`
+    // is needed to hear scroll events from nested scrollable containers
+    // (like the Paper Order Ticket's horizontally-scrolling table), since
+    // scroll events don't bubble.
+    function handleScrollOrResize() {
+      setIsOpen(false);
+    }
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
+    window.addEventListener("scroll", handleScrollOrResize, true);
+    window.addEventListener("resize", handleScrollOrResize);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("scroll", handleScrollOrResize, true);
+      window.removeEventListener("resize", handleScrollOrResize);
     };
+  }, [isOpen]);
+
+  // Computes where the portaled popover should render, anchored to the
+  // trigger button's current position, clamped so it can't run off the
+  // right edge of the viewport.
+  useLayoutEffect(() => {
+    if (!isOpen || !triggerRef.current) {
+      setPopoverPosition(null);
+      return;
+    }
+    const rect = triggerRef.current.getBoundingClientRect();
+    const popoverWidth = 256; // matches w-64
+    setPopoverPosition({
+      top: rect.bottom + 4,
+      left: Math.min(rect.left, window.innerWidth - popoverWidth - 8)
+    });
   }, [isOpen]);
 
   const monthStart = new Date(viewYear, viewMonth, 1);
@@ -125,6 +175,7 @@ export function CalendarDatePicker({ availableDates, value, onChange, name, disa
     <div className="relative" ref={containerRef}>
       {name ? <input type="hidden" name={name} value={value} /> : null}
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         onClick={() => setIsOpen((open) => !open)}
@@ -134,47 +185,54 @@ export function CalendarDatePicker({ availableDates, value, onChange, name, disa
         <span className="truncate">{formatDisplayDate(value, placeholder)}</span>
       </button>
 
-      {isOpen ? (
-        <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded border border-terminal-line bg-terminal-panel p-3 shadow-lg">
-          <div className="flex items-center justify-between">
-            <button type="button" onClick={() => goToMonth(-1)} disabled={!canGoPrev} className="grid h-7 w-7 place-items-center rounded text-terminal-muted transition hover:bg-white/[0.06] hover:text-terminal-text disabled:opacity-30" aria-label="Previous month">
-              <ChevronLeft size={16} />
-            </button>
-            <span className="text-sm font-semibold text-terminal-text">{monthStart.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span>
-            <button type="button" onClick={() => goToMonth(1)} disabled={!canGoNext} className="grid h-7 w-7 place-items-center rounded text-terminal-muted transition hover:bg-white/[0.06] hover:text-terminal-text disabled:opacity-30" aria-label="Next month">
-              <ChevronRight size={16} />
-            </button>
-          </div>
-          <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[0.65rem] uppercase text-terminal-muted">
-            {WEEKDAY_LABELS.map((weekday) => (
-              <span key={weekday}>{weekday}</span>
-            ))}
-          </div>
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {cells.map((date, index) => {
-              if (!date) return <span key={`blank-${index}`} />;
-              const iso = toIsoDate(date);
-              const isAvailable = availableSet.has(iso);
-              const isSelected = iso === value;
-              return (
-                <button
-                  key={iso}
-                  type="button"
-                  disabled={!isAvailable}
-                  onClick={() => selectDate(date)}
-                  className={
-                    "grid h-7 w-7 place-items-center rounded text-xs transition " +
-                    (isSelected ? "bg-terminal-blue font-semibold text-white" : isAvailable ? "text-terminal-text hover:bg-terminal-blue/20" : "cursor-not-allowed text-terminal-muted/30")
-                  }
-                >
-                  {date.getDate()}
+      {isOpen && popoverPosition
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              style={{ position: "fixed", top: popoverPosition.top, left: popoverPosition.left }}
+              className="z-50 w-64 rounded border border-terminal-line bg-terminal-panel p-3 shadow-lg"
+            >
+              <div className="flex items-center justify-between">
+                <button type="button" onClick={() => goToMonth(-1)} disabled={!canGoPrev} className="grid h-7 w-7 place-items-center rounded text-terminal-muted transition hover:bg-white/[0.06] hover:text-terminal-text disabled:opacity-30" aria-label="Previous month">
+                  <ChevronLeft size={16} />
                 </button>
-              );
-            })}
-          </div>
-          {!sortedDates.length ? <p className="mt-2 text-xs text-terminal-muted">{emptyLabel}</p> : null}
-        </div>
-      ) : null}
+                <span className="text-sm font-semibold text-terminal-text">{monthStart.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span>
+                <button type="button" onClick={() => goToMonth(1)} disabled={!canGoNext} className="grid h-7 w-7 place-items-center rounded text-terminal-muted transition hover:bg-white/[0.06] hover:text-terminal-text disabled:opacity-30" aria-label="Next month">
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[0.65rem] uppercase text-terminal-muted">
+                {WEEKDAY_LABELS.map((weekday) => (
+                  <span key={weekday}>{weekday}</span>
+                ))}
+              </div>
+              <div className="mt-1 grid grid-cols-7 gap-1">
+                {cells.map((date, index) => {
+                  if (!date) return <span key={`blank-${index}`} />;
+                  const iso = toIsoDate(date);
+                  const isAvailable = availableSet.has(iso);
+                  const isSelected = iso === value;
+                  return (
+                    <button
+                      key={iso}
+                      type="button"
+                      disabled={!isAvailable}
+                      onClick={() => selectDate(date)}
+                      className={
+                        "grid h-7 w-7 place-items-center rounded text-xs transition " +
+                        (isSelected ? "bg-terminal-blue font-semibold text-white" : isAvailable ? "text-terminal-text hover:bg-terminal-blue/20" : "cursor-not-allowed text-terminal-muted/30")
+                      }
+                    >
+                      {date.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+              {!sortedDates.length ? <p className="mt-2 text-xs text-terminal-muted">{emptyLabel}</p> : null}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }

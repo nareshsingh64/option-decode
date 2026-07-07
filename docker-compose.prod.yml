@@ -45,16 +45,22 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      # MySQL now runs natively on the EC2 host instead of in a container.
-      # DB_HOST_GATEWAY is this compose project's bridge network gateway IP
-      # (docker network inspect option-decode_default | grep Gateway) - native
-      # MySQL is bound to that address specifically. We use the literal IP
-      # rather than host.docker.internal/host-gateway because host-gateway
-      # resolved to the *default* docker0 bridge (172.17.0.1) instead of this
-      # project's custom network, and MySQL isn't listening there. Override
-      # via .env.production if the network is ever recreated with a different
-      # subnet.
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${DB_HOST_GATEWAY:-172.18.0.1}:3306/${MYSQL_DATABASE}
+      # DATABASE_URL is intentionally NOT set here - it comes from
+      # .env.production (via env_file: above) as a single complete
+      # connection string. It previously was reconstructed here from
+      # ${MYSQL_USER}/${MYSQL_PASSWORD}/${MYSQL_DATABASE}/${DB_HOST_GATEWAY},
+      # which required a SEPARATE compose-level .env file (distinct from
+      # .env.production) to supply those - `environment:` entries always
+      # override `env_file:` ones, so whenever that separate .env file was
+      # missing/stale on the host, this silently overrode the correct
+      # DATABASE_URL with an empty-credentials one, and only broke on the
+      # next full container recreate. MySQL runs natively on the EC2 host
+      # (not in a container); if the docker network's bridge subnet ever
+      # changes, update the host in .env.production's DATABASE_URL
+      # directly (find it via `docker network inspect option-decode_default
+      # | grep Gateway` - host.docker.internal/host-gateway doesn't work
+      # here since it resolves to the *default* docker0 bridge rather than
+      # this project's custom network).
       REDIS_URL: redis://redis:6379/0
     expose:
       - "4000"
@@ -79,7 +85,9 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${DB_HOST_GATEWAY:-172.18.0.1}:3306/${MYSQL_DATABASE}
+      # See the same DATABASE_URL note under the api service above - it
+      # comes from .env.production via env_file:, not from a compose-level
+      # reconstruction.
       REDIS_URL: redis://redis:6379/0
     depends_on:
       redis:

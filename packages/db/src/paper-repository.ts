@@ -372,6 +372,34 @@ export async function updatePaperPositionRisk(positionId: string, user: AuthUser
   return getPaperSummary(user, client);
 }
 
+// Which expiries (for a given underlying) currently have a paper order or
+// position depending on live price data - i.e. every expiry besides
+// whichever one the worker's normal capture loop already tracks (the
+// underlying's nearest expiry). Users can now place a paper trade against
+// ANY expiry via the Paper Order Ticket's expiry picker, but the worker
+// only ever fetched/stored live option-chain data for the nearest expiry -
+// so a pending order or open position sitting on a later expiry had no
+// live tick data to check against, showed no LTP, and could never fill.
+// The worker calls this once per underlying per capture cycle and fetches
+// live data for each expiry this returns too, alongside its usual nearest
+// expiry.
+export async function listExpiriesNeedingLiveData(underlyingSymbol: string, client: PrismaClient = prisma): Promise<string[]> {
+  const [pendingOrders, openPositions] = await Promise.all([
+    client.paperOrder.findMany({
+      where: { underlyingSymbol, status: "PENDING" },
+      select: { expiryLabel: true },
+      distinct: ["expiryLabel"]
+    }),
+    client.paperPosition.findMany({
+      where: { underlyingSymbol, status: "OPEN" },
+      select: { expiryLabel: true },
+      distinct: ["expiryLabel"]
+    })
+  ]);
+
+  return [...new Set([...pendingOrders.map((order) => order.expiryLabel), ...openPositions.map((position) => position.expiryLabel)])];
+}
+
 export async function monitorPaperTradingForSnapshot(underlyingSymbol: string, expiryLabel: string, client: PrismaClient = prisma) {
   const orderWhere: Prisma.PaperOrderWhereInput = {
     ...realUserPaperWhere(),

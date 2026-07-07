@@ -1,6 +1,6 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, listActivePushSubscriptions, monitorPaperTradingForSnapshot, pruneMarketDataBefore, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, saveOptionChainSnapshot } from "@option-decode/db";
 import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { MarketAlert, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
@@ -119,6 +119,47 @@ async function captureOnce() {
       expiry: snapshot.expiry,
       ticks: snapshot.ticks.length
     });
+
+    await captureExtraExpiriesForPaperTrading(underlying, expiry, quoteOverrides.get(underlying.key));
+  }
+}
+
+// Paper trades can now target any expiry (see the Paper Order Ticket's
+// expiry picker), not just this underlying's nearest one - but the loop
+// above only ever fetches/stores that nearest expiry. Without this, a
+// pending order or open position sitting on a later expiry would have no
+// live tick data to check against: no LTP to show, and no way for it to
+// ever fill (refreshPendingPaperOrders/refreshOpenPositionPrices both read
+// straight from the OptionContractTick table). So for every OTHER expiry
+// that currently has a pending order or open position, fetch and store its
+// live chain too, then run the same paper-trading monitor pass on it.
+async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinition, alreadyCapturedExpiry: string, spotPriceOverride?: number) {
+  let extraExpiries: string[];
+  try {
+    extraExpiries = await listExpiriesNeedingLiveData(underlying.key);
+  } catch (error) {
+    console.warn("Unable to list expiries needing live data for paper trading", { underlying: underlying.key, error });
+    return;
+  }
+
+  for (const expiry of extraExpiries) {
+    if (expiry === alreadyCapturedExpiry) {
+      continue;
+    }
+
+    try {
+      const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride });
+      const snapshotId = await saveOptionChainSnapshot(snapshot);
+      await monitorPaperTrading(snapshot);
+      console.log("Saved extra Dhan market snapshot for open paper trading activity", {
+        snapshotId,
+        underlying: snapshot.underlyingSymbol,
+        expiry: snapshot.expiry,
+        ticks: snapshot.ticks.length
+      });
+    } catch (error) {
+      console.warn("Unable to capture extra expiry for open paper trading activity", { underlying: underlying.key, expiry, error });
+    }
   }
 }
 
