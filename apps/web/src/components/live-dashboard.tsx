@@ -443,6 +443,16 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [orderAction, setOrderAction] = useState<"BUY" | "SELL">("BUY");
   const [orderOptionType, setOrderOptionType] = useState<"CE" | "PE">("CE");
   const [orderStrike, setOrderStrike] = useState(String(initialOverview.snapshot.atmStrike));
+  // Lets a paper trade target a different expiry (e.g. next week) than
+  // whatever the main dashboard currently has selected. Defaults to the
+  // dashboard's expiry; when the user picks a different one, a separate
+  // option-chain snapshot is fetched just for the order ticket (see the
+  // effect below) so the rest of the dashboard keeps showing the originally
+  // selected expiry undisturbed.
+  const [orderExpiry, setOrderExpiry] = useState(initialOverview.selectedExpiry);
+  const [orderExpiryOverview, setOrderExpiryOverview] = useState<MarketOverview | null>(null);
+  const [orderExpiryError, setOrderExpiryError] = useState<string | null>(null);
+  const lastOrderUnderlyingRef = useRef(initialOverview.selectedUnderlying);
   const [orderEntry, setOrderEntry] = useState("");
   const [orderLots, setOrderLots] = useState("1");
   const [orderStopLoss, setOrderStopLoss] = useState("");
@@ -585,6 +595,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     };
     tickerSymbolsRef.current = initialOverview.ticker?.map((item) => item.symbol) ?? [initialOverview.selectedUnderlying];
     setOrderStrike(String(initialOverview.snapshot.atmStrike));
+    setOrderExpiry(initialOverview.selectedExpiry);
+    setOrderExpiryOverview(null);
+    setOrderExpiryError(null);
+    lastOrderUnderlyingRef.current = initialOverview.selectedUnderlying;
     setReplayOverview(null);
     setReplaySnapshots([]);
     setReplayIndex(0);
@@ -606,6 +620,51 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       expiry: overview.selectedExpiry
     };
   }, [overview.selectedExpiry, overview.selectedUnderlying]);
+
+  // Switching the underlying invalidates any independently-selected order
+  // expiry (a different underlying has a different expiry calendar), so
+  // snap the order ticket back to that underlying's currently-selected
+  // expiry. A plain expiry change on the SAME underlying does NOT reset
+  // orderExpiry - that's the whole point of letting the order ticket track
+  // a different expiry than the dashboard.
+  useEffect(() => {
+    if (lastOrderUnderlyingRef.current === overview.selectedUnderlying) {
+      return;
+    }
+    lastOrderUnderlyingRef.current = overview.selectedUnderlying;
+    setOrderExpiry(overview.selectedExpiry);
+    setOrderExpiryOverview(null);
+    setOrderExpiryError(null);
+  }, [overview.selectedExpiry, overview.selectedUnderlying]);
+
+  // Fetches a standalone option-chain snapshot for the order ticket's
+  // expiry whenever it diverges from the dashboard's own selection, so
+  // strike choices/LTP in the Paper Order Ticket reflect the expiry the
+  // user actually intends to trade rather than whatever the rest of the
+  // dashboard is showing.
+  useEffect(() => {
+    if (orderExpiry === overview.selectedExpiry) {
+      setOrderExpiryOverview(null);
+      setOrderExpiryError(null);
+      return;
+    }
+    let cancelled = false;
+    setOrderExpiryError(null);
+    fetchMarketOverview(overview.selectedUnderlying, orderExpiry)
+      .then((next) => {
+        if (cancelled) return;
+        setOrderExpiryOverview(next);
+        setOrderStrike(String(next.snapshot.atmStrike));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setOrderExpiryOverview(null);
+        setOrderExpiryError(error instanceof Error ? error.message : "Unable to load the option chain for that expiry");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orderExpiry, overview.selectedExpiry, overview.selectedUnderlying]);
 
   const refreshOverview = useCallback(async () => {
     if (isRefreshingRef.current) {
@@ -959,8 +1018,14 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const replayStrikeMovementRowsForPanel = useMemo(() => buildStrikeMovementRows(replayOverview ?? overview), [overview, replayOverview]);
   const replayStrikeMovementSummary = useMemo(() => buildStrikeMovementSummary(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
   const replayTradeInterpretation = useMemo(() => buildTradeInterpretation(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
-  const strikeChoices = useMemo(() => buildStrikeChoices(overview), [overview]);
-  const orderTick = useMemo(() => findOptionTick(overview, Number(orderStrike), orderOptionType), [orderOptionType, orderStrike, overview]);
+  // When the order ticket targets a different expiry than the dashboard,
+  // strike choices/LTP come from the separately-fetched orderExpiryOverview
+  // instead - see the fetch effect above.
+  const isOrderExpiryDivergent = orderExpiry !== overview.selectedExpiry;
+  const orderOverview = isOrderExpiryDivergent ? orderExpiryOverview : overview;
+  const isLoadingOrderExpiry = isOrderExpiryDivergent && !orderExpiryOverview && !orderExpiryError;
+  const strikeChoices = useMemo(() => (orderOverview ? buildStrikeChoices(orderOverview) : []), [orderOverview]);
+  const orderTick = useMemo(() => (orderOverview ? findOptionTick(orderOverview, Number(orderStrike), orderOptionType) : undefined), [orderOptionType, orderOverview, orderStrike]);
   const marketEntryPrice = orderTick?.lastPrice ?? 0;
   const orderEntryPrice = normalizeTradablePrice(Number(orderEntry || marketEntryPrice));
   const orderLotSize = orderTick?.lotSize && orderTick.lotSize > 0 ? orderTick.lotSize : getLotSizeForUnderlying(overview.snapshot.underlyingSymbol);
@@ -1070,7 +1135,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     try {
       const nextSummary = await placePaperOrder({
         underlyingSymbol: overview.snapshot.underlyingSymbol,
-        expiry: overview.snapshot.expiry,
+        expiry: orderExpiry,
         action: orderAction,
         optionType: orderOptionType,
         strikePrice: Number(orderStrike),
@@ -1493,6 +1558,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           estimatedReward={estimatedReward}
           handlePaperOrder={handlePaperOrder}
           overview={overview}
+          orderExpiry={orderExpiry}
+          setOrderExpiry={setOrderExpiry}
+          orderExpiryChoices={overview.expiries}
+          isLoadingOrderExpiry={isLoadingOrderExpiry}
+          orderExpiryError={orderExpiryError}
           setOrderAction={setOrderAction}
           setIsOrderStopLossEdited={setIsOrderStopLossEdited}
           setIsOrderTargetEdited={setIsOrderTargetEdited}

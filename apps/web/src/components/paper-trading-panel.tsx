@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CalendarDatePicker } from "./calendar-date-picker";
 
 interface PaperTradingPanelProps {
   paperSummary: any;
@@ -13,6 +14,11 @@ interface PaperTradingPanelProps {
   estimatedReward: any;
   handlePaperOrder: any;
   overview: any;
+  orderExpiry: any;
+  setOrderExpiry: any;
+  orderExpiryChoices: any;
+  isLoadingOrderExpiry: any;
+  orderExpiryError: any;
   setOrderAction: any;
   setIsOrderStopLossEdited: any;
   setIsOrderTargetEdited: any;
@@ -78,6 +84,11 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
     estimatedReward,
     handlePaperOrder,
     overview,
+    orderExpiry,
+    setOrderExpiry,
+    orderExpiryChoices,
+    isLoadingOrderExpiry,
+    orderExpiryError,
     setOrderAction,
     setIsOrderStopLossEdited,
     setIsOrderTargetEdited,
@@ -146,12 +157,13 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
         </section>
 
         <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handlePaperOrder}>
-          <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${overview.snapshot.expiry}`} />
+          <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${orderExpiry}`} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1280px] border-collapse text-sm">
               <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                 <tr>
                   <th className="px-3 py-3 text-left">Symbol</th>
+                  <th className="px-3 py-3 text-left">Expiry</th>
                   <th className="px-3 py-3 text-left">Order</th>
                   <th className="px-3 py-3 text-left">Type</th>
                   <th className="px-3 py-3 text-left">Strike</th>
@@ -170,7 +182,18 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                 <tr className="border-t border-terminal-line/80">
                   <td className="px-3 py-3">
                     <div className="font-semibold">{overview.snapshot.underlyingSymbol}</div>
-                    <div className="text-xs text-terminal-muted">{overview.snapshot.expiry}</div>
+                  </td>
+                  <td className="px-3 py-3">
+                    <CalendarDatePicker
+                      availableDates={orderExpiryChoices}
+                      value={orderExpiry}
+                      onChange={setOrderExpiry}
+                      placeholder="Select expiry"
+                      emptyLabel="No stored expiries available yet."
+                    />
+                    {orderExpiry !== overview.selectedExpiry ? (
+                      <div className="mt-1 text-[0.65rem] uppercase text-terminal-blue">Next-expiry trade</div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3">
                     <select value={orderAction} onChange={(event) => {
@@ -196,8 +219,14 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                     </select>
                   </td>
                   <td className="px-3 py-3 text-right">
-                    <div className="font-semibold text-terminal-text">{orderTick?.lastPrice !== undefined ? formatPrice(orderTick.lastPrice) : "--"}</div>
-                    <div className={`text-xs ${orderTick?.lastPriceChange === undefined ? "text-terminal-muted" : orderTick.lastPriceChange >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatLtpChange(orderTick?.lastPriceChange, orderTick?.lastPriceChangePercent)}</div>
+                    {isLoadingOrderExpiry ? (
+                      <div className="text-xs text-terminal-muted">Loading...</div>
+                    ) : (
+                      <>
+                        <div className="font-semibold text-terminal-text">{orderTick?.lastPrice !== undefined ? formatPrice(orderTick.lastPrice) : "--"}</div>
+                        <div className={`text-xs ${orderTick?.lastPriceChange === undefined ? "text-terminal-muted" : orderTick.lastPriceChange >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatLtpChange(orderTick?.lastPriceChange, orderTick?.lastPriceChangePercent)}</div>
+                      </>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-right">
                     <input value={orderEntry} onBlur={() => setOrderEntry((value: string) => (value ? formatTradablePrice(Number(value)) : value))} onChange={(event) => setOrderEntry(event.target.value)} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
@@ -237,6 +266,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
             <span>Entry Trigger: <span className="font-semibold text-terminal-text">{formatPrice(orderEntryPrice)}</span> ({orderAction === "BUY" ? "fills when LTP <= entry" : "fills when LTP >= entry"}, LTP {formatPrice(marketEntryPrice)})</span>
             <span>Risk/Reward: <span className="font-semibold text-terminal-text">{riskReward ? `1:${riskReward.toFixed(1)}` : "--"}</span></span>
           </div>
+          {orderExpiryError ? <p className="border-t border-terminal-line px-3 py-2 text-xs text-terminal-red">Expiry chain: {orderExpiryError}</p> : null}
           {paperError ? <p className="border-t border-terminal-line px-3 py-2 text-xs text-terminal-red">{paperError}</p> : null}
         </form>
 
