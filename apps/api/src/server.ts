@@ -53,6 +53,7 @@ const marketAuxCache = new Map<
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
 const marketPulseCache = new Map<string, HotCacheEntry<MarketPulse | null>>();
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
+const tradableExpiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tickerSymbolsCache = new Map<string, HotCacheEntry<string[] | undefined>>();
 const marketStreamClients = new Map<number, MarketStreamClient>();
 let nextMarketStreamClientId = 1;
@@ -338,10 +339,11 @@ app.get<{
   const requestedExpiry = request.query.expiry?.trim() || undefined;
   const tickerSymbolsPromise = getTickerSymbols(requestedUnderlying);
   const userPromise = getRequestUser(request.headers.cookie);
-  const [marketAux, snapshot, expiries, user] = await Promise.all([
+  const [marketAux, snapshot, expiries, tradableExpiries, user] = await Promise.all([
     tickerSymbolsPromise.then((symbols) => getMarketAuxData(symbols)),
     getCachedLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry),
     getCachedExpiriesOrEmpty(requestedUnderlying),
+    getCachedTradableExpiriesOrEmpty(requestedUnderlying),
     userPromise
   ]);
   const marketPulsePromise = getCachedMarketPulse(snapshot.underlyingSymbol, snapshot.expiry);
@@ -356,6 +358,7 @@ app.get<{
   return {
     underlyings: visibleUnderlyings,
     expiries,
+    tradableExpiries,
     selectedUnderlying: requestedUnderlying,
     selectedExpiry: snapshot.expiry,
     indiaVix: marketAux.indiaVix,
@@ -1125,6 +1128,37 @@ async function getExpiriesOrEmpty(underlyingSymbol: string) {
     app.log.warn({ error, underlyingSymbol }, "Unable to list stored expiries");
     return [];
   }
+}
+
+async function getCachedTradableExpiriesOrEmpty(underlyingSymbol: string) {
+  return getHotCacheValue(tradableExpiriesCache, underlyingSymbol, MARKET_EXPIRIES_CACHE_MS, () => getTradableExpiriesOrEmpty(underlyingSymbol));
+}
+
+// Unlike getExpiriesOrEmpty (which prioritizes expiries we've already
+// captured snapshot history for, since that list feeds Replay Lab/Market
+// Controls which need actual stored data), this is for pickers where the
+// user is choosing an expiry to trade FORWARD from now (e.g. the Paper
+// Trading order ticket's "trade next week's expiry" selector) - it should
+// offer every expiry the broker currently lists as tradable, even ones
+// nothing has ever been captured for yet. getLatestSnapshotOrDemo already
+// knows how to fetch a live chain for a never-before-seen expiry, so once
+// picked here it just works.
+async function getTradableExpiriesOrEmpty(underlyingSymbol: string) {
+  const underlying = getUnderlyingDefinition(underlyingSymbol);
+  if (!underlying) {
+    return [];
+  }
+
+  try {
+    const liveExpiries = await dhan.getExpiryList(underlying);
+    if (liveExpiries.length) {
+      return liveExpiries;
+    }
+  } catch (error) {
+    app.log.warn({ error, underlyingSymbol }, "Unable to list live tradable expiries; falling back to stored expiries");
+  }
+
+  return getExpiriesOrEmpty(underlyingSymbol);
 }
 
 async function getCachedLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string) {

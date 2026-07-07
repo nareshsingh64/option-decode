@@ -105,6 +105,13 @@ export interface OverviewTick {
 export interface MarketOverview {
   underlyings: string[];
   expiries: string[];
+  // Every expiry the broker currently lists as tradable for this
+  // underlying, regardless of whether any snapshot has ever been captured
+  // for it - unlike `expiries` (which only lists expiries we already have
+  // stored data for, since that list feeds Replay Lab/Market Controls).
+  // This is what the Paper Order Ticket's expiry picker uses, since it's
+  // choosing a forward-looking expiry to trade rather than one to review.
+  tradableExpiries: string[];
   selectedUnderlying: string;
   selectedExpiry: string;
   indiaVix?: number;
@@ -1560,7 +1567,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           overview={overview}
           orderExpiry={orderExpiry}
           setOrderExpiry={setOrderExpiry}
-          orderExpiryChoices={overview.expiries}
+          orderExpiryChoices={overview.tradableExpiries}
           isLoadingOrderExpiry={isLoadingOrderExpiry}
           orderExpiryError={orderExpiryError}
           setOrderAction={setOrderAction}
