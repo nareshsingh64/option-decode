@@ -485,6 +485,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const isFastRefreshingRef = useRef(false);
   const isPaperRefreshingRef = useRef(false);
   const isMarketStreamConnectedRef = useRef(false);
+  // Timestamp of the last event actually received on the SSE connection
+  // (ticker, snapshot-ready, or heartbeat) - see the stream-watchdog effect
+  // below for why this exists alongside isMarketStreamConnectedRef.
+  const lastStreamEventAtRef = useRef(Date.now());
+  const [marketStreamReconnectToken, setMarketStreamReconnectToken] = useState(0);
   const replaySnapshotsRef = useRef<ReplaySnapshotSummary[]>([]);
   const replayIndexRef = useRef(0);
   // Mirrors of state read inside refreshReplayTimeline so that callback can
@@ -768,12 +773,14 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   }, []);
 
   useEffect(() => {
+    lastStreamEventAtRef.current = Date.now();
     const { underlying, expiry } = selectionRef.current;
     const stream = new EventSource(buildMarketStreamUrl(underlying, expiry, tickerSymbolsRef.current), {
       withCredentials: true
     });
 
     stream.onopen = () => {
+      lastStreamEventAtRef.current = Date.now();
       isMarketStreamConnectedRef.current = true;
       setIsMarketStreamConnected(true);
     };
@@ -782,6 +789,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       setIsMarketStreamConnected(false);
     };
     stream.addEventListener("ticker", (event) => {
+      lastStreamEventAtRef.current = Date.now();
       try {
         const payload = JSON.parse(event.data) as MarketStreamTickerPayload;
         setOverview((currentOverview) => ({
@@ -794,6 +802,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       }
     });
     stream.addEventListener("snapshot-ready", (event) => {
+      lastStreamEventAtRef.current = Date.now();
       try {
         const payload = JSON.parse(event.data) as MarketStreamSnapshotPayload;
         if (!payload.underlying || payload.underlying === selectionRef.current.underlying) {
@@ -803,13 +812,48 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         refreshOverview();
       }
     });
+    // The server also emits a "heartbeat" event every 15s purely so a quiet-
+    // but-open connection can be told apart from one that's actually dead -
+    // see the watchdog effect below. No UI reacts to it, so there's nothing
+    // to do here beyond recording that something arrived.
+    stream.addEventListener("heartbeat", () => {
+      lastStreamEventAtRef.current = Date.now();
+    });
 
     return () => {
       isMarketStreamConnectedRef.current = false;
       setIsMarketStreamConnected(false);
       stream.close();
     };
-  }, [overview.selectedExpiry, overview.selectedUnderlying, refreshOverview]);
+  }, [overview.selectedExpiry, overview.selectedUnderlying, refreshOverview, marketStreamReconnectToken]);
+
+  // onerror only fires if the browser's HTTP connection actually closes or
+  // errors out. It stays silent if something in front of the API (a proxy,
+  // a CDN, a network hiccup) leaves the connection open but stops actually
+  // delivering bytes - the EventSource just sits there looking "connected"
+  // forever. That's dangerous here specifically because the REFRESH_SECONDS/
+  // FAST_REFRESH_SECONDS polling fallbacks above are gated on
+  // isMarketStreamConnectedRef being false, so a silently-stalled stream
+  // blocks its own fallback: no live data, and nothing else picks up the
+  // slack. This watchdog treats "nothing received in a while" as equivalent
+  // to disconnected - the server sends a ticker at least every 5s and a
+  // heartbeat at least every 15s, so 40s of total silence means the stream
+  // is not actually delivering anything regardless of what its readyState
+  // claims. Flips the connected flag off (unblocking polling immediately)
+  // and bumps marketStreamReconnectToken to force the effect above to tear
+  // down and recreate the EventSource, in case the stall was recoverable.
+  useEffect(() => {
+    const STALE_AFTER_MS = 40_000;
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastStreamEventAtRef.current > STALE_AFTER_MS) {
+        isMarketStreamConnectedRef.current = false;
+        setIsMarketStreamConnected(false);
+        setMarketStreamReconnectToken((token) => token + 1);
+      }
+    }, 5000);
+
+    return () => window.clearInterval(watchdog);
+  }, []);
 
   const refreshWatchlist = useCallback(async () => {
     try {
