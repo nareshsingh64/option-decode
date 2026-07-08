@@ -270,7 +270,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
             <div className="rounded border border-terminal-line bg-white/[0.03]">
               <PaperSectionHeader title="Open Position Totals" meta={`Net Delta ${formatDeltaExposure(totalOpenDeltaExposure)}`} />
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] border-collapse text-sm">
+                <table className="w-full border-collapse text-sm">
                   <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                     <tr>
                       <th className="px-3 py-3 text-left">Underlying</th>
@@ -305,7 +305,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
             <div className="rounded border border-terminal-line bg-white/[0.03]">
               <PaperSectionHeader title="Open Paper Positions" meta={`${formatCurrency(paperSummary?.stats.markToMarketPnl ?? 0)} MTM`} />
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1280px] border-collapse text-sm">
+                <table className="w-full border-collapse text-sm">
                   <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                     <tr>
                       <th className="px-3 py-3 text-left">Trade</th>
@@ -405,7 +405,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
           <div className="rounded border border-terminal-line bg-white/[0.03]">
             <PaperSectionHeader title="Pending Orders" meta={`${pendingPaperOrders.length} waiting`} />
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1340px] border-collapse text-sm">
+              <table className="w-full border-collapse text-sm">
                 <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                   <tr>
                     <th className="px-3 py-3 text-left">Order</th>
@@ -522,7 +522,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
           <div className="rounded border border-terminal-line bg-white/[0.03]">
             <PaperSectionHeader title="Closed Trades" meta={`${formatCurrency(paperSummary?.stats.realizedPnl ?? 0)} realized`} />
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1240px] border-collapse text-sm">
+              <table className="w-full border-collapse text-sm">
                 <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                   <tr>
                     <th className="px-3 py-3 text-left">Trade</th>
@@ -577,7 +577,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
             <div className="rounded border border-terminal-line bg-white/[0.03]">
               <PaperSectionHeader title="Recent Filled Orders" meta={`${paperSummary?.stats.filledOrders ?? 0} filled`} />
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[900px] border-collapse text-sm">
+                <table className="w-full border-collapse text-sm">
                   <thead className="bg-white/[0.03] text-xs uppercase text-terminal-muted">
                     <tr>
                       <th className="px-3 py-3 text-left">Order</th>
