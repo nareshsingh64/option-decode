@@ -9,6 +9,12 @@ interface OptionChainTableProps {
   renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
   renderLtpStack: (ltp: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity?: OptionActivityKind) => ReactNode;
   formatOptionalNumber: (value: number | undefined, decimals: number) => string;
+  // Hovering the CE/PE OI cell reveals quick Buy/Sell buttons for that
+  // strike - clicking one fills the Paper Order Ticket instead of making
+  // the user switch tabs and set strike/type/action by hand. Only wired to
+  // the OI column (not Chg/Vol, which share the same renderPressureCell)
+  // since OI is what traders actually scan when picking a strike to trade.
+  onQuickOrder: (strike: number, optionType: "CE" | "PE", action: "BUY" | "SELL") => void;
 }
 
 export function OptionChainTable({
@@ -18,7 +24,8 @@ export function OptionChainTable({
   renderIvDeltaCell,
   renderPressureCell,
   renderLtpStack,
-  formatOptionalNumber
+  formatOptionalNumber,
+  onQuickOrder
 }: OptionChainTableProps) {
   return (
     <div className="max-h-[70vh] max-w-full overflow-auto">
@@ -62,7 +69,13 @@ export function OptionChainTable({
               {chainTableMode === "standard" ? (
                 <>
                   <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
-                  <td className="px-2 py-3">{renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}</td>
+                  <td className="group relative px-2 py-3">
+                    {renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}
+                    <div className="absolute inset-0 hidden items-center justify-start gap-1 bg-terminal-panel px-2 group-hover:flex">
+                      <QuickOrderButton label="B" title={`Buy ${row.strike} CE`} tone="buy" onClick={() => onQuickOrder(row.strike, "CE", "BUY")} />
+                      <QuickOrderButton label="S" title={`Sell ${row.strike} CE`} tone="sell" onClick={() => onQuickOrder(row.strike, "CE", "SELL")} />
+                    </div>
+                  </td>
                   <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
@@ -70,7 +83,13 @@ export function OptionChainTable({
                   <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
-                  <td className="px-2 py-3">{renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}</td>
+                  <td className="group relative px-2 py-3">
+                    {renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}
+                    <div className="absolute inset-0 hidden items-center justify-end gap-1 bg-terminal-panel px-2 group-hover:flex">
+                      <QuickOrderButton label="B" title={`Buy ${row.strike} PE`} tone="buy" onClick={() => onQuickOrder(row.strike, "PE", "BUY")} />
+                      <QuickOrderButton label="S" title={`Sell ${row.strike} PE`} tone="sell" onClick={() => onQuickOrder(row.strike, "PE", "SELL")} />
+                    </div>
+                  </td>
                   <td className="px-2 py-3">{renderIvDeltaCell(row.peIv, row.peDelta, "right")}</td>
                 </>
               ) : (
@@ -102,5 +121,26 @@ export function OptionChainTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function QuickOrderButton({ label, title, tone, onClick }: { label: string; title: string; tone: "buy" | "sell"; onClick: () => void }) {
+  const toneClass = tone === "buy"
+    ? "border-terminal-emerald/70 bg-terminal-emerald/10 text-terminal-emerald hover:bg-terminal-emerald hover:text-terminal-bg"
+    : "border-terminal-red/70 bg-terminal-red/10 text-terminal-red hover:bg-terminal-red hover:text-white";
+
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded border text-xs font-bold transition ${toneClass}`}
+    >
+      {label}
+    </button>
   );
 }

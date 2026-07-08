@@ -364,6 +364,12 @@ interface LiveDashboardProps {
   initialView?: DashboardView;
   onAuthUserChange?: (user: AuthUser | null) => void;
   onMarketSelectionChange?: (params: { underlying: string; expiry: string }) => void;
+  // Lets a child view (currently just the Option Chain's quick-order
+  // buttons) switch which tab is showing, the same way clicking a nav item
+  // in AppShell does. LiveDashboard doesn't own `activeView` itself - it's
+  // state in AppShell, passed down as `initialView` - so it can't just flip
+  // its own tab; it has to ask the parent to do it.
+  onNavigateToView?: (view: DashboardView) => void;
 }
 
 export type DashboardView = "dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
@@ -404,7 +410,7 @@ function defaultAlertThresholdDraft(underlyingSymbol: string) {
   };
 }
 
-export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onMarketSelectionChange }: LiveDashboardProps) {
+export function LiveDashboard({ initialOverview, initialParams, initialView = "dashboard", onAuthUserChange, onMarketSelectionChange, onNavigateToView }: LiveDashboardProps) {
   const [overview, setOverview] = useState(initialOverview);
   const [lastRefresh, setLastRefresh] = useState(initialOverview.snapshot.snapshotTime);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -1190,6 +1196,23 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     setIsOrderTargetEdited(false);
   }, [marketEntryPrice, orderOptionType, orderStrike]);
 
+  // Fills the Paper Order Ticket from a quick Buy/Sell click on the Option
+  // Chain and jumps to the Paper Trading tab so the user sees it land.
+  // Just sets strike/type/action/expiry - the effect above already reacts
+  // to strike/type changes by pulling the fresh LTP into orderEntry and
+  // resetting the edited-flags, which in turn lets the SL/target-default
+  // effect recompute both from that new entry price, same as if the user
+  // had changed strike/type by hand in the ticket itself.
+  const handleQuickOrder = useCallback((strike: number, optionType: "CE" | "PE", action: "BUY" | "SELL") => {
+    setOrderExpiry(overview.selectedExpiry);
+    setOrderStrike(String(strike));
+    setOrderOptionType(optionType);
+    setOrderAction(action);
+    setIsOrderStopLossEdited(false);
+    setIsOrderTargetEdited(false);
+    onNavigateToView?.("paper");
+  }, [onNavigateToView, overview.selectedExpiry]);
+
   const handlePaperOrder = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsPlacingOrder(true);
@@ -1604,6 +1627,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           renderPressureCell={renderPressureCell}
           topStrikeRows={topStrikeRows}
           zoneRows={zoneRows}
+          onQuickOrder={handleQuickOrder}
         />
       ) : null}
 

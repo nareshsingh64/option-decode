@@ -30,6 +30,7 @@ interface OptionChainPanelProps {
   renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
   topStrikeRows: TopStrikeRow[];
   zoneRows: ZoneRow[];
+  onQuickOrder: (strike: number, optionType: "CE" | "PE", action: "BUY" | "SELL") => void;
 }
 
 function describeChainRange(chainRange: VixStrikeRange, requestedMode: VisibleStrikeMode) {
@@ -65,7 +66,8 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
     renderLtpStack,
     renderPressureCell,
     topStrikeRows,
-    zoneRows
+    zoneRows,
+    onQuickOrder
   } = props;
 
   return (
@@ -111,6 +113,7 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
           renderIvDeltaCell={renderIvDeltaCell}
           renderLtpStack={renderLtpStack}
           renderPressureCell={renderPressureCell}
+          onQuickOrder={onQuickOrder}
         />
       </div>
 

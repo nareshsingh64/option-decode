@@ -134,7 +134,7 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
             <nav className="sticky top-3 space-y-1 text-sm text-terminal-muted">{nav}</nav>
           </aside>
 
-          <LiveDashboard initialOverview={initialOverview} initialParams={currentParams} initialView={activeView} onAuthUserChange={setAuthUser} onMarketSelectionChange={handleMarketSelectionChange} />
+          <LiveDashboard initialOverview={initialOverview} initialParams={currentParams} initialView={activeView} onAuthUserChange={setAuthUser} onMarketSelectionChange={handleMarketSelectionChange} onNavigateToView={handleViewChange} />
         </div>
       </section>
     </main>

@@ -159,93 +159,93 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
 
         <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handlePaperOrder}>
           <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${orderExpiry}`} />
-          {/* Grid instead of a table: this only ever holds one row of inputs
-              (it's an order-entry form, not a data list), so a fixed-width
-              table with a wide min-width just forced horizontal scrolling
-              once the Expiry column was added - especially since the
-              calendar picker needs real width. A responsive grid reflows
-              fields onto more rows on narrower viewports instead, so
-              there's nothing to scroll regardless of window size. */}
-          <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-            <TicketField label="Symbol">
-              <div className="flex h-9 items-center font-semibold">{overview.snapshot.underlyingSymbol}</div>
-            </TicketField>
-            <TicketField label="Expiry">
-              <CalendarDatePicker
-                availableDates={orderExpiryChoices}
-                value={orderExpiry}
-                onChange={setOrderExpiry}
-                placeholder="Select expiry"
-                emptyLabel="No stored expiries available yet."
-              />
-              {orderExpiry !== overview.selectedExpiry ? (
-                <div className="mt-1 text-[0.65rem] uppercase text-terminal-blue">Next-expiry trade</div>
-              ) : null}
-            </TicketField>
-            <TicketField label="Order">
-              <select value={orderAction} onChange={(event) => {
-                setOrderAction(event.target.value as "BUY" | "SELL");
-                setIsOrderStopLossEdited(false);
-                setIsOrderTargetEdited(false);
-              }} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue">
-                <option value="BUY">BUY</option>
-                <option value="SELL">SELL</option>
-              </select>
-            </TicketField>
-            <TicketField label="Type">
-              <select value={orderOptionType} onChange={(event) => setOrderOptionType(event.target.value as "CE" | "PE")} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm text-terminal-text outline-none focus:border-terminal-blue">
-                <option value="CE">CE</option>
-                <option value="PE">PE</option>
-              </select>
-            </TicketField>
-            <TicketField label="Strike">
-              <select value={orderStrike} onChange={(event) => setOrderStrike(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm text-terminal-text outline-none focus:border-terminal-blue">
-                {strikeChoices.map((strike: any) => (
-                  <option key={strike} value={strike}>{formatStrike(strike)}</option>
-                ))}
-              </select>
-            </TicketField>
-            <TicketField label="LTP" align="right">
-              {isLoadingOrderExpiry ? (
-                <div className="text-xs text-terminal-muted">Loading...</div>
-              ) : (
-                <>
-                  <div className="font-semibold text-terminal-text">{orderTick?.lastPrice !== undefined ? formatPrice(orderTick.lastPrice) : "--"}</div>
-                  <div className={`text-xs ${orderTick?.lastPriceChange === undefined ? "text-terminal-muted" : orderTick.lastPriceChange >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatLtpChange(orderTick?.lastPriceChange, orderTick?.lastPriceChangePercent)}</div>
-                </>
-              )}
-            </TicketField>
-            <TicketField label="Entry" align="right">
-              <input value={orderEntry} onBlur={() => setOrderEntry((value: string) => (value ? formatTradablePrice(Number(value)) : value))} onChange={(event) => setOrderEntry(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
-            </TicketField>
-            <TicketField label="SL" align="right">
-              <input value={orderStopLoss} onChange={(event) => {
-                setIsOrderStopLossEdited(true);
-                setOrderStopLoss(event.target.value);
-              }} onBlur={() => setOrderStopLoss((value: string) => (value ? formatTradablePrice(Number(value)) : value))} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
-              <label className="mt-1 flex items-center justify-end gap-1.5 text-xs text-terminal-muted">
-                <input checked={orderTrailingStop} onChange={(event) => setOrderTrailingStop(event.target.checked)} type="checkbox" className="h-3.5 w-3.5 accent-terminal-blue" />
-                Trailing {orderTrailingStop ? formatPrice(orderTrailDistanceValue) : ""}
-              </label>
-            </TicketField>
-            <TicketField label="Target" align="right">
-              <input value={orderTarget} onChange={(event) => {
-                setIsOrderTargetEdited(true);
-                setOrderTarget(event.target.value);
-              }} onBlur={() => setOrderTarget((value: string) => (value ? formatTradablePrice(Number(value)) : value))} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
-            </TicketField>
-            <TicketField label="Lots" align="right">
-              <input value={orderLots} onChange={(event) => setOrderLots(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm text-terminal-text outline-none focus:border-terminal-blue" min="1" step="1" type="number" />
-            </TicketField>
-            <TicketField label="Qty" align="right">
-              <div className="flex h-9 items-center justify-end text-terminal-muted">{formatLotsAndQty(Number(orderLots || 0), orderLotSize, orderQuantity)}</div>
-            </TicketField>
-            <TicketField label="Risk" align="right">
-              <div className="flex h-9 items-center justify-end text-terminal-red">{formatCurrency(estimatedRisk)}</div>
-            </TicketField>
-            <TicketField label="Reward" align="right">
-              <div className="flex h-9 items-center justify-end text-terminal-emerald">{formatCurrency(estimatedReward)}</div>
-            </TicketField>
+          {/* Single row instead of a wrapping grid: a grid that reflows onto
+              2-3 rows per field avoids scrolling but eats a lot of vertical
+              space for what's fundamentally one line of inputs. Combining
+              Lots+Qty and Risk+Reward into single fields brings the count
+              down enough that this fits one row on most screens; on a
+              genuinely narrow window it scrolls horizontally, matching how
+              every other table in this panel already behaves (natural
+              width + overflow-x-auto fallback) rather than being the odd
+              one out with its own wrapping behavior. */}
+          <div className="overflow-x-auto">
+            <div className="flex items-start gap-3 p-3">
+              <TicketField label="Symbol" width="w-20">
+                <div className="flex h-9 items-center font-semibold">{overview.snapshot.underlyingSymbol}</div>
+              </TicketField>
+              <TicketField label="Expiry" width="w-40">
+                <CalendarDatePicker
+                  availableDates={orderExpiryChoices}
+                  value={orderExpiry}
+                  onChange={setOrderExpiry}
+                  placeholder="Select expiry"
+                  emptyLabel="No stored expiries available yet."
+                />
+                {orderExpiry !== overview.selectedExpiry ? (
+                  <div className="mt-1 text-[0.65rem] uppercase text-terminal-blue">Next-expiry trade</div>
+                ) : null}
+              </TicketField>
+              <TicketField label="Order" width="w-20">
+                <select value={orderAction} onChange={(event) => {
+                  setOrderAction(event.target.value as "BUY" | "SELL");
+                  setIsOrderStopLossEdited(false);
+                  setIsOrderTargetEdited(false);
+                }} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue">
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                </select>
+              </TicketField>
+              <TicketField label="Type" width="w-16">
+                <select value={orderOptionType} onChange={(event) => setOrderOptionType(event.target.value as "CE" | "PE")} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm text-terminal-text outline-none focus:border-terminal-blue">
+                  <option value="CE">CE</option>
+                  <option value="PE">PE</option>
+                </select>
+              </TicketField>
+              <TicketField label="Strike" width="w-24">
+                <select value={orderStrike} onChange={(event) => setOrderStrike(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-sm text-terminal-text outline-none focus:border-terminal-blue">
+                  {strikeChoices.map((strike: any) => (
+                    <option key={strike} value={strike}>{formatStrike(strike)}</option>
+                  ))}
+                </select>
+              </TicketField>
+              <TicketField label="LTP" width="w-20" align="right">
+                {isLoadingOrderExpiry ? (
+                  <div className="text-xs text-terminal-muted">Loading...</div>
+                ) : (
+                  <>
+                    <div className="font-semibold text-terminal-text">{orderTick?.lastPrice !== undefined ? formatPrice(orderTick.lastPrice) : "--"}</div>
+                    <div className={`text-xs ${orderTick?.lastPriceChange === undefined ? "text-terminal-muted" : orderTick.lastPriceChange >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatLtpChange(orderTick?.lastPriceChange, orderTick?.lastPriceChangePercent)}</div>
+                  </>
+                )}
+              </TicketField>
+              <TicketField label="Entry" width="w-20" align="right">
+                <input value={orderEntry} onBlur={() => setOrderEntry((value: string) => (value ? formatTradablePrice(Number(value)) : value))} onChange={(event) => setOrderEntry(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+              </TicketField>
+              <TicketField label="SL" width="w-24" align="right">
+                <input value={orderStopLoss} onChange={(event) => {
+                  setIsOrderStopLossEdited(true);
+                  setOrderStopLoss(event.target.value);
+                }} onBlur={() => setOrderStopLoss((value: string) => (value ? formatTradablePrice(Number(value)) : value))} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                <label className="mt-1 flex items-center justify-end gap-1.5 text-xs text-terminal-muted">
+                  <input checked={orderTrailingStop} onChange={(event) => setOrderTrailingStop(event.target.checked)} type="checkbox" className="h-3.5 w-3.5 accent-terminal-blue" />
+                  Trailing {orderTrailingStop ? formatPrice(orderTrailDistanceValue) : ""}
+                </label>
+              </TicketField>
+              <TicketField label="Target" width="w-20" align="right">
+                <input value={orderTarget} onChange={(event) => {
+                  setIsOrderTargetEdited(true);
+                  setOrderTarget(event.target.value);
+                }} onBlur={() => setOrderTarget((value: string) => (value ? formatTradablePrice(Number(value)) : value))} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+              </TicketField>
+              <TicketField label="Lots" width="w-16" align="right">
+                <input value={orderLots} onChange={(event) => setOrderLots(event.target.value)} className="h-9 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm text-terminal-text outline-none focus:border-terminal-blue" min="1" step="1" type="number" />
+                <div className="mt-1 text-right text-[0.65rem] text-terminal-muted">{formatLotsAndQty(Number(orderLots || 0), orderLotSize, orderQuantity)}</div>
+              </TicketField>
+              <TicketField label="Risk / Reward" width="w-28" align="right">
+                <div className="text-terminal-red">{formatCurrency(estimatedRisk)}</div>
+                <div className="text-terminal-emerald">{formatCurrency(estimatedReward)}</div>
+              </TicketField>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-4 border-t border-terminal-line px-3 py-2 text-xs text-terminal-muted">
             <span>Entry Trigger: <span className="font-semibold text-terminal-text">{formatPrice(orderEntryPrice)}</span> ({orderAction === "BUY" ? "fills when LTP <= entry" : "fills when LTP >= entry"}, LTP {formatPrice(marketEntryPrice)})</span>
@@ -641,10 +641,10 @@ function KpiChip({ label, value, tone = "default" }: { label: string; value: str
   );
 }
 
-function TicketField({ label, children, align = "left" }: { label: string; children: ReactNode; align?: "left" | "right" }) {
+function TicketField({ label, children, align = "left", width }: { label: string; children: ReactNode; align?: "left" | "right"; width?: string }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-xs uppercase text-terminal-muted">{label}</span>
+    <div className={`flex flex-shrink-0 flex-col gap-1 ${width ?? ""}`}>
+      <span className="whitespace-nowrap text-xs uppercase text-terminal-muted">{label}</span>
       <div className={align === "right" ? "text-right" : ""}>{children}</div>
     </div>
   );
