@@ -245,14 +245,17 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                 <div className="text-terminal-red">{formatCurrency(estimatedRisk)}</div>
                 <div className="text-terminal-emerald">{formatCurrency(estimatedReward)}</div>
               </TicketField>
+              <div className="ml-auto flex flex-shrink-0 flex-col gap-1">
+                <span className="whitespace-nowrap text-xs uppercase text-terminal-muted">&nbsp;</span>
+                <button className={`h-9 min-w-36 rounded border px-3 text-sm font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${orderAction === "BUY" ? "border-terminal-emerald bg-terminal-emerald text-terminal-bg" : "border-terminal-red bg-terminal-red text-white"}`} disabled={isPlacingOrder || orderEntryPrice <= 0} type="submit">
+                  {isPlacingOrder ? "Placing..." : `${orderAction === "BUY" ? "Buy" : "Sell"} Trigger`}
+                </button>
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-4 border-t border-terminal-line px-3 py-2 text-xs text-terminal-muted">
             <span>Entry Trigger: <span className="font-semibold text-terminal-text">{formatPrice(orderEntryPrice)}</span> ({orderAction === "BUY" ? "fills when LTP <= entry" : "fills when LTP >= entry"}, LTP {formatPrice(marketEntryPrice)})</span>
             <span>Risk/Reward: <span className="font-semibold text-terminal-text">{riskReward ? `1:${riskReward.toFixed(1)}` : "--"}</span></span>
-            <button className={`ml-auto h-9 min-w-36 rounded border px-3 text-sm font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${orderAction === "BUY" ? "border-terminal-emerald bg-terminal-emerald text-terminal-bg" : "border-terminal-red bg-terminal-red text-white"}`} disabled={isPlacingOrder || orderEntryPrice <= 0} type="submit">
-              {isPlacingOrder ? "Placing..." : `${orderAction === "BUY" ? "Buy" : "Sell"} Trigger`}
-            </button>
           </div>
           {orderExpiryError ? <p className="border-t border-terminal-line px-3 py-2 text-xs text-terminal-red">Expiry chain: {orderExpiryError}</p> : null}
           {paperError ? <p className="border-t border-terminal-line px-3 py-2 text-xs text-terminal-red">{paperError}</p> : null}
