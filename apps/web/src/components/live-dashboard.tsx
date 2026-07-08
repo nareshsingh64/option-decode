@@ -54,7 +54,7 @@ import {
   mergeTickerItems,
   normalizeTradablePrice
 } from "./dashboard-formatters";
-import { DashboardMainPanel } from "./dashboard-main-panel";
+import { DashboardMainPanel, useStrikeScoreTrends } from "./dashboard-main-panel";
 import { MarketControls } from "./market-controls";
 import {
   buildAtmStrikeRange,
@@ -1015,6 +1015,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const strikeMovementRows = useMemo(() => buildStrikeMovementRows(overview), [overview]);
   const strikeMovementSummary = useMemo(() => buildStrikeMovementSummary(strikeMovementRows), [strikeMovementRows]);
   const tradeInterpretation = useMemo(() => buildTradeInterpretation(strikeMovementRows), [strikeMovementRows]);
+  // Called up here rather than inside DashboardMainPanel/ReplayLab, since
+  // those get unmounted whenever the user switches tabs (see the
+  // `initialView === "dashboard"`/`"replay"` conditionals below) - that used
+  // to wipe the tracked PE/CE trend-arrow direction on every tab switch.
+  // LiveDashboard itself stays mounted for the whole session, so the ref
+  // this hook keeps now survives switching away from and back to a tab.
+  const strikeTrends = useStrikeScoreTrends(strikeMovementRows);
   // Replay-scoped equivalents of the four hooks above, so the Replay tab's
   // Market Detail panel reflects whichever historical snapshot is loaded
   // instead of always showing the live dashboard's current data - same
@@ -1025,6 +1032,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const replayStrikeMovementRowsForPanel = useMemo(() => buildStrikeMovementRows(replayOverview ?? overview), [overview, replayOverview]);
   const replayStrikeMovementSummary = useMemo(() => buildStrikeMovementSummary(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
   const replayTradeInterpretation = useMemo(() => buildTradeInterpretation(replayStrikeMovementRowsForPanel), [replayStrikeMovementRowsForPanel]);
+  // Own trend-tracking instance, kept separate from strikeTrends above so
+  // scrubbing through replay history doesn't affect the live dashboard's
+  // arrows or vice versa.
+  const replayStrikeTrends = useStrikeScoreTrends(replayStrikeMovementRowsForPanel);
   // When the order ticket targets a different expiry than the dashboard,
   // strike choices/LTP come from the separately-fetched orderExpiryOverview
   // instead - see the fetch effect above.
@@ -1429,6 +1440,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           pressureSummary={pressureSummary}
           strikeMovementRows={strikeMovementRows}
           strikeMovementSummary={strikeMovementSummary}
+          strikeTrends={strikeTrends}
           tradeInterpretation={tradeInterpretation}
         />
       ) : null}
@@ -1662,6 +1674,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           replayPressureSummary={replayPressureSummary}
           replayStrikeMovementRowsForPanel={replayStrikeMovementRowsForPanel}
           replayStrikeMovementSummary={replayStrikeMovementSummary}
+          replayStrikeTrends={replayStrikeTrends}
           replayTradeInterpretation={replayTradeInterpretation}
           formatLarge={formatLarge}
           formatSignedLarge={formatSignedLarge}

@@ -17,6 +17,14 @@ interface DashboardMainPanelProps {
   strikeMovementRows: any[];
   strikeMovementSummary: any;
   tradeInterpretation: any;
+  // Computed by useStrikeScoreTrends (exported below) and passed in by the
+  // parent rather than computed in here. This component gets unmounted
+  // whenever the user switches away from whichever tab renders it (see
+  // LiveDashboard/ReplayLab), which used to wipe the tracked
+  // up/down-since-last-refresh state and reset every arrow to blank the
+  // moment the user came back. Keeping the tracking ref in a parent that
+  // stays mounted across tab switches fixes that.
+  strikeTrends: Map<number, StrikeTrendState>;
   // Trade Recommendations doesn't make sense in Replay Lab - it's framed
   // around "act now" (stale-data warnings, "not financial advice" for
   // live decisions), which is misleading when you're deliberately looking
@@ -37,11 +45,10 @@ export function DashboardMainPanel({
   pressureSummary,
   strikeMovementRows,
   strikeMovementSummary,
+  strikeTrends,
   tradeInterpretation,
   showRecommendations = true
 }: DashboardMainPanelProps) {
-  const strikeTrends = useStrikeScoreTrends(strikeMovementRows);
-
   return (
     <section className="grid gap-4">
       <Panel title="Market Detail">
@@ -175,7 +182,7 @@ function MarketPulseCell({ pulse }: { pulse?: MarketPulse | null }) {
 
 type ScoreMoveDirection = "up" | "down" | "flat";
 
-interface StrikeTrendState {
+export interface StrikeTrendState {
   pe: number;
   peDirection: ScoreMoveDirection;
   ce: number;
@@ -196,7 +203,14 @@ interface StrikeTrendState {
 // intentional here because we want the derived direction map available
 // synchronously on the same render as the new row data, not one render
 // behind (as a useEffect-based update would give us).
-function useStrikeScoreTrends(rows: { strike: number; peScore: number; ceScore: number }[]) {
+//
+// Exported and called by the parent (LiveDashboard), not by
+// DashboardMainPanel itself: this component gets unmounted whenever the
+// user switches to a different tab (see the `initialView === "dashboard"`
+// conditional in LiveDashboard, and the equivalent in ReplayLab), which
+// would otherwise destroy this ref and reset every arrow to blank the
+// moment the user switched back.
+export function useStrikeScoreTrends(rows: { strike: number; peScore: number; ceScore: number }[]) {
   const ref = useRef<Map<number, StrikeTrendState>>(new Map());
 
   return useMemo(() => {

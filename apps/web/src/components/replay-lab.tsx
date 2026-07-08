@@ -43,6 +43,7 @@ interface ReplayLabProps {
   replayPressureSummary: any;
   replayStrikeMovementRowsForPanel: any;
   replayStrikeMovementSummary: any;
+  replayStrikeTrends: any;
   replayTradeInterpretation: any;
   formatLarge: any;
   formatSignedLarge: any;
@@ -92,6 +93,7 @@ export function ReplayLab(props: ReplayLabProps) {
     replayPressureSummary,
     replayStrikeMovementRowsForPanel,
     replayStrikeMovementSummary,
+    replayStrikeTrends,
     replayTradeInterpretation,
     formatLarge,
     formatSignedLarge,
@@ -216,6 +218,7 @@ export function ReplayLab(props: ReplayLabProps) {
           pressureSummary={replayPressureSummary}
           strikeMovementRows={replayStrikeMovementRowsForPanel}
           strikeMovementSummary={replayStrikeMovementSummary}
+          strikeTrends={replayStrikeTrends}
           tradeInterpretation={replayTradeInterpretation}
           showRecommendations={false}
         />
