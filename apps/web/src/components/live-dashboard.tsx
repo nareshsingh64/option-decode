@@ -3,7 +3,7 @@
 import { Clock3, Pause, SkipBack, SkipForward } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { MarketPulse } from "@option-decode/types";
+import type { MarketPulse, StrikeMovementRow } from "@option-decode/types";
 import { AccountPanel } from "./account-panel";
 import { AdminPanel } from "./admin-panel";
 import { AlertCenter } from "./alert-center";
@@ -140,6 +140,14 @@ export interface MarketOverview {
     metric: string;
     createdAt: string;
   }>;
+  // ATM +/-2 strike movement rows, computed server-side by
+  // @option-decode/analytics#calculateStrikeMovement - the same rows the
+  // Trade Recommendations engine's netScore is based on. The client only
+  // adds presentation-only decoration on top of these (see
+  // buildStrikeMovementRows in strike-pressure-analytics.ts); it must not
+  // recompute the scores itself, or the Strike Movement table and the
+  // recommendations above it can silently disagree on the same data.
+  strikeMovement: StrikeMovementRow[];
   recommendations: Recommendation[];
   marketPulse?: MarketPulse | null;
 }

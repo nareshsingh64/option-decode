@@ -7,71 +7,33 @@ interface ChainStats {
   maxOiSide: string;
 }
 
+// The ATM +/-2 peScore/ceScore/netScore/trend numbers themselves come
+// straight from the server's `overview.strikeMovement` (computed once by
+// @option-decode/analytics#calculateStrikeMovement, the same calculation the
+// Trade Recommendations engine's totalNetScore is based on). This function
+// used to recompute those scores from raw ticks with its own, subtly
+// different formula, which meant this table and the recommendations above
+// it could show disagreeing numbers for the same market data. It now only
+// adds presentation-only decoration - label text, icons, Tailwind tone
+// classes - on top of the server-provided rows, so there is exactly one
+// source of truth for the underlying numbers.
 export function buildStrikeMovementRows(overview: MarketOverview) {
-  const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
-  const atmIndex = strikes.findIndex((strike) => strike === overview.snapshot.atmStrike);
-  if (atmIndex < 0) {
-    return [];
-  }
+  const rows = overview.strikeMovement ?? [];
 
-  const windowStrikes = strikes.slice(Math.max(0, atmIndex - 2), atmIndex + 3);
-  // Minimum |trendScore| required before a strike is called "building"
-  // rather than "Flat". This used to be the median trend strength of the
-  // SAME window being classified, which meant a uniform move across every
-  // nearby strike (the clearest possible "building" signal) raised the bar
-  // right along with it and got silently reclassified as Flat — the
-  // detector could only see a strike that stood out from its neighbors,
-  // never a level where the whole zone moved together. Matches the fixed
-  // threshold used by the server-side calculateStrikeMovement in
-  // @option-decode/analytics so both can't disagree on the same signal.
-  const trendThreshold = 10;
+  return rows.map((row) => {
+    const combinedScore = row.peScore + row.ceScore;
+    const isThinMarket = combinedScore < 10;
+    const scoreBarPercent = isThinMarket ? 0 : Math.min(100, Math.abs(row.netScorePercent));
 
-  return windowStrikes
-    .map((strike, index, windowStrikes) => {
-      const ce = findOptionTick(overview, strike, "CE");
-      const pe = findOptionTick(overview, strike, "PE");
-      const peScore = strikePressureScore(pe);
-      const ceScore = strikePressureScore(ce);
-      const peActivity = classifyOptionActivity(pe);
-      const ceActivity = classifyOptionActivity(ce);
-      const buyerMomentumScore = getBuyerMomentumScore(ce) + getBuyerMomentumScore(pe);
-      const sellerSafetyScore = getSellerSafetyScore(ce) + getSellerSafetyScore(pe);
-      const combinedScore = peScore + ceScore;
-      const isThinMarket = combinedScore < 10;
-      const netScore = peScore - ceScore;
-      const netScorePercent = isThinMarket ? 0 : Math.round((netScore / combinedScore) * 100);
-      const scoreBarPercent = isThinMarket ? 0 : Math.min(100, Math.abs(netScorePercent));
-      const trendScore = strikeTrendScore(pe) - strikeTrendScore(ce);
-      const trendDirection = !isThinMarket && Math.abs(trendScore) >= trendThreshold ? Math.sign(trendScore) : 0;
-      const absoluteIndex = strikes.indexOf(strike);
-      const distance = absoluteIndex - atmIndex;
-      const bias = isThinMarket ? "Balanced" : netScore > 0 ? "Up / support" : netScore < 0 ? "Down / resistance" : "Balanced";
-      const trend = trendDirection > 0 ? "Increasing support" : trendDirection < 0 ? "Increasing resistance" : "Flat";
-
-      return {
-        strike,
-        isAtm: strike === overview.snapshot.atmStrike,
-        distanceLabel: distance === 0 ? "ATM" : distance > 0 ? `ATM +${distance}` : `ATM ${distance}`,
-        peScore,
-        ceScore,
-        peActivity,
-        ceActivity,
-        buyerMomentumScore,
-        sellerSafetyScore,
-        netScore,
-        netScorePercent,
-        scoreBarPercent,
-        trendScore,
-        trendDirection,
-        bias,
-        trend,
-        trendIcon: trendDirection > 0 ? "▲" : trendDirection < 0 ? "▼" : "•",
-        toneClass: isThinMarket ? "text-terminal-muted" : netScore > 0 ? "text-terminal-emerald" : netScore < 0 ? "text-terminal-red" : "text-terminal-blue",
-        trendToneClass: trendDirection > 0 ? "text-terminal-emerald" : trendDirection < 0 ? "text-terminal-red" : "text-terminal-blue",
-        sortOrder: windowStrikes.length - index
-      };
-    })
-    .sort((left, right) => right.strike - left.strike);
+    return {
+      ...row,
+      distanceLabel: row.distance === 0 ? "ATM" : row.distance > 0 ? `ATM +${row.distance}` : `ATM ${row.distance}`,
+      scoreBarPercent,
+      trendIcon: row.trendDirection > 0 ? "▲" : row.trendDirection < 0 ? "▼" : "•",
+      toneClass: isThinMarket ? "text-terminal-muted" : row.netScore > 0 ? "text-terminal-emerald" : row.netScore < 0 ? "text-terminal-red" : "text-terminal-blue",
+      trendToneClass: row.trendDirection > 0 ? "text-terminal-emerald" : row.trendDirection < 0 ? "text-terminal-red" : "text-terminal-blue"
+    };
+  });
 }
 
 export function buildTradeInterpretation(rows: ReturnType<typeof buildStrikeMovementRows>) {
@@ -276,77 +238,11 @@ export function scoreToPercent(score: number) {
   return Math.max(5, Math.min(100, Math.round(score / 15000)));
 }
 
-function findOptionTick(overview: MarketOverview, strikePrice: number, optionType: "CE" | "PE") {
-  return overview.snapshot.ticks.find((tick) => tick.strikePrice === strikePrice && tick.optionType === optionType);
-}
-
 function formatDirectionalScore(score: number, positiveLabel: string, negativeLabel: string) {
   if (Math.abs(score) < 8) {
     return "Neutral";
   }
   return `${score > 0 ? positiveLabel : negativeLabel} ${formatSignedLarge(score)}`;
-}
-
-function strikePressureScore(tick?: OverviewTick) {
-  if (!tick) {
-    return 0;
-  }
-  const score = toLots(tick.openInterest, tick) + toLots(tick.changeInOpenInterest, tick) * 1.5 + toLots(tick.volume, tick) * 0.5;
-  return Math.max(0, Math.round(score));
-}
-
-function strikeTrendScore(tick?: OverviewTick) {
-  if (!tick) {
-    return 0;
-  }
-  const oiTrend = toLots(tick.changeInOpenInterest, tick);
-  const ltpTrend = (tick.lastPriceChangePercent ?? 0) * 2;
-  return Math.round(oiTrend + ltpTrend);
-}
-
-function optionActivityWeight(tick?: OverviewTick) {
-  if (!tick) {
-    return 0;
-  }
-  return Math.round(Math.abs(toLots(tick.changeInOpenInterest, tick)) + Math.abs(toLots(tick.volume, tick)) * 0.05 + Math.abs(tick.lastPriceChangePercent ?? 0) * 2);
-}
-
-function getBuyerMomentumScore(tick?: OverviewTick) {
-  const activity = classifyOptionActivity(tick);
-  const weight = optionActivityWeight(tick);
-  if (!tick || !weight) {
-    return 0;
-  }
-  const direction = tick.optionType === "CE" ? 1 : -1;
-  if (activity === "LONG_BUILDUP") {
-    return direction * weight;
-  }
-  if (activity === "SHORT_COVERING") {
-    return direction * Math.round(weight * 0.5);
-  }
-  if (activity === "WRITING") {
-    return -direction * Math.round(weight * 0.6);
-  }
-  return 0;
-}
-
-function getSellerSafetyScore(tick?: OverviewTick) {
-  const activity = classifyOptionActivity(tick);
-  const weight = optionActivityWeight(tick);
-  if (!tick || !weight) {
-    return 0;
-  }
-  const supportDirection = tick.optionType === "PE" ? 1 : -1;
-  if (activity === "WRITING") {
-    return supportDirection * weight;
-  }
-  if (activity === "SHORT_COVERING") {
-    return -supportDirection * weight;
-  }
-  if (activity === "LONG_BUILDUP") {
-    return -supportDirection * Math.round(weight * 0.5);
-  }
-  return 0;
 }
 
 function calculateMaxPainStrike(overview: MarketOverview) {

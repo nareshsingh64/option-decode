@@ -367,6 +367,14 @@ app.get<{
     pressure,
     marketPulse,
     alerts,
+    // Raw ATM +/-2 strike movement rows, already computed above for the
+    // Trade Recommendations engine. Sent to the client so the Strike
+    // Movement table on the dashboard reads the SAME numbers the
+    // recommendations are based on, instead of the web app recomputing its
+    // own (subtly different) version from raw ticks - see
+    // strike-pressure-analytics.ts on the client for the presentation-only
+    // decoration applied on top of these rows.
+    strikeMovement,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
 });
@@ -672,6 +680,7 @@ app.get<{
     pressure,
     marketPulse,
     alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined),
+    strikeMovement,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
   };
 });
