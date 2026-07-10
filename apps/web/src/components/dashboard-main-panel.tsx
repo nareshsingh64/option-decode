@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useMemo, useRef } from "react";
+import { Info } from "lucide-react";
 import type { MarketPulse } from "@option-decode/types";
 import { TradeRecommendations } from "./trade-recommendations";
 
@@ -74,9 +75,19 @@ export function DashboardMainPanel({
                 <tr className="border-b border-terminal-line text-left text-xs uppercase text-terminal-muted">
                   <th className="px-2 py-2 font-medium">Strike</th>
                   <th className="px-2 py-2 font-medium">Net Score</th>
-                  <th className="px-2 py-2 font-medium">Bias</th>
+                  <th className="px-2 py-2 font-medium">
+                    <HeaderTooltip
+                      label="Bias"
+                      tooltip="Compares the total PE score against the total CE score at this strike. This is dominated by open interest already sitting on the strike (built up over the contract's life), only lightly adjusted for today's activity. Positive = PE support stronger. Negative = CE resistance stronger."
+                    />
+                  </th>
                   <th className="px-2 py-2 font-medium">Trend</th>
-                  <th className="px-2 py-2 font-medium">Activity</th>
+                  <th className="px-2 py-2 font-medium">
+                    <HeaderTooltip
+                      label="Activity"
+                      tooltip="Shows today's OI + price direction on the CE and PE leg separately - it does not compare which side is stronger. A strike can show bullish-looking activity here (e.g. Long build CE, Writing PE) and still read Down / Resistance in Bias, if CE's pre-existing open-interest wall at that strike is bigger than PE's."
+                    />
+                  </th>
                   <th className="px-2 py-2 text-right font-medium">PE / CE</th>
                 </tr>
               </thead>
@@ -122,6 +133,18 @@ export function DashboardMainPanel({
       </Panel>
       {showRecommendations ? <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} /> : null}
     </section>
+  );
+}
+
+function HeaderTooltip({ label, tooltip }: { label: string; tooltip: string }) {
+  return (
+    <span className="group relative inline-flex cursor-help items-center gap-1">
+      <span className="border-b border-dotted border-terminal-muted/70">{label}</span>
+      <Info size={11} className="text-terminal-muted/70" />
+      <span className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded border border-terminal-line bg-terminal-bg p-2 text-[0.7rem] normal-case leading-4 text-terminal-text shadow-lg group-hover:block">
+        {tooltip}
+      </span>
+    </span>
   );
 }
 
