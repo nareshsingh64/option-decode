@@ -303,7 +303,7 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
 // Minimum |trendScore| (OI-change-in-lots + 2x LTP-change-%) required before
 // a strike is called "building" rather than "Flat". This used to be (and
 // still is, in the client-side strike-pressure-analytics.ts version of this
-// same logic) the median trend strength of the same ATM +/-2 window being
+// same logic) the median trend strength of the same ATM +/-4 window being
 // classified, which means a uniform move across every nearby strike (the
 // clearest possible "building" signal) raises the bar right along with it
 // and gets silently reclassified as Flat — the detector can only see a
@@ -314,7 +314,7 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
 const STRIKE_TREND_THRESHOLD = 10;
 
 /**
- * ATM +/-2 strike movement score — the most important trend-reading panel
+ * ATM +/-4 strike movement score — the most important trend-reading panel
  * per the dashboard guide (section 3). Uses the same pressureValue
  * weighting as the main pressure score/zones so this panel can never
  * contradict the bullish/bearish % shown elsewhere on the same screen.
@@ -327,7 +327,7 @@ export function calculateStrikeMovement(snapshot: OptionChainSnapshot): StrikeMo
   }
 
   const findTick = (strike: number, optionType: "CE" | "PE") => snapshot.ticks.find((tick) => tick.strikePrice === strike && tick.optionType === optionType);
-  const window = strikes.slice(Math.max(0, atmIndex - 2), atmIndex + 3);
+  const window = strikes.slice(Math.max(0, atmIndex - 4), atmIndex + 5);
   const peAverageVolume = averageLotsVolume(snapshot.ticks.filter((tick) => tick.optionType === "PE"));
   const ceAverageVolume = averageLotsVolume(snapshot.ticks.filter((tick) => tick.optionType === "CE"));
 
@@ -375,7 +375,7 @@ function emptyTick(optionType: "CE" | "PE", strikePrice: number): OptionContract
   };
 }
 
-/** Aggregate buyer-momentum vs. seller-safety score across the ATM +/-2 window. */
+/** Aggregate buyer-momentum vs. seller-safety score across the ATM +/-4 window. */
 export function calculateTradeInterpretation(rows: StrikeMovementRow[]): TradeInterpretation {
   return {
     buyerScore: rows.reduce((sum, row) => sum + row.buyerMomentumScore, 0),

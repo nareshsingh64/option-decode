@@ -367,7 +367,7 @@ app.get<{
     pressure,
     marketPulse,
     alerts,
-    // Raw ATM +/-2 strike movement rows, already computed above for the
+    // Raw ATM +/-4 strike movement rows, already computed above for the
     // Trade Recommendations engine. Sent to the client so the Strike
     // Movement table on the dashboard reads the SAME numbers the
     // recommendations are based on, instead of the web app recomputing its

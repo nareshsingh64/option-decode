@@ -10,7 +10,7 @@ Read the app in this order:
 
 1. Check market context from the ticker and selected underlying.
 2. Read Dashboard pressure and setup quality.
-3. Confirm ATM +/-2 Strike Movement Score.
+3. Confirm ATM +/-4 Strike Movement Score.
 4. Open Option Chain and confirm OI, OI Change, Volume, LTP change, IV, and Delta.
 5. Check support/resistance and max pain distance.
 6. Choose trade type: option buying, option selling, or no trade.
@@ -195,7 +195,7 @@ Decision:
 - PE selling is better near support if support is holding.
 - CE selling is better near resistance if resistance is holding.
 
-## 7. ATM +/-2 Strike Movement Score
+## 7. ATM +/-4 Strike Movement Score
 
 This panel is critical because it focuses on the strikes nearest to current price.
 
@@ -203,7 +203,7 @@ Fields:
 
 | Field | Meaning |
 | --- | --- |
-| Strike | ATM, ATM +1, ATM +2, ATM -1, ATM -2 |
+| Strike | ATM, ATM +1 through +4, ATM -1 through -4 |
 | Net Score | PE score minus CE score |
 | Move Bias | Direction suggested by support/resistance around that strike |
 | Score Trend | Whether support or resistance is increasing |
@@ -507,7 +507,7 @@ Replay validates whether signals worked earlier in the day.
 Use replay to answer:
 
 - Did pressure build before the move?
-- Did ATM +/-2 score lead or lag?
+- Did ATM +/-4 score lead or lag?
 - Did strong OI levels behave like support/resistance?
 - Did LTP and OI agree?
 

@@ -160,8 +160,8 @@ test("calculateChainStats classifies OI breadth from total CE vs PE open interes
   assert.equal(calculateChainStats(balanced).breadth, "Balanced");
 });
 
-test("calculateStrikeMovement windows to ATM +/-2 and reflects PE-support buildup as a positive net score", () => {
-  const strikes = [24800, 24900, 25000, 25100, 25200];
+test("calculateStrikeMovement windows to ATM +/-4 and reflects PE-support buildup as a positive net score", () => {
+  const strikes = [24600, 24700, 24800, 24900, 25000, 25100, 25200, 25300, 25400];
   const ticks: OptionContractTick[] = [];
   for (const strike of strikes) {
     ticks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 4000, changeInOpenInterest: 600, lastPriceChange: -1, volume: 500 }));
@@ -170,7 +170,7 @@ test("calculateStrikeMovement windows to ATM +/-2 and reflects PE-support buildu
   const snap = snapshot(ticks, 25000, 25000);
 
   const rows = calculateStrikeMovement(snap);
-  assert.equal(rows.length, 5, "should return the ATM +/-2 window");
+  assert.equal(rows.length, 9, "should return the ATM +/-4 window");
   assert.ok(rows.every((row) => row.netScore > 0), "PE-dominated chain should show a positive net score across the window");
   const atmRow = rows.find((row) => row.isAtm);
   assert.ok(atmRow, "one row must be flagged as ATM");

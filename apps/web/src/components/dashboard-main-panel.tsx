@@ -66,7 +66,7 @@ export function DashboardMainPanel({
           </div>
         )}
       </Panel>
-      <Panel title="ATM +/-2 Strike Movement Score">
+      <Panel title="ATM +/-4 Strike Movement Score">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem]">
           <div className="overflow-x-auto rounded border border-terminal-line">
             <table className="w-full min-w-[32rem] border-collapse text-sm">

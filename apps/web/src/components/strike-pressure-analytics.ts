@@ -7,7 +7,7 @@ interface ChainStats {
   maxOiSide: string;
 }
 
-// The ATM +/-2 peScore/ceScore/netScore/trend numbers themselves come
+// The ATM +/-4 peScore/ceScore/netScore/trend numbers themselves come
 // straight from the server's `overview.strikeMovement` (computed once by
 // @option-decode/analytics#calculateStrikeMovement, the same calculation the
 // Trade Recommendations engine's totalNetScore is based on). This function

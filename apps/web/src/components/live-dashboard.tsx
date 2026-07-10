@@ -140,7 +140,7 @@ export interface MarketOverview {
     metric: string;
     createdAt: string;
   }>;
-  // ATM +/-2 strike movement rows, computed server-side by
+  // ATM +/-4 strike movement rows, computed server-side by
   // @option-decode/analytics#calculateStrikeMovement - the same rows the
   // Trade Recommendations engine's netScore is based on. The client only
   // adds presentation-only decoration on top of these (see
