@@ -24,6 +24,7 @@ import {
   fetchReplayTimeline,
   fetchReplayTradingDates,
   logoutAuthUser,
+  placeMultiLegPaperOrder,
   placePaperOrder,
   registerBrowserPush,
   resendVerificationEmail,
@@ -68,6 +69,7 @@ import {
 import { IvSkewChart, OiBuildupChart } from "./option-chain-charts";
 import { OptionChainPanel } from "./option-chain-panel";
 import { PaperTradingPanel } from "./paper-trading-panel";
+import type { HedgeLegDraft } from "./paper-trading-panel";
 import { PressureEngine } from "./pressure-engine";
 import { ReplayLab } from "./replay-lab";
 import { SettingsPanel } from "./settings-panel";
@@ -129,8 +131,30 @@ export interface MarketOverview {
     bearishPressure: number;
     pcr?: number;
     maxPain?: number;
-    supportZones: Array<{ strikePrice: number; score: number; reason: string }>;
-    resistanceZones: Array<{ strikePrice: number; score: number; reason: string }>;
+    // premium/trueZone: the breakeven-cushion math from the playbook - the
+    // zone's raw OI strike offset by what a writer actually collected there
+    // (strike + premium for a CE resistance wall, strike - premium for a PE
+    // support floor). Undefined when the anchoring tick has no live premium.
+    // avgSellPrice/weightedTrueZone: a second, independently-computed
+    // version using the OI-buildup-weighted average sell price from real
+    // tick history, instead of a single point-in-time LTP. Shown alongside
+    // trueZone, not replacing it.
+    supportZones: Array<{ strikePrice: number; score: number; reason: string; premium?: number; trueZone?: number; avgSellPrice?: number; weightedTrueZone?: number; weightedSampleOi?: number }>;
+    resistanceZones: Array<{ strikePrice: number; score: number; reason: string; premium?: number; trueZone?: number; avgSellPrice?: number; weightedTrueZone?: number; weightedSampleOi?: number }>;
+  };
+  // The playbook's ATM Straddle Rule (ATM Call LTP + ATM Put LTP), computed
+  // server-side by @option-decode/analytics#calculateAtmStraddleExpectedMove.
+  // Distinct from the India-VIX-derived expected-move range used for chain
+  // display elsewhere on this page (see buildVixStrikeRange) - kept separate
+  // rather than merged since they answer the same question with two
+  // different, independently-useful methods.
+  atmStraddle?: {
+    atmStrike: number;
+    atmCallPrice: number;
+    atmPutPrice: number;
+    atmStraddlePrice: number;
+    expectedUpperBoundary: number;
+    expectedLowerBoundary: number;
   };
   alerts: Array<{
     id: string;
@@ -160,6 +184,31 @@ export interface Recommendation {
   explanation: string;
   action: string;
   confidence: number;
+  tradeSetup?: {
+    optionType: "CE" | "PE";
+    strike: number;
+    entryPrice: number;
+    stopLoss: number;
+    target: number;
+    riskRewardRatio: number;
+    breakevenAtExpiry: number;
+    breakevenToday: number;
+  };
+  // Seller-side setup(s) - see @option-decode/trading#buildSellerTradeSetup.
+  // One entry for a single-leg write, two for a strangle-style CE+PE pair.
+  sellSetups?: Array<{
+    optionType: "CE" | "PE";
+    strike: number;
+    timeframe: "intraday" | "weekly" | "monthly";
+    targetDelta: number;
+    actualDelta: number;
+    entryPrice: number;
+    stopLoss: number;
+    stopLossMultiplier: number;
+    target: number;
+    riskRewardRatio: number;
+    breakevenAtExpiry: number;
+  }>;
 }
 
 export interface PaperSummary {
@@ -474,6 +523,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [orderExpiryOverview, setOrderExpiryOverview] = useState<MarketOverview | null>(null);
   const [orderExpiryError, setOrderExpiryError] = useState<string | null>(null);
   const lastOrderUnderlyingRef = useRef(initialOverview.selectedUnderlying);
+  // Mirrors lastOrderUnderlyingRef, but for Replay Lab's independently
+  // selected expiry/day - see the effect below (declared after
+  // initializeReplayView, which it depends on) for why this needs a fix at
+  // all: without it, switching the underlying via Market Controls leaves
+  // replayExpiryRef pointed at the PREVIOUS underlying's expiry, and that
+  // stale value gets reused as if it were valid for the new underlying.
+  const lastReplayUnderlyingRef = useRef(initialOverview.selectedUnderlying);
   const [orderEntry, setOrderEntry] = useState("");
   const [orderLots, setOrderLots] = useState("1");
   const [orderStopLoss, setOrderStopLoss] = useState("");
@@ -946,6 +1002,50 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     await refreshReplayTimeline();
   }, [refreshReplayTradingDatesFor, refreshReplayTimeline]);
 
+  // BUG FIX: switching the underlying via Market Controls (Symbol + Apply)
+  // used to leave Replay Lab entirely untouched - replayExpiry, the stored
+  // trading-day list, and any loaded snapshots all kept showing whatever
+  // the PREVIOUSLY selected underlying had. Two symptoms reported from
+  // this: (1) Replay Lab appears to ignore the new symbol and keeps
+  // showing the old one's data, and (2) because initializeReplayView falls
+  // back to `replayExpiryRef.current || selectionRef.current.expiry`, a
+  // stale expiry left over from the old underlying would get queried
+  // against the NEW underlying's stored data - a mismatched expiry date
+  // that (depending on the two underlyings' actual expiry calendars) may
+  // not exist for the new symbol at all, hence "expiry list dates mismatch
+  // with the actual expiry dates."
+  //
+  // A different underlying has a completely different, incompatible expiry
+  // calendar (a FINNIFTY expiry date is meaningless for NIFTY), so - same
+  // reasoning as the orderExpiry-reset effect above - only an underlying
+  // change resets this, not a same-underlying expiry change (Replay Lab is
+  // deliberately allowed to browse a different expiry than the live
+  // dashboard is currently on).
+  useEffect(() => {
+    if (lastReplayUnderlyingRef.current === overview.selectedUnderlying) {
+      return;
+    }
+    lastReplayUnderlyingRef.current = overview.selectedUnderlying;
+    setReplayExpiryWithRef(overview.selectedExpiry);
+    setReplayTradingDates([]);
+    setReplayTradingDateWithRef("");
+    setReplayStartSnapshotIdWithRef("");
+    setReplaySnapshots([]);
+    replaySnapshotsRef.current = [];
+    setReplayIndex(0);
+    replayIndexRef.current = 0;
+    setReplayOverview(null);
+    setReplayError(null);
+    setIsReplayPlaying(false);
+    // Only eagerly refetch if the user is actually looking at Replay Lab
+    // right now - if they're on another tab, the existing
+    // "initialView === 'replay'" effect below will pick this up (using the
+    // now-correctly-reset replayExpiryRef) the moment they switch to it.
+    if (initialView === "replay") {
+      initializeReplayView();
+    }
+  }, [overview.selectedUnderlying, overview.selectedExpiry, initialView, initializeReplayView, setReplayExpiryWithRef, setReplayTradingDateWithRef, setReplayStartSnapshotIdWithRef]);
+
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (!isMarketStreamConnectedRef.current) {
@@ -1221,12 +1321,16 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     onNavigateToView?.("paper");
   }, [onNavigateToView, overview.selectedExpiry]);
 
-  const handlePaperOrder = async (event: FormEvent<HTMLFormElement>) => {
+  // hedgeLegs: optional additional legs added in the same ticket ("build
+  // multi-leg at entry"), e.g. a bought OTM option protecting a sold
+  // ATM/ITM main leg. Empty/omitted preserves the original single-leg
+  // behavior exactly. All legs share the ticket's underlying/expiry.
+  const handlePaperOrder = async (event: FormEvent<HTMLFormElement>, hedgeLegs: HedgeLegDraft[] = []) => {
     event.preventDefault();
     setIsPlacingOrder(true);
     setPaperError(null);
     try {
-      const nextSummary = await placePaperOrder({
+      const mainLeg = {
         underlyingSymbol: overview.snapshot.underlyingSymbol,
         expiry: orderExpiry,
         action: orderAction,
@@ -1240,7 +1344,29 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         targetPrice: normalizeTradablePrice(orderTargetValue),
         strategyName: "Dashboard pressure setup",
         reasonText: `${overview.pressure.bullishPressure}% bullish / ${overview.pressure.bearishPressure}% bearish pressure`
-      });
+      };
+
+      const nextSummary = hedgeLegs.length
+        ? await placeMultiLegPaperOrder([
+            { ...mainLeg, legRole: "MAIN" as const },
+            ...hedgeLegs.map((leg) => ({
+              underlyingSymbol: overview.snapshot.underlyingSymbol,
+              expiry: orderExpiry,
+              action: leg.action,
+              optionType: leg.optionType,
+              strikePrice: leg.strikePrice,
+              lots: leg.lots,
+              requestedPrice: normalizeTradablePrice(leg.requestedPrice),
+              stopLoss: normalizeTradablePrice(leg.stopLoss),
+              trailingStop: false,
+              trailDistance: normalizeTradablePrice(Math.abs(leg.requestedPrice - leg.stopLoss)),
+              targetPrice: normalizeTradablePrice(leg.targetPrice),
+              strategyName: "Dashboard pressure setup (hedge leg)",
+              reasonText: "Hedge leg added at entry against the main trade",
+              legRole: "HEDGE" as const
+            }))
+          ])
+        : await placePaperOrder(mainLeg);
       setPaperSummary(nextSummary);
     } catch (error) {
       setPaperError(error instanceof Error ? error.message : "Unable to place paper order");
@@ -1312,7 +1438,28 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const handleMarketControlSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
-    await loadMarketSelection(String(formData.get("underlying") ?? ""), String(formData.get("expiry") ?? ""));
+    const nextUnderlying = String(formData.get("underlying") ?? "").trim().toUpperCase();
+    const formExpiry = String(formData.get("expiry") ?? "").trim();
+    // BUG FIX: the Expiry field (market-controls.tsx's ExpiryFormField) is
+    // staged in its OWN local state and only resets when this form remounts
+    // - which happens after a successful submit, via the
+    // key={selectedUnderlying-selectedExpiry} on the form, not while the
+    // user is still mid-edit on the Symbol field above it. So typing a new
+    // Symbol and hitting Apply in one go submits the NEW underlying
+    // alongside the OLD underlying's still-staged expiry - a date that may
+    // not even exist for the new symbol (e.g. NIFTY's weekly Tuesday expiry
+    // sent for BANKNIFTY, which only trades monthly). That mismatched
+    // expiry was being forced through as an explicit override, and
+    // everything downstream (this dashboard, Replay Lab's tradable-date
+    // list) had no real data for that combination.
+    //
+    // Only trust the staged expiry when the symbol ISN'T changing; on an
+    // actual underlying switch, drop it and let the server pick that
+    // underlying's own nearest/default expiry - exactly like the watchlist
+    // "Play" button already does via loadMarketSelection(symbol) with no
+    // expiry argument.
+    const expiryToUse = nextUnderlying === overview.selectedUnderlying ? formExpiry : "";
+    await loadMarketSelection(nextUnderlying, expiryToUse);
   };
 
   const handleUpdatePositionRisk = async (positionId: string) => {

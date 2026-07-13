@@ -24,6 +24,43 @@ interface CommodityFutureQuote {
   expiryDate: string;
 }
 
+// Dhan's F&O trading segment differs from the UnderlyingDefinition.segment
+// used for option-chain lookups (which is IDX_I for every index, spot or
+// otherwise). Margin calculation needs the real order-routing segment.
+const BSE_UNDERLYING_KEYS = new Set(["SENSEX", "BANKEX"]);
+const MCX_UNDERLYING_KEYS = new Set(["CRUDEOIL", "NATURALGAS", "COPPER", "SILVER"]);
+
+export function getFnoExchangeSegment(underlyingKey: string): "NSE_FNO" | "BSE_FNO" | "MCX_COMM" {
+  const key = normalizeUnderlyingKeyForSegment(underlyingKey);
+  if (MCX_UNDERLYING_KEYS.has(key)) return "MCX_COMM";
+  if (BSE_UNDERLYING_KEYS.has(key)) return "BSE_FNO";
+  return "NSE_FNO";
+}
+
+function normalizeUnderlyingKeyForSegment(value: string): string {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+export interface DhanMarginLegInput {
+  transactionType: "BUY" | "SELL";
+  quantity: number;
+  securityId: string;
+  price: number;
+  exchangeSegment?: "NSE_FNO" | "BSE_FNO" | "MCX_COMM";
+  productType?: "CNC" | "INTRADAY" | "MARGIN" | "MTF";
+}
+
+export interface DhanMultiOrderMarginResult {
+  totalMargin: number;
+  spanMargin: number;
+  exposureMargin: number;
+  equityMargin: number;
+  foMargin: number;
+  commodityMargin: number;
+  currency: string;
+  hedgeBenefit?: string;
+}
+
 export class DhanApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -279,6 +316,41 @@ export class DhanClient {
     }
 
     return quotes;
+  }
+
+  // Informational-only margin lookup (single leg or multiple legs of one
+  // strategy passed together). Never used to block or size a paper trade -
+  // callers should treat a thrown/failed call as "margin unavailable" and
+  // continue, not as a reason to reject the fill.
+  async calculateMultiOrderMargin(legs: DhanMarginLegInput[]): Promise<DhanMultiOrderMarginResult> {
+    if (legs.length === 0) {
+      throw new DhanApiError("calculateMultiOrderMargin requires at least one leg.");
+    }
+
+    const raw = await this.postDhan<Record<string, unknown>>("/v2/margincalculator/multi", {
+      includePosition: false,
+      includeOrders: false,
+      dhanClientId: this.options.clientId,
+      scripts: legs.map((leg) => ({
+        exchangeSegment: leg.exchangeSegment ?? "NSE_FNO",
+        transactionType: leg.transactionType,
+        quantity: leg.quantity,
+        productType: leg.productType ?? "INTRADAY",
+        securityId: leg.securityId,
+        price: leg.price
+      }))
+    });
+
+    return {
+      totalMargin: toNumber(raw.total_margin ?? raw.totalMargin) ?? 0,
+      spanMargin: toNumber(raw.span_margin ?? raw.spanMargin) ?? 0,
+      exposureMargin: toNumber(raw.exposure_margin ?? raw.exposureMargin) ?? 0,
+      equityMargin: toNumber(raw.equity_margin ?? raw.equityMargin) ?? 0,
+      foMargin: toNumber(raw.fo_margin ?? raw.foMargin) ?? 0,
+      commodityMargin: toNumber(raw.commodity_margin ?? raw.commodityMargin) ?? 0,
+      currency: typeof raw.currency === "string" ? raw.currency : "INR",
+      hedgeBenefit: typeof raw.hedge_benefit === "string" && raw.hedge_benefit ? raw.hedge_benefit : undefined
+    };
   }
 
   protected headers(): Record<string, string> {

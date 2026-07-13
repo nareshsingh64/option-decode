@@ -18,6 +18,24 @@ interface RecommendedTradeSetup {
   breakevenToday: number;
 }
 
+// Seller-side counterpart, from @option-decode/trading#buildSellerTradeSetup
+// - see the field-by-field explanation on RecommendedSellSetup in
+// @option-decode/types for how each of these is derived (delta-band strike
+// selection, 1.5x-2x stop, ~50% profit target).
+interface RecommendedSellSetup {
+  optionType: "CE" | "PE";
+  strike: number;
+  timeframe: "intraday" | "weekly" | "monthly";
+  targetDelta: number;
+  actualDelta: number;
+  entryPrice: number;
+  stopLoss: number;
+  stopLossMultiplier: number;
+  target: number;
+  riskRewardRatio: number;
+  breakevenAtExpiry: number;
+}
+
 interface Recommendation {
   id: string;
   category: "direction" | "strategy" | "timing" | "avoid";
@@ -27,6 +45,7 @@ interface Recommendation {
   action: string;
   confidence: number;
   tradeSetup?: RecommendedTradeSetup;
+  sellSetups?: RecommendedSellSetup[];
 }
 
 // Recommendations are recomputed fresh every time the market-overview API
@@ -101,6 +120,13 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
         <ChevronDown size={14} className={`shrink-0 text-terminal-muted transition-transform ${expanded ? "rotate-180" : ""}`} />
       </button>
       {rec.tradeSetup ? <TradeSetupRow setup={rec.tradeSetup} /> : null}
+      {rec.sellSetups?.length ? (
+        <div className="mx-2.5 mb-2 grid gap-1.5">
+          {rec.sellSetups.map((setup) => (
+            <SellSetupRow key={`${setup.optionType}-${setup.strike}`} setup={setup} />
+          ))}
+        </div>
+      ) : null}
       {expanded && (
         <div className="px-2.5 pb-2.5">
           <p className="text-xs leading-5 text-terminal-muted">{rec.explanation}</p>
@@ -145,6 +171,42 @@ function TradeSetupRow({ setup }: { setup: RecommendedTradeSetup }) {
         <span>
           At expiry <span className="font-medium text-terminal-text">₹{setup.breakevenAtExpiry.toFixed(2)}</span>
         </span>
+      </div>
+    </div>
+  );
+}
+
+// Seller-side mirror of TradeSetupRow. Note the SL/target polarity is
+// reversed from a buy-side setup: stop-loss sits ABOVE entry (the premium
+// rising against a short is the loss direction) and target sits BELOW entry
+// (the option decaying is the profit direction) - see
+// @option-decode/trading#buildSellerTradeSetup.
+function SellSetupRow({ setup }: { setup: RecommendedSellSetup }) {
+  return (
+    <div className="rounded border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="rounded bg-terminal-emerald/10 px-1.5 py-0.5 text-[0.6rem] font-medium uppercase text-terminal-emerald">Sell</span>
+        <span className="font-semibold text-terminal-text">
+          {setup.strike.toLocaleString("en-IN")} {setup.optionType}
+        </span>
+        <span className="text-terminal-muted">
+          {setup.timeframe} · Δ{setup.actualDelta.toFixed(2)} (target {setup.targetDelta.toFixed(2)})
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="text-terminal-muted">
+          Collect <span className="font-medium text-terminal-text">₹{setup.entryPrice.toFixed(2)}</span>
+        </span>
+        <span className="text-terminal-red">
+          Buy back (SL) <span className="font-medium">₹{setup.stopLoss.toFixed(2)}</span> ({setup.stopLossMultiplier}x)
+        </span>
+        <span className="text-terminal-emerald">
+          Buy back (target) <span className="font-medium">₹{setup.target.toFixed(2)}</span>
+        </span>
+        <span className="text-terminal-muted">1:{setup.riskRewardRatio}</span>
+      </div>
+      <div className="mt-1 text-terminal-muted">
+        Breakeven at expiry <span className="font-medium text-terminal-text">₹{setup.breakevenAtExpiry.toFixed(2)}</span>
       </div>
     </div>
   );
