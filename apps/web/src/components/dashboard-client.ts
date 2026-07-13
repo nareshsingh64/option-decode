@@ -375,7 +375,7 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
   };
 }
 
-export async function placePaperOrder(payload: {
+export interface PaperOrderLegPayload {
   underlyingSymbol: string;
   expiry: string;
   action: "BUY" | "SELL";
@@ -389,7 +389,10 @@ export async function placePaperOrder(payload: {
   targetPrice: number;
   strategyName: string;
   reasonText: string;
-}): Promise<PaperSummary> {
+  legRole?: "MAIN" | "HEDGE";
+}
+
+export async function placePaperOrder(payload: PaperOrderLegPayload): Promise<PaperSummary> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/paper/orders`, {
     method: "POST",
@@ -403,6 +406,27 @@ export async function placePaperOrder(payload: {
   if (!response.ok) {
     const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(errorBody?.message ?? `Paper order failed with HTTP ${response.status}`);
+  }
+
+  return response.json() as Promise<PaperSummary>;
+}
+
+// Build multi-leg at entry: places a main leg plus one or more hedge legs
+// together in one ticket, linked as a single strategy.
+export async function placeMultiLegPaperOrder(legs: PaperOrderLegPayload[]): Promise<PaperSummary> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/paper/orders/multi-leg`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify({ legs })
+  });
+
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Multi-leg paper order failed with HTTP ${response.status}`);
   }
 
   return response.json() as Promise<PaperSummary>;

@@ -19,9 +19,10 @@ export { createEmailVerificationToken, createPasswordResetToken, createUser, get
 export type { AuthUserDto } from "./auth-repository.js";
 export { buildDemoSnapshot } from "./demo-snapshot.js";
 export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan } from "./lot-size-repository.js";
-export { getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
-export { cancelPendingPaperOrder, closePaperPosition, getPaperSummary, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, placePaperOrder, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
-export type { PaperOrderInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";
+export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
+export type { OiWeightedPriceResult } from "./market-repository.js";
+export { cancelPendingPaperOrder, closePaperPosition, getOpenPositionsForMarginGroup, getPaperSummary, getPendingOrdersForMarginGroup, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, recordPositionMargin, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
+export type { FilledPaperLeg, MarginQuoteLeg, PaperOrderInput, PaperOrderLegInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";
 export { disablePushSubscriptionByEndpoint, disablePushSubscriptionsForUser, listActivePushSubscriptions, upsertPushSubscription } from "./push-repository.js";
 export type { PushSubscriptionDto, PushSubscriptionInput } from "./push-repository.js";
 export { getDefaultWatchlist, updateDefaultWatchlist } from "./watchlist-repository.js";

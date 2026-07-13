@@ -119,9 +119,25 @@ export function getActivityToneClass(activity: OptionActivityKind) {
 }
 
 export function buildZoneRows(overview: MarketOverview) {
+  // trueZone: the premium-adjusted breakeven cushion from
+  // @option-decode/analytics#calculatePressureScore (strike + premium for a
+  // CE resistance wall, strike - premium for a PE support floor) - carried
+  // straight through from the zone rather than recomputed here, so this
+  // table can never disagree with what the API actually returned. Left
+  // undefined when the source zone has no live premium to anchor it to.
+  //
+  // weightedTrueZone/avgSellPrice: a second, independently-computed
+  // defense line using the OI-buildup-weighted average sell price (real
+  // historical tick data, not a single point-in-time LTP) - see
+  // PressureZone's doc comment in @option-decode/types. Shown alongside
+  // trueZone, not replacing it - they answer different questions.
   const resistance = overview.pressure.resistanceZones.slice(0, 2).map((zone, index) => ({
     label: `R${index + 1}`,
     value: zone.strikePrice,
+    trueZone: zone.trueZone,
+    weightedTrueZone: zone.weightedTrueZone,
+    avgSellPrice: zone.avgSellPrice,
+    weightedSampleOi: zone.weightedSampleOi,
     status: index === 0 ? "Strong" : "Moderate",
     tone: "red" as const,
     isCurrent: false
@@ -129,6 +145,10 @@ export function buildZoneRows(overview: MarketOverview) {
   const support = overview.pressure.supportZones.slice(0, 2).map((zone, index) => ({
     label: `S${index + 1}`,
     value: zone.strikePrice,
+    trueZone: zone.trueZone,
+    weightedTrueZone: zone.weightedTrueZone,
+    avgSellPrice: zone.avgSellPrice,
+    weightedSampleOi: zone.weightedSampleOi,
     status: index === 0 ? "Strong" : "Key Level",
     tone: "green" as const,
     isCurrent: false
@@ -139,6 +159,10 @@ export function buildZoneRows(overview: MarketOverview) {
     {
       label: "CMP",
       value: overview.snapshot.spotPrice,
+      trueZone: undefined as number | undefined,
+      weightedTrueZone: undefined as number | undefined,
+      avgSellPrice: undefined as number | undefined,
+      weightedSampleOi: undefined as number | undefined,
       status: "Current",
       tone: "blue" as const,
       isCurrent: true

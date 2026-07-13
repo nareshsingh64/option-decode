@@ -4,12 +4,12 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
+import { calculateAtmStraddleExpectedMove, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placePaperOrder, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
-import { DhanClient, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
-import type { MarketPulse, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
+import type { MarketPulse, OptionChainSnapshot, PressureScore, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 
@@ -329,6 +329,47 @@ app.patch<{
   return updateAdminUserDisabled(request.params.id, parsed.data.disabled);
 });
 
+// Enriches support/resistance zones with the OI-buildup-weighted average
+// sell price (see calculateOiWeightedAverageSellPrices), alongside the
+// existing LTP-based premium/trueZone - deliberately additive, not a
+// replacement, since the two answer different questions. Best-effort: a
+// failure here (e.g. a slow query) falls back to the zones unchanged
+// rather than failing the whole market-overview/replay response.
+async function enrichZonesWithAvgSellPrice(pressure: PressureScore, underlyingSymbol: string, expiryLabel: string): Promise<PressureScore> {
+  const strikes = [
+    ...pressure.supportZones.map((zone) => ({ optionType: "PE" as const, strikePrice: zone.strikePrice })),
+    ...pressure.resistanceZones.map((zone) => ({ optionType: "CE" as const, strikePrice: zone.strikePrice }))
+  ];
+
+  if (!strikes.length) {
+    return pressure;
+  }
+
+  const weighted = await calculateOiWeightedAverageSellPrices(underlyingSymbol, expiryLabel, strikes).catch((error) => {
+    app.log.warn({ error, underlyingSymbol, expiryLabel }, "Unable to compute OI-weighted average sell price; zones shown without it");
+    return new Map();
+  });
+
+  const applyWeighted = (zone: PressureScore["supportZones"][number], optionType: "CE" | "PE") => {
+    const result = weighted.get(`${optionType}:${zone.strikePrice}`);
+    if (!result) {
+      return zone;
+    }
+    return {
+      ...zone,
+      avgSellPrice: result.avgSellPrice,
+      weightedTrueZone: optionType === "CE" ? zone.strikePrice + result.avgSellPrice : Math.max(0, zone.strikePrice - result.avgSellPrice),
+      weightedSampleOi: result.totalOi
+    };
+  };
+
+  return {
+    ...pressure,
+    supportZones: pressure.supportZones.map((zone) => applyWeighted(zone, "PE")),
+    resistanceZones: pressure.resistanceZones.map((zone) => applyWeighted(zone, "CE"))
+  };
+}
+
 app.get<{
   Querystring: {
     underlying?: string;
@@ -347,13 +388,18 @@ app.get<{
     userPromise
   ]);
   const marketPulsePromise = getCachedMarketPulse(snapshot.underlyingSymbol, snapshot.expiry);
-  const pressure = calculatePressureScore(snapshot);
+  const pressure = await enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
   const strikeMovement = calculateStrikeMovement(snapshot);
   const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
   const marketBias = calculateMarketBias(snapshot, pressure);
   const marketPulse = await marketPulsePromise;
+  // ATM Call LTP + ATM Put LTP - the playbook's own weekly expected-move
+  // boundary, separate from the India-VIX-derived range already sent below
+  // via `indiaVix`. Feeds both the dashboard's own display and the seller
+  // strike selection inside calculateTradeRecommendations.
+  const atmStraddle = calculateAtmStraddleExpectedMove(snapshot);
 
   return {
     underlyings: visibleUnderlyings,
@@ -366,6 +412,7 @@ app.get<{
     snapshot,
     pressure,
     marketPulse,
+    atmStraddle,
     alerts,
     // Raw ATM +/-4 strike movement rows, already computed above for the
     // Trade Recommendations engine. Sent to the client so the Strike
@@ -375,7 +422,7 @@ app.get<{
     // strike-pressure-analytics.ts on the client for the presentation-only
     // decoration applied on top of these rows.
     strikeMovement,
-    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
+    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation, atmStraddle)
   };
 });
 
@@ -668,20 +715,27 @@ app.get<{
     return reply.status(404).send({ message: "Replay snapshot was not found." });
   }
 
-  const pressure = calculatePressureScore(snapshot);
+  const pressure = await enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry);
   const user = await getRequestUser(request.headers.cookie);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const strikeMovement = calculateStrikeMovement(snapshot);
   const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
   const marketBias = calculateMarketBias(snapshot, pressure);
   const marketPulse = await computeMarketPulseAsOf(snapshot.underlyingSymbol, snapshot.expiry, Date.parse(snapshot.snapshotTime));
+  const atmStraddle = calculateAtmStraddleExpectedMove(snapshot);
+  // Evaluated as-of the REPLAYED snapshot's own time, not real wall-clock
+  // "now" - matters for time-aware alerts (gamma-risk) so a replay of a
+  // long-past session reads correctly instead of comparing against today's
+  // date and always falling outside the expiry window.
+  const replayAsOf = new Date(snapshot.snapshotTime);
   return {
     snapshot,
     pressure,
     marketPulse,
-    alerts: generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined),
+    atmStraddle,
+    alerts: generateMarketAlerts(snapshot, pressure, Number.isFinite(replayAsOf.getTime()) ? replayAsOf : new Date(), alertThreshold ?? undefined),
     strikeMovement,
-    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation)
+    recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation, atmStraddle)
   };
 });
 
@@ -764,8 +818,101 @@ app.post("/api/paper/orders", async (request, reply) => {
     return reply.status(400).send({ message: validationMessage });
   }
 
-  return placePaperOrder(parsed.data, user);
+  const { summary, orderId } = await placePaperOrder(parsed.data, user);
+  const marginRecorded = await tryEstimateOrderMargin(orderId, null);
+  return marginRecorded ? getPaperSummary(user) : summary;
 });
+
+// Build multi-leg at entry: one ticket, a main leg plus one or more hedge
+// legs (e.g. a bought OTM option protecting a sold ATM/ITM option), all
+// created together and linked as one strategy. Informational only in the
+// sense that each leg still fills independently against its own requested
+// price - this endpoint just lets the user submit them as one action
+// instead of placing separate orders and manually tracking the pairing.
+const paperOrderLegSchema = paperOrderSchema.extend({
+  legRole: z.enum(["MAIN", "HEDGE"]).optional()
+});
+
+const multiLegPaperOrderSchema = z.object({
+  legs: z.array(paperOrderLegSchema).min(1).max(6)
+});
+
+app.post("/api/paper/orders/multi-leg", async (request, reply) => {
+  const user = await getRequestUser(request.headers.cookie);
+  if (!user) {
+    return reply.status(401).send({ message: "Login is required." });
+  }
+
+  const parsed = multiLegPaperOrderSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      message: "Invalid multi-leg paper order",
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message
+      }))
+    });
+  }
+
+  for (const leg of parsed.data.legs) {
+    const validationMessage = validatePaperOrderRisk(leg.action, leg.requestedPrice, leg.stopLoss, leg.targetPrice);
+    if (validationMessage) {
+      return reply.status(400).send({ message: validationMessage });
+    }
+  }
+
+  const { summary, orderIds } = await placeMultiLegPaperOrder(parsed.data.legs, user);
+  const groupId = summary.orders.find((order) => orderIds.includes(order.id))?.groupId ?? null;
+  const marginRecorded = orderIds.length ? await tryEstimateOrderMargin(orderIds[0], groupId) : false;
+  return marginRecorded ? getPaperSummary(user) : summary;
+});
+
+// Best-effort margin estimate at order placement time (works outside market
+// hours - Dhan's margin calculator is a static SPAN/exposure lookup, not a
+// live quote). Never throws: a failure here should never block placing the
+// order itself, it just means no margin figure shows up yet. Returns
+// whether a figure was actually recorded, so the caller knows whether it's
+// worth re-fetching the summary to include it in the response.
+async function tryEstimateOrderMargin(orderId: string, groupId: string | null): Promise<boolean> {
+  try {
+    const legs = await getPendingOrdersForMarginGroup(orderId, groupId);
+    const scriptLegs = legs.filter((leg) => leg.securityId);
+    if (!scriptLegs.length) {
+      app.log.warn({ orderId, groupId }, "Margin estimate skipped: no leg has a known Dhan securityId yet");
+      return false;
+    }
+
+    const margin = await dhan.calculateMultiOrderMargin(
+      scriptLegs.map((leg) => ({
+        transactionType: leg.action === "SELL" ? "SELL" : "BUY",
+        quantity: leg.quantity,
+        securityId: leg.securityId as string,
+        price: leg.entryPrice,
+        exchangeSegment: getFnoExchangeSegment(leg.underlyingSymbol)
+      }))
+    );
+
+    await recordOrderMargin(
+      legs.map((leg) => leg.id),
+      margin.totalMargin,
+      {
+        spanMargin: margin.spanMargin,
+        exposureMargin: margin.exposureMargin,
+        foMargin: margin.foMargin,
+        commodityMargin: margin.commodityMargin,
+        currency: margin.currency,
+        hedgeBenefit: margin.hedgeBenefit ?? null,
+        legCount: scriptLegs.length,
+        estimatedAt: "placement"
+      }
+    );
+
+    return true;
+  } catch (error) {
+    app.log.warn({ error, orderId, groupId }, "Margin estimate skipped for new paper order (informational only)");
+    return false;
+  }
+}
 
 const pendingOrderUpdateSchema = paperOrderSchema.pick({
   lots: true,

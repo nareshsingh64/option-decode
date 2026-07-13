@@ -1,4 +1,18 @@
-import type { MarketBiasSummary, OptionChainSnapshot, OptionType, PaperOrderRequest, PressureScore, PressureZone, Recommendation, RecommendedTradeSetup, StrikeMovementRow, TradeInterpretation } from "@option-decode/types";
+import type {
+  AtmStraddleExpectedMove,
+  MarketBiasSummary,
+  OptionChainSnapshot,
+  OptionType,
+  PaperOrderRequest,
+  PressureScore,
+  PressureZone,
+  Recommendation,
+  RecommendedSellSetup,
+  RecommendedTradeSetup,
+  StrikeMovementRow,
+  TradeInterpretation,
+  TradeTimeframe
+} from "@option-decode/types";
 import { randomUUID } from "node:crypto";
 import { blackScholesDelta, DEFAULT_IMPLIED_VOLATILITY, DEFAULT_RISK_FREE_RATE, getYearsToExpiry, solveBreakevenSpot } from "./option-pricing.ts";
 
@@ -128,6 +142,137 @@ function buildTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, 
   };
 }
 
+// Per-timeframe delta bands from the Institutional Option Seller's
+// Playbook: 0.15-0.20 delta intraday, 0.10-0.15 weekly, 0.05-0.10 (deep OTM)
+// monthly. `target` is the band midpoint used to rank candidate strikes
+// when several fall inside (or all fall outside) the band.
+const SELLER_DELTA_BANDS: Record<TradeTimeframe, { min: number; max: number; target: number }> = {
+  intraday: { min: 0.1, max: 0.2, target: 0.175 },
+  weekly: { min: 0.1, max: 0.15, target: 0.125 },
+  monthly: { min: 0.05, max: 0.1, target: 0.075 }
+};
+
+// The playbook's intraday system-stop rule (1.5x-2x premium collected)
+// applied as a conservative uniform default across every timeframe, rather
+// than a tighter number for weekly/monthly - a wider stop errs toward not
+// getting shaken out by ordinary premium noise, which matters more the
+// longer the trade is meant to be held.
+const SELLER_STOP_LOSS_MULTIPLIER = 1.75;
+// The playbook's monthly "IV crush lets you exit at 50-60% profit" rule,
+// generalized as the default profit-take across timeframes: buy back once
+// the premium has decayed to half of what was collected.
+const SELLER_PROFIT_TARGET_PERCENT = 0.5;
+
+// Below this many calendar days to expiry, a chain is read as "intraday"
+// (expiry today/tomorrow); below this many days it's "weekly"; otherwise
+// "monthly." Mirrors how a trader actually thinks about a given expiry
+// cycle - not tied to any particular index's specific expiry weekday, which
+// (per the September 2025 SEBI expiry-day rationalization) now differs by
+// exchange (Nifty: Tuesday, Sensex: Thursday) and shifts further around
+// holidays.
+const INTRADAY_MAX_DAYS_TO_EXPIRY = 1;
+const WEEKLY_MAX_DAYS_TO_EXPIRY = 8;
+
+/** Classifies how far out a chain's own expiry is into the playbook's three
+ * execution timeframes, purely from calendar days - see the constants above
+ * for why this is index-agnostic rather than a per-symbol weekday table. */
+export function inferSellerTimeframe(daysToExpiry: number): TradeTimeframe {
+  if (daysToExpiry <= INTRADAY_MAX_DAYS_TO_EXPIRY) return "intraday";
+  if (daysToExpiry <= WEEKLY_MAX_DAYS_TO_EXPIRY) return "weekly";
+  return "monthly";
+}
+
+/**
+ * Finds the OTM strike (CE above spot, PE below spot — writing an ITM
+ * strike isn't "selling premium" in the playbook's sense) whose delta sits
+ * closest to the given timeframe's target band. Prefers a strike that's
+ * BOTH inside the delta band AND beyond `expectedMoveBoundary` when one is
+ * supplied (the weekly ATM-straddle expected-move edge) — falling back to
+ * delta-band-only, then to closest-available-delta, so the search degrades
+ * gracefully on a thin/incomplete chain instead of returning nothing.
+ */
+function findStrikeByTargetDelta(
+  snapshot: OptionChainSnapshot,
+  optionType: OptionType,
+  timeframe: TradeTimeframe,
+  expectedMoveBoundary?: number
+): { strike: number; delta: number } | undefined {
+  const asOfMs = Date.parse(snapshot.snapshotTime);
+  const yearsToExpiry = getYearsToExpiry(snapshot.expiry, Number.isFinite(asOfMs) ? asOfMs : Date.now());
+  const band = SELLER_DELTA_BANDS[timeframe];
+
+  const candidates = snapshot.ticks
+    .filter((tick) => tick.optionType === optionType)
+    .filter((tick) => (optionType === "CE" ? tick.strikePrice > snapshot.spotPrice : tick.strikePrice < snapshot.spotPrice))
+    .filter((tick) => tick.lastPrice !== undefined && tick.lastPrice > 0)
+    .map((tick) => {
+      const volatility = (tick.impliedVolatility ?? DEFAULT_IMPLIED_VOLATILITY * 100) / 100;
+      const modelDelta = blackScholesDelta(optionType, snapshot.spotPrice, tick.strikePrice, yearsToExpiry, DEFAULT_RISK_FREE_RATE, volatility);
+      const rawDelta = tick.delta ?? modelDelta;
+      const delta = Math.abs(Number.isFinite(rawDelta) ? rawDelta : modelDelta);
+      return { strike: tick.strikePrice, delta };
+    });
+
+  if (!candidates.length) {
+    return undefined;
+  }
+
+  const inBand = candidates.filter((candidate) => candidate.delta >= band.min && candidate.delta <= band.max);
+  let pool = inBand.length ? inBand : candidates;
+
+  if (expectedMoveBoundary !== undefined) {
+    const beyondBoundary = pool.filter((candidate) => (optionType === "CE" ? candidate.strike >= expectedMoveBoundary : candidate.strike <= expectedMoveBoundary));
+    if (beyondBoundary.length) {
+      pool = beyondBoundary;
+    }
+  }
+
+  return pool.reduce((closest, candidate) => (Math.abs(candidate.delta - band.target) < Math.abs(closest.delta - band.target) ? candidate : closest));
+}
+
+/**
+ * Seller-side counterpart to buildTradeSetup(): turns a timeframe + option
+ * side into a concrete premium-collection setup — strike picked by target
+ * delta (optionally constrained beyond a weekly expected-move boundary),
+ * stop-loss ABOVE entry at the playbook's 1.5x-2x multiple, and a profit
+ * target BELOW entry at the playbook's ~50% decay rule. Mirrors
+ * buildTradeSetup's "return undefined rather than fabricate a price" contract
+ * when the chosen strike has no live premium.
+ */
+export function buildSellerTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, timeframe: TradeTimeframe, expectedMoveBoundary?: number): RecommendedSellSetup | undefined {
+  const match = findStrikeByTargetDelta(snapshot, optionType, timeframe, expectedMoveBoundary);
+  if (!match) {
+    return undefined;
+  }
+
+  const tick = snapshot.ticks.find((candidate) => candidate.strikePrice === match.strike && candidate.optionType === optionType);
+  if (!tick?.lastPrice || tick.lastPrice <= 0) {
+    return undefined;
+  }
+
+  const entryPrice = tick.lastPrice;
+  const stopLoss = roundToTick(entryPrice * SELLER_STOP_LOSS_MULTIPLIER);
+  const target = roundToTick(Math.max(0.05, entryPrice * (1 - SELLER_PROFIT_TARGET_PERCENT)));
+  const riskPerUnit = stopLoss - entryPrice;
+  const rewardPerUnit = entryPrice - target;
+  const riskRewardRatio = riskPerUnit > 0 ? Number((rewardPerUnit / riskPerUnit).toFixed(2)) : 0;
+  const breakevenAtExpiry = optionType === "CE" ? match.strike + entryPrice : match.strike - entryPrice;
+
+  return {
+    optionType,
+    strike: match.strike,
+    timeframe,
+    targetDelta: SELLER_DELTA_BANDS[timeframe].target,
+    actualDelta: Number(match.delta.toFixed(3)),
+    entryPrice: roundToTick(entryPrice),
+    stopLoss,
+    stopLossMultiplier: SELLER_STOP_LOSS_MULTIPLIER,
+    target,
+    riskRewardRatio,
+    breakevenAtExpiry: roundToTick(Math.max(0.05, breakevenAtExpiry))
+  };
+}
+
 /** Short rationale clause built from the raw market-bias fields — the
  * server-side equivalent of the "Setup:" banner text the web dashboard
  * builds for display, reused here inside the "setup is actionable"
@@ -156,7 +301,14 @@ export function calculateTradeRecommendations(
   pressure: PressureScore,
   marketBias: MarketBiasSummary,
   strikeMovementRows: StrikeMovementRow[],
-  tradeInterpretation: TradeInterpretation
+  tradeInterpretation: TradeInterpretation,
+  // Optional: @option-decode/analytics#calculateAtmStraddleExpectedMove's
+  // output for this same snapshot. Purely additive - every existing caller
+  // that doesn't pass it (including the existing test suite) behaves
+  // exactly as before. When supplied and the chain reads as a weekly
+  // expiry, it's used to bias seller-side strike selection beyond the
+  // market's own expected-move edge, per the playbook's weekly rule.
+  atmStraddle?: AtmStraddleExpectedMove
 ): Recommendation[] {
   const recs: Recommendation[] = [];
   const spot = snapshot.spotPrice;
@@ -173,6 +325,19 @@ export function calculateTradeRecommendations(
   const totalNetScore = strikeMovementRows.reduce((sum, row) => sum + row.netScore, 0);
   const convictionScore = CONVICTION_SCORE[marketBias.conviction];
   const setupQuality = SETUP_QUALITY_SCORE[marketBias.setupQuality];
+
+  // Same timeframe classification used for every seller-side setup built
+  // below, so a "sell here" idea always matches the delta band appropriate
+  // to how many days are actually left on this chain's own expiry.
+  const asOfMs = Date.parse(snapshot.snapshotTime);
+  const daysToExpiry = getYearsToExpiry(snapshot.expiry, Number.isFinite(asOfMs) ? asOfMs : Date.now()) * 365;
+  const sellerTimeframe = inferSellerTimeframe(daysToExpiry);
+  const weeklyBoundary = sellerTimeframe === "weekly" && atmStraddle ? atmStraddle : undefined;
+  const buildSellerLegs = () =>
+    [
+      buildSellerTradeSetup(snapshot, "PE", sellerTimeframe, weeklyBoundary?.expectedLowerBoundary),
+      buildSellerTradeSetup(snapshot, "CE", sellerTimeframe, weeklyBoundary?.expectedUpperBoundary)
+    ].filter((setup): setup is NonNullable<typeof setup> => setup !== undefined);
 
   // 1. DIRECTIONAL BIAS
   if (pressure.bullishPressure >= 55 && pcr !== undefined && pcr >= 1.05 && totalNetScore > 0 && convictionScore >= 45) {
@@ -206,14 +371,18 @@ export function calculateTradeRecommendations(
   }
 
   if (Math.abs(pressure.bullishPressure - pressure.bearishPressure) < 8 && (pcr === undefined || (pcr >= 0.9 && pcr <= 1.1))) {
+    const sellSetups = buildSellerLegs();
     recs.push({
       id: "balanced-market",
       category: "direction",
       priority: "low",
       title: "Market is range-bound near ATM",
       explanation: `Bullish and bearish pressure are balanced (${pressure.bullishPressure}% vs ${pressure.bearishPressure}%). PCR of ${pcr?.toFixed(2) ?? "--"} shows no strong conviction either way.`,
-      action: "This is a good environment for option sellers. Consider selling straddles or strangles near ATM. Avoid directional long option trades until bias develops.",
-      confidence: 65
+      action: sellSetups.length
+        ? `This is a good environment for option sellers. Consider a short strangle: ${sellSetups.map((setup) => `${setup.strike} ${setup.optionType} for ~${setup.entryPrice}`).join(" + ")} (${sellerTimeframe} delta band). Avoid directional long option trades until bias develops.`
+        : "This is a good environment for option sellers. Consider selling straddles or strangles near ATM. Avoid directional long option trades until bias develops.",
+      confidence: 65,
+      sellSetups: sellSetups.length ? sellSetups : undefined
     });
   }
 
@@ -284,14 +453,19 @@ export function calculateTradeRecommendations(
   }
 
   if (tradeInterpretation.sellerScore >= 12) {
+    const sellSetups = buildSellerLegs();
+    const legsText = sellSetups.map((setup) => `${setup.strike} ${setup.optionType} @ ~${setup.entryPrice} (SL ${setup.stopLoss})`).join(" + ");
     recs.push({
       id: "seller-safety",
       category: "strategy",
       priority: "medium",
       title: "Safe environment for option sellers",
       explanation: `Seller safety score is +${tradeInterpretation.sellerScore.toFixed(0)} across ATM strikes. Writing dominates near ATM — sellers are well-positioned.`,
-      action: `Option selling strategies have better edge now. Consider short straddle, strangle, or credit spreads near ATM. ${support && resistance ? `Range: ${strike(support.strikePrice)} PE to ${strike(resistance.strikePrice)} CE.` : ""}`,
-      confidence: 68
+      action: sellSetups.length
+        ? `Option selling strategies have better edge now. ${sellerTimeframe} delta-band setup: ${legsText}. ${support && resistance ? `OI range: ${strike(support.strikePrice)} PE to ${strike(resistance.strikePrice)} CE.` : ""}`
+        : `Option selling strategies have better edge now. Consider short straddle, strangle, or credit spreads near ATM. ${support && resistance ? `Range: ${strike(support.strikePrice)} PE to ${strike(resistance.strikePrice)} CE.` : ""}`,
+      confidence: 68,
+      sellSetups: sellSetups.length ? sellSetups : undefined
     });
   }
 

@@ -2,6 +2,21 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarDatePicker } from "./calendar-date-picker";
 
+// One additional leg added to the order ticket at entry - "build multi-leg
+// at entry" (e.g. a bought OTM option hedging a sold ATM/ITM main leg).
+// Strike/entry/SL/target are entered manually since live LTP is only wired
+// up for the ticket's own selected strike, not arbitrary hedge strikes.
+export interface HedgeLegDraft {
+  id: string;
+  action: "BUY" | "SELL";
+  optionType: "CE" | "PE";
+  strikePrice: number;
+  lots: number;
+  requestedPrice: number;
+  stopLoss: number;
+  targetPrice: number;
+}
+
 interface PaperTradingPanelProps {
   paperSummary: any;
   formatCurrency: any;
@@ -139,10 +154,52 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
     recentPaperOrders
   } = props;
   const [activeTab, setActiveTab] = useState<PaperTab>("open");
+  const [hedgeLegs, setHedgeLegs] = useState<HedgeLegDraft[]>([]);
   const totalOpenDeltaExposure = (paperSummary?.openPositions ?? []).reduce((total: number, position: any) => total + (position.deltaExposure ?? 0), 0);
   const openCount = paperSummary?.stats.openPositions ?? 0;
   const pendingCount = paperSummary?.stats.pendingOrders ?? 0;
   const closedCount = paperSummary?.closedTrades?.length ?? 0;
+
+  const addHedgeLeg = () => {
+    setHedgeLegs((legs) => [
+      ...legs,
+      {
+        id: `hedge-${Date.now()}-${legs.length}`,
+        // Default to the opposite side/type of the main leg - a typical
+        // hedge (e.g. a bought OTM option protecting a sold ATM/ITM leg).
+        // Fully editable below; this is just a sensible starting point.
+        action: orderAction === "BUY" ? "SELL" : "BUY",
+        optionType: orderOptionType,
+        strikePrice: Number(orderStrike) || 0,
+        lots: Number(orderLots) || 1,
+        requestedPrice: 0,
+        stopLoss: 0,
+        targetPrice: 0
+      }
+    ]);
+  };
+  const updateHedgeLeg = (id: string, patch: Partial<HedgeLegDraft>) => {
+    setHedgeLegs((legs) => legs.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
+  };
+  const removeHedgeLeg = (id: string) => {
+    setHedgeLegs((legs) => legs.filter((leg) => leg.id !== id));
+  };
+  // Mirrors the API's own validatePaperOrderRisk check - a hedge leg left
+  // at its 0/0/0 default (Entry/SL/Target aren't wired to live LTP, so
+  // they don't auto-fill like the main leg does) gets rejected server-side
+  // with a 400 and creates nothing. Catching that here, before submit,
+  // means the whole multi-leg ticket doesn't silently fail on one
+  // unfilled row.
+  const isHedgeLegValid = (leg: HedgeLegDraft) => {
+    if (leg.strikePrice <= 0 || leg.requestedPrice <= 0 || leg.stopLoss <= 0 || leg.targetPrice <= 0) {
+      return false;
+    }
+    return leg.action === "BUY" ? leg.stopLoss < leg.requestedPrice && leg.targetPrice > leg.requestedPrice : leg.stopLoss > leg.requestedPrice && leg.targetPrice < leg.requestedPrice;
+  };
+  const hasInvalidHedgeLeg = hedgeLegs.some((leg) => !isHedgeLegValid(leg));
+  const handleTicketSubmit = (event: any) => {
+    handlePaperOrder(event, hedgeLegs);
+  };
 
   return (
     <section className="rounded border border-terminal-line bg-terminal-panel/80 p-4">
@@ -157,7 +214,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
           <KpiChip label="Filled" value={String(paperSummary?.stats.filledOrders ?? 0)} />
         </section>
 
-        <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handlePaperOrder}>
+        <form className="rounded border border-terminal-line bg-white/[0.03]" onSubmit={handleTicketSubmit}>
           <PaperSectionHeader title="Paper Order Ticket" meta={`${overview.snapshot.underlyingSymbol} ${orderExpiry}`} />
           {/* Single row instead of a wrapping grid: a grid that reflows onto
               2-3 rows per field avoids scrolling but eats a lot of vertical
@@ -247,12 +304,68 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
               </TicketField>
               <div className="ml-auto flex flex-shrink-0 flex-col gap-1">
                 <span className="whitespace-nowrap text-xs uppercase text-terminal-muted">&nbsp;</span>
-                <button className={`h-9 min-w-36 rounded border px-3 text-sm font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${orderAction === "BUY" ? "border-terminal-emerald bg-terminal-emerald text-terminal-bg" : "border-terminal-red bg-terminal-red text-white"}`} disabled={isPlacingOrder || orderEntryPrice <= 0} type="submit">
-                  {isPlacingOrder ? "Placing..." : `${orderAction === "BUY" ? "Buy" : "Sell"} Trigger`}
+                <button className={`h-9 min-w-36 rounded border px-3 text-sm font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${orderAction === "BUY" ? "border-terminal-emerald bg-terminal-emerald text-terminal-bg" : "border-terminal-red bg-terminal-red text-white"}`} disabled={isPlacingOrder || orderEntryPrice <= 0 || hasInvalidHedgeLeg} type="submit">
+                  {isPlacingOrder ? "Placing..." : hedgeLegs.length ? `Place ${hedgeLegs.length + 1}-Leg Order` : `${orderAction === "BUY" ? "Buy" : "Sell"} Trigger`}
                 </button>
               </div>
             </div>
           </div>
+
+          <div className="border-t border-terminal-line px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs uppercase text-terminal-muted">Hedge Legs {hedgeLegs.length ? `(${hedgeLegs.length})` : ""}</span>
+              <button type="button" onClick={addHedgeLeg} className="h-7 rounded border border-terminal-blue/60 bg-terminal-blue/10 px-2 text-xs font-semibold text-terminal-blue transition hover:bg-terminal-blue hover:text-white">
+                + Add Hedge Leg
+              </button>
+            </div>
+            {hedgeLegs.length ? (
+              <div className="mt-2 grid gap-2">
+                {hedgeLegs.map((leg) => (
+                  <div key={leg.id} className={`flex flex-wrap items-end gap-2 rounded border bg-white/[0.02] p-2 ${isHedgeLegValid(leg) ? "border-terminal-line/70" : "border-terminal-red/60"}`}>
+                    <TicketField label="Order" width="w-20">
+                      <select value={leg.action} onChange={(event) => updateHedgeLeg(leg.id, { action: event.target.value as "BUY" | "SELL" })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-xs font-semibold text-terminal-text outline-none focus:border-terminal-blue">
+                        <option value="BUY">BUY</option>
+                        <option value="SELL">SELL</option>
+                      </select>
+                    </TicketField>
+                    <TicketField label="Type" width="w-16">
+                      <select value={leg.optionType} onChange={(event) => updateHedgeLeg(leg.id, { optionType: event.target.value as "CE" | "PE" })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-xs text-terminal-text outline-none focus:border-terminal-blue">
+                        <option value="CE">CE</option>
+                        <option value="PE">PE</option>
+                      </select>
+                    </TicketField>
+                    <TicketField label="Strike" width="w-24">
+                      <select value={leg.strikePrice} onChange={(event) => updateHedgeLeg(leg.id, { strikePrice: Number(event.target.value) })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-xs text-terminal-text outline-none focus:border-terminal-blue">
+                        {strikeChoices.map((strike: any) => (
+                          <option key={strike} value={strike}>{formatStrike(strike)}</option>
+                        ))}
+                      </select>
+                    </TicketField>
+                    <TicketField label="Entry" width="w-20" align="right">
+                      <input value={leg.requestedPrice || ""} onChange={(event) => updateHedgeLeg(leg.id, { requestedPrice: Number(event.target.value) })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-xs font-semibold text-terminal-text outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                    </TicketField>
+                    <TicketField label="SL" width="w-20" align="right">
+                      <input value={leg.stopLoss || ""} onChange={(event) => updateHedgeLeg(leg.id, { stopLoss: Number(event.target.value) })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-xs font-semibold text-terminal-red outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                    </TicketField>
+                    <TicketField label="Target" width="w-20" align="right">
+                      <input value={leg.targetPrice || ""} onChange={(event) => updateHedgeLeg(leg.id, { targetPrice: Number(event.target.value) })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-xs font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
+                    </TicketField>
+                    <TicketField label="Lots" width="w-16" align="right">
+                      <input value={leg.lots || ""} onChange={(event) => updateHedgeLeg(leg.id, { lots: Number(event.target.value) })} className="h-8 w-full rounded border border-terminal-line bg-terminal-input px-2 text-right text-xs text-terminal-text outline-none focus:border-terminal-blue" min="1" step="1" type="number" />
+                    </TicketField>
+                    <button type="button" onClick={() => removeHedgeLeg(leg.id)} className="ml-auto h-8 rounded border border-terminal-red/60 bg-terminal-red/10 px-2 text-xs font-semibold text-terminal-red transition hover:bg-terminal-red hover:text-white">
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <p className="text-[0.65rem] text-terminal-muted">Hedge legs fill independently against their own entry trigger, same as the main leg - there is no guarantee they fill together. Entry/SL/Target for hedge legs are entered manually (not wired to live LTP).</p>
+                {hasInvalidHedgeLeg ? (
+                  <p className="text-[0.65rem] font-semibold text-terminal-red">Fill in Entry, SL, and Target for every hedge leg (outlined in red above) before placing - SL/Target must be on the correct side of Entry for that leg&apos;s Buy/Sell direction.</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
           <div className="flex flex-wrap items-center gap-4 border-t border-terminal-line px-3 py-2 text-xs text-terminal-muted">
             <span>Entry Trigger: <span className="font-semibold text-terminal-text">{formatPrice(orderEntryPrice)}</span> ({orderAction === "BUY" ? "fills when LTP <= entry" : "fills when LTP >= entry"}, LTP {formatPrice(marketEntryPrice)})</span>
             <span>Risk/Reward: <span className="font-semibold text-terminal-text">{riskReward ? `1:${riskReward.toFixed(1)}` : "--"}</span></span>
@@ -319,6 +432,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                       <th className="px-3 py-3 text-right">Trail SL</th>
                       <th className="px-3 py-3 text-right">Target</th>
                       <th className="px-3 py-3 text-right">P/L</th>
+                      <th className="px-3 py-3 text-right">Margin (info)</th>
                       <th className="px-3 py-3 text-right">Opened</th>
                       <th className="px-3 py-3 text-right">Action</th>
                     </tr>
@@ -336,7 +450,14 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                       return (
                         <tr key={position.id} className="border-t border-terminal-line/80">
                           <td className="px-3 py-3">
-                            <div className="font-semibold">{position.underlyingSymbol} {formatStrike(position.strikePrice)} {position.optionType}</div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold">{position.underlyingSymbol} {formatStrike(position.strikePrice)} {position.optionType}</span>
+                              {position.groupId ? (
+                                <span className={`rounded border px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${position.legRole === "HEDGE" ? "border-terminal-amber/60 text-terminal-amber" : "border-terminal-blue/60 text-terminal-blue"}`}>
+                                  {position.legRole === "HEDGE" ? "Hedge" : "Strategy"}
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="text-xs text-terminal-muted">{position.expiry} / {position.action}</div>
                             {position.ownerEmail ? <div className="text-xs text-terminal-blue">{position.ownerName ?? position.ownerEmail}</div> : null}
                           </td>
@@ -380,6 +501,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                             <input value={draft.targetPrice} onBlur={() => setPositionRiskDrafts((drafts: any) => ({ ...drafts, [position.id]: { ...draft, targetPrice: draft.targetPrice ? formatTradablePrice(Number(draft.targetPrice)) : draft.targetPrice } }))} onChange={(event) => setPositionRiskDrafts((drafts: any) => ({ ...drafts, [position.id]: { ...draft, targetPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                           </td>
                           <td className={`px-3 py-3 text-right font-semibold ${position.unrealizedPnl >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>{formatCurrency(position.unrealizedPnl)}</td>
+                          <td className="px-3 py-3 text-right text-terminal-muted">{position.marginRequired !== undefined ? formatCurrency(position.marginRequired) : "--"}</td>
                           <td className="px-3 py-3 text-right text-xs text-terminal-muted">{formatIstShortDateTime(position.openedAt)}</td>
                           <td className="px-3 py-3">
                             <div className="flex justify-end gap-2">
@@ -395,7 +517,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                       );
                     })}
                     {paperSummary && !paperSummary.openPositions.length ? (
-                      <tr><td colSpan={10} className="px-3 py-6 text-center text-terminal-muted">No open paper positions.</td></tr>
+                      <tr><td colSpan={11} className="px-3 py-6 text-center text-terminal-muted">No open paper positions.</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -419,6 +541,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                     <th className="px-3 py-3 text-right">Trigger</th>
                     <th className="px-3 py-3 text-right">SL</th>
                     <th className="px-3 py-3 text-right">Target</th>
+                    <th className="px-3 py-3 text-right">Margin (info)</th>
                     <th className="px-3 py-3 text-right">Placed</th>
                     <th className="px-3 py-3 text-right">Status</th>
                     <th className="px-3 py-3 text-right">Action</th>
@@ -446,7 +569,14 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                     return (
                       <tr key={order.id} className="border-t border-terminal-line/80">
                         <td className="px-3 py-3">
-                          <div className="font-semibold">{order.underlyingSymbol} {formatStrike(order.strikePrice)} {order.optionType}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold">{order.underlyingSymbol} {formatStrike(order.strikePrice)} {order.optionType}</span>
+                            {order.groupId ? (
+                              <span className={`rounded border px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${order.legRole === "HEDGE" ? "border-terminal-amber/60 text-terminal-amber" : "border-terminal-blue/60 text-terminal-blue"}`}>
+                                {order.legRole === "HEDGE" ? "Hedge" : "Strategy"}
+                              </span>
+                            ) : null}
+                          </div>
                           <div className="text-xs text-terminal-muted">{order.expiry} / {order.action}</div>
                           {order.ownerEmail ? <div className="text-xs text-terminal-blue">{order.ownerName ?? order.ownerEmail}</div> : null}
                         </td>
@@ -493,6 +623,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                         <td className="px-3 py-3 text-right">
                           <input value={draft.targetPrice} onBlur={() => setPendingOrderDrafts((drafts: any) => ({ ...drafts, [order.id]: { ...draft, targetPrice: draft.targetPrice ? formatTradablePrice(Number(draft.targetPrice)) : draft.targetPrice } }))} onChange={(event) => setPendingOrderDrafts((drafts: any) => ({ ...drafts, [order.id]: { ...draft, targetPrice: event.target.value } }))} className="h-9 w-24 rounded border border-terminal-line bg-terminal-input px-2 text-right text-sm font-semibold text-terminal-emerald outline-none focus:border-terminal-blue" min="0" step="0.05" type="number" />
                         </td>
+                        <td className="px-3 py-3 text-right text-terminal-muted">{order.marginRequired !== undefined ? formatCurrency(order.marginRequired) : "--"}</td>
                         <td className="px-3 py-3 text-right text-xs text-terminal-muted">{formatIstShortDateTime(order.createdAt)}</td>
                         <td className="px-3 py-3 text-right">
                           <span className={`rounded border px-2 py-1 text-xs font-semibold ${willFill ? "border-terminal-emerald/70 bg-terminal-emerald/10 text-terminal-emerald" : "border-terminal-amber/70 bg-terminal-amber/10 text-terminal-amber"}`}>
@@ -513,7 +644,7 @@ export function PaperTradingPanel(props: PaperTradingPanelProps) {
                     );
                   })}
                   {paperSummary && !pendingPaperOrders.length ? (
-                    <tr><td colSpan={11} className="px-3 py-6 text-center text-terminal-muted">No pending paper orders.</td></tr>
+                    <tr><td colSpan={12} className="px-3 py-6 text-center text-terminal-muted">No pending paper orders.</td></tr>
                   ) : null}
                 </tbody>
               </table>

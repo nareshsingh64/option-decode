@@ -43,6 +43,19 @@ export function PressureEngine({
             <SignalCell label="Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone="blue" />
             <SignalCell label="Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="green" />
             <SignalCell label="PCR Context" value={overview.pressure.pcr?.toFixed(2) ?? "--"} detail={chainStats.breadth} tone="blue" />
+            {overview.atmStraddle ? (
+              // The playbook's ATM Straddle Rule: ATM CE + ATM PE premium is
+              // the market's own priced-in expected move for this expiry.
+              // Kept separate from the VIX-derived range shown on the option
+              // chain panel - two independent methods, not one replacing
+              // the other.
+              <SignalCell
+                label="Weekly Expected Move (ATM Straddle)"
+                value={`± ${formatStrike(overview.atmStraddle.atmStraddlePrice)}`}
+                detail={`Range ${formatStrike(overview.atmStraddle.expectedLowerBoundary)} – ${formatStrike(overview.atmStraddle.expectedUpperBoundary)} · sell OTM strikes outside this band`}
+                tone="blue"
+              />
+            ) : null}
           </div>
         </Panel>
         <Panel title="Refresh Status">
@@ -71,24 +84,24 @@ export function PressureEngine({
         <Panel title="Support & Resistance Pressure">
           <div className="space-y-4">
             {overview.pressure.supportZones.slice(0, 2).map((zone: any) => (
-              <PressureBar key={`support-${zone.strikePrice}`} label={`Support ${formatStrike(zone.strikePrice)} PE`} value={scoreToPercent(zone.score)} tone="emerald" />
+              <div key={`support-${zone.strikePrice}`}>
+                <PressureBar label={`Support ${formatStrike(zone.strikePrice)} PE`} value={scoreToPercent(zone.score)} tone="emerald" />
+                {zone.trueZone !== undefined ? (
+                  <p className="mt-1 text-[0.65rem] text-terminal-muted">True support (strike − premium collected): {formatStrike(zone.trueZone)}</p>
+                ) : null}
+              </div>
             ))}
             {overview.pressure.resistanceZones.slice(0, 2).map((zone: any) => (
-              <PressureBar key={`resistance-${zone.strikePrice}`} label={`Resistance ${formatStrike(zone.strikePrice)} CE`} value={scoreToPercent(zone.score)} tone="blue" />
-            ))}
-          </div>
-        </Panel>
-        <TerminalPanel title="Support & Resistance Zones">
-          <div className="grid gap-1">
-            {zoneRows.map((row) => (
-              <div key={row.label} className={`grid grid-cols-[3rem_minmax(6rem,1fr)_minmax(5rem,0.7fr)] items-center rounded px-2 py-2 ${row.isCurrent ? "bg-terminal-blue/15" : ""}`}>
-                <span className={`text-sm font-semibold ${row.tone === "green" ? "text-terminal-emerald" : row.tone === "red" ? "text-terminal-red" : "text-terminal-blue"}`}>{row.label}</span>
-                <span className={`text-center text-sm font-semibold ${row.isCurrent ? "text-terminal-blue" : "text-terminal-text"}`}>{formatStrike(row.value)}</span>
-                <span className={`text-right text-sm ${row.isCurrent ? "text-terminal-blue" : "text-terminal-muted"}`}>{row.status}</span>
+              <div key={`resistance-${zone.strikePrice}`}>
+                <PressureBar label={`Resistance ${formatStrike(zone.strikePrice)} CE`} value={scoreToPercent(zone.score)} tone="blue" />
+                {zone.trueZone !== undefined ? (
+                  <p className="mt-1 text-[0.65rem] text-terminal-muted">True resistance (strike + premium collected): {formatStrike(zone.trueZone)}</p>
+                ) : null}
               </div>
             ))}
           </div>
-        </TerminalPanel>
+        </Panel>
+        <SupportResistanceZonesPanel zoneRows={zoneRows} formatStrike={formatStrike} />
         <Panel title="Pressure Signal Board">
           <div className="grid gap-3">
             {buildPressureSignals(overview, chainStats).map((signal) => (
@@ -98,6 +111,58 @@ export function PressureEngine({
         </Panel>
       </section>
     </>
+  );
+}
+
+// Support & Resistance Zones as an actual table, with a True Zone column
+// (the playbook's breakeven-cushion math: strike offset by premium
+// collected there) alongside the raw OI-wall strike. Exported so
+// dashboard-main-panel.tsx can render the identical block next to Trade
+// Recommendations on the main Dashboard tab, instead of a hand-copied
+// duplicate that can silently drift from this one.
+export function SupportResistanceZonesPanel({ zoneRows, formatStrike, title = "Support & Resistance Zones" }: { zoneRows: any[]; formatStrike: (value: number) => string; title?: string }) {
+  return (
+    <TerminalPanel title={title}>
+      <div className="overflow-x-auto rounded border border-terminal-line">
+        <table className="w-full min-w-[32rem] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-terminal-line text-left text-xs uppercase text-terminal-muted">
+              <th className="px-2 py-2 font-medium">Level</th>
+              <th className="px-2 py-2 font-medium">Strike</th>
+              <th className="px-2 py-2 font-medium">True Zone</th>
+              <th className="px-2 py-2 font-medium">Weighted True Zone</th>
+              <th className="px-2 py-2 text-right font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {zoneRows.map((row) => (
+              <tr key={row.label} className={`border-b border-terminal-line/60 last:border-b-0 ${row.isCurrent ? "bg-terminal-blue/15" : ""}`}>
+                <td className={`whitespace-nowrap px-2 py-2 font-semibold ${row.tone === "green" ? "text-terminal-emerald" : row.tone === "red" ? "text-terminal-red" : "text-terminal-blue"}`}>{row.label}</td>
+                <td className={`whitespace-nowrap px-2 py-2 font-semibold ${row.isCurrent ? "text-terminal-blue" : "text-terminal-text"}`}>{formatStrike(row.value)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-terminal-muted">{row.trueZone !== undefined ? formatStrike(row.trueZone) : "--"}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-terminal-muted">
+                  {row.weightedTrueZone !== undefined ? (
+                    <>
+                      {formatStrike(row.weightedTrueZone)}
+                      <span className="ml-1 text-[0.6rem] text-terminal-muted/70">(avg ₹{row.avgSellPrice?.toFixed(1)})</span>
+                    </>
+                  ) : (
+                    "--"
+                  )}
+                </td>
+                <td className={`whitespace-nowrap px-2 py-2 text-right ${row.isCurrent ? "text-terminal-blue" : "text-terminal-muted"}`}>{row.status}</td>
+              </tr>
+            ))}
+            {!zoneRows.length ? (
+              <tr>
+                <td colSpan={5} className="px-2 py-4 text-center text-terminal-muted">No support/resistance zones available.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-[0.65rem] text-terminal-muted">True Zone = strike offset by the current premium (live LTP) — the writer&apos;s cost to enter right now. Weighted True Zone = strike offset by the OI-buildup-weighted average sell price from historical ticks — an approximation of what the open interest actually got sold for. The two can diverge; neither adjusts for OI unwinds.</p>
+    </TerminalPanel>
   );
 }
 

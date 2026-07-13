@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -21,6 +22,14 @@ export interface PaperOrderInput {
   targetPrice: number;
   strategyName: string;
   reasonText?: string;
+}
+
+// A single leg within a multi-leg (hedge) order ticket. Extends the plain
+// single-leg input with the leg's role - "MAIN" for the primary trade,
+// "HEDGE" for any additional leg(s) added to protect it (e.g. a bought OTM
+// option against a sold ATM/ITM option in the same ticket).
+export interface PaperOrderLegInput extends PaperOrderInput {
+  legRole?: "MAIN" | "HEDGE";
 }
 
 export interface PendingPaperOrderUpdateInput {
@@ -67,6 +76,12 @@ export interface PaperOrderDto {
   status: string;
   strategyName: string;
   reasonText?: string;
+  groupId?: string;
+  legRole: string;
+  // Informational only - estimated at placement time (works outside market
+  // hours), unrelated to whether the order has filled yet.
+  marginRequired?: number;
+  marginBreakdown?: Record<string, unknown>;
   createdAt: string;
   ownerEmail?: string;
   ownerName?: string;
@@ -95,8 +110,50 @@ export interface PaperPositionDto {
   deltaExposure?: number;
   unrealizedPnl: number;
   openedAt: string;
+  groupId?: string;
+  legRole: string;
+  // Informational only (Dhan margin calculator, captured at fill time). Not
+  // used anywhere to block or size a trade - purely for the user's awareness.
+  marginRequired?: number;
+  marginBreakdown?: Record<string, unknown>;
   ownerEmail?: string;
   ownerName?: string;
+}
+
+// A leg that just transitioned PENDING -> FILLED during one
+// monitorPaperTradingForSnapshot pass. Handed back to the worker (which owns
+// the Dhan client) so it can best-effort fetch an informational margin
+// figure and persist it via recordPositionMargin - paper-repository.ts
+// itself has no Dhan dependency.
+export interface FilledPaperLeg {
+  positionId: string;
+  groupId: string | null;
+  legRole: string;
+  underlyingSymbol: string;
+  expiryLabel: string;
+  optionType: OptionType;
+  strikePrice: number;
+  action: string;
+  quantity: number;
+  filledPrice: number;
+  securityId?: string;
+}
+
+// One leg's worth of inputs needed to ask Dhan's margin calculator for a
+// quote - either a filled position or a still-pending order, on its own or
+// grouped with every other leg sharing a groupId (see
+// getOpenPositionsForMarginGroup / getPendingOrdersForMarginGroup). `id` is
+// whichever row (PaperPosition or PaperOrder) this leg came from.
+export interface MarginQuoteLeg {
+  id: string;
+  underlyingSymbol: string;
+  expiryLabel: string;
+  optionType: OptionType;
+  strikePrice: number;
+  action: string;
+  quantity: number;
+  entryPrice: number;
+  securityId?: string;
 }
 
 export interface PaperPositionGroupDto {
@@ -204,7 +261,7 @@ export async function getPaperSummary(user: AuthUserDto, client: PrismaClient = 
   };
 }
 
-export async function placePaperOrder(input: PaperOrderInput, user: AuthUserDto, client: PrismaClient = prisma): Promise<PaperSummary> {
+async function buildPaperOrderCreateData(input: PaperOrderLegInput, userId: string, groupId: string | null, legRole: string, client: PrismaClient) {
   const now = new Date();
   const tradingDate = new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
   const lotSize = await getPaperLotSize(input.underlyingSymbol, input.expiry, client);
@@ -215,29 +272,60 @@ export async function placePaperOrder(input: PaperOrderInput, user: AuthUserDto,
   const initialStopLoss = trailingStop ? getTrailingStopLoss(input.action, requestedPrice, trailDistance) : normalizeTradablePrice(input.stopLoss);
   const targetPrice = normalizeTradablePrice(input.targetPrice);
 
-  await client.paperOrder.create({
-    data: {
-      userId: user.id,
-      tradingDate,
-      underlyingSymbol: input.underlyingSymbol,
-      expiryLabel: input.expiry,
-      action: input.action,
-      optionType: input.optionType,
-      strikePrice: input.strikePrice,
-      quantity,
-      requestedPrice,
-      filledPrice: null,
-      stopLoss: initialStopLoss,
-      trailingStop,
-      trailDistance,
-      targetPrice,
-      status: "PENDING",
-      strategyName: input.strategyName,
-      reasonText: input.reasonText
-    }
-  });
+  return {
+    userId,
+    tradingDate,
+    underlyingSymbol: input.underlyingSymbol,
+    expiryLabel: input.expiry,
+    action: input.action,
+    optionType: input.optionType,
+    strikePrice: input.strikePrice,
+    quantity,
+    requestedPrice,
+    filledPrice: null,
+    stopLoss: initialStopLoss,
+    trailingStop,
+    trailDistance,
+    targetPrice,
+    status: "PENDING" as const,
+    strategyName: input.strategyName,
+    reasonText: input.reasonText,
+    groupId,
+    legRole
+  };
+}
 
-  return getPaperSummary(user, client);
+// Returns the created order id alongside the refreshed summary so the API
+// layer can compute a placement-time margin estimate for exactly this order
+// without guessing which row in the summary is the one just created.
+export async function placePaperOrder(input: PaperOrderInput, user: AuthUserDto, client: PrismaClient = prisma): Promise<{ summary: PaperSummary; orderId: string }> {
+  const data = await buildPaperOrderCreateData(input, user.id, null, "MAIN", client);
+  const order = await client.paperOrder.create({ data });
+
+  return { summary: await getPaperSummary(user, client), orderId: order.id };
+}
+
+// Build multi-leg at entry: submit a main leg plus one or more hedge legs
+// (e.g. a bought OTM option protecting a sold ATM/ITM option) in a single
+// ticket. All legs are created together and linked via a shared groupId so
+// they can be tracked/displayed as one strategy on the paper trading panel.
+// Each leg still fills independently and asynchronously against its own
+// requested price - there is no guarantee all legs fill at the same time.
+export async function placeMultiLegPaperOrder(legs: PaperOrderLegInput[], user: AuthUserDto, client: PrismaClient = prisma): Promise<{ summary: PaperSummary; orderIds: string[] }> {
+  if (legs.length === 0) {
+    throw new Error("At least one leg is required to place a paper order.");
+  }
+  if (legs.length === 1) {
+    const single = await placePaperOrder(legs[0], user, client);
+    return { summary: single.summary, orderIds: [single.orderId] };
+  }
+
+  const groupId = randomUUID();
+  const legData = await Promise.all(legs.map((leg, index) => buildPaperOrderCreateData(leg, user.id, groupId, leg.legRole ?? (index === 0 ? "MAIN" : "HEDGE"), client)));
+
+  const createdOrders = await client.$transaction(legData.map((data) => client.paperOrder.create({ data })));
+
+  return { summary: await getPaperSummary(user, client), orderIds: createdOrders.map((order) => order.id) };
 }
 
 export async function updatePendingPaperOrder(orderId: string, input: PendingPaperOrderUpdateInput, user: AuthUserDto, client: PrismaClient = prisma): Promise<PaperSummary> {
@@ -412,14 +500,120 @@ export async function monitorPaperTradingForSnapshot(underlyingSymbol: string, e
     expiryLabel
   };
 
-  const filledOrders = await refreshPendingPaperOrders(orderWhere, client);
+  const orderResult = await refreshPendingPaperOrders(orderWhere, client);
   const positionResult = await refreshOpenPositionPrices(positionWhere, client);
 
   return {
-    filledOrders,
+    filledOrders: orderResult.filledCount,
+    // Newly-filled legs from this pass, handed back so the caller (the
+    // worker, which owns the Dhan client) can look up an informational
+    // margin figure and persist it via recordPositionMargin. Empty on most
+    // calls - only populated when a pending order actually fills.
+    filledLegs: orderResult.filledLegs,
     checkedPositions: positionResult.checkedPositions,
     closedPositions: positionResult.closedPositions
   };
+}
+
+// Informational-only margin lookup support: given a position that just
+// filled (or any position id), returns every OPEN position that should be
+// priced together for a margin quote - i.e. every other leg sharing the
+// same groupId (a multi-leg/hedge ticket), or just the position itself for
+// an ordinary standalone trade. Includes each leg's latest known
+// securityId so the caller can call Dhan's margin calculator.
+export async function getOpenPositionsForMarginGroup(positionId: string, groupId: string | null | undefined, client: PrismaClient = prisma): Promise<MarginQuoteLeg[]> {
+  const positions = groupId ? await client.paperPosition.findMany({ where: { groupId, status: "OPEN" } }) : await client.paperPosition.findMany({ where: { id: positionId, status: "OPEN" } });
+
+  return Promise.all(
+    positions.map(async (position) => {
+      const latestTick = await client.optionContractTick.findFirst({
+        where: {
+          underlyingSymbol: position.underlyingSymbol,
+          expiryLabel: position.expiryLabel,
+          optionType: position.optionType,
+          strikePrice: position.strikePrice
+        },
+        orderBy: { tickTime: "desc" }
+      });
+
+      return {
+        id: position.id,
+        underlyingSymbol: position.underlyingSymbol,
+        expiryLabel: position.expiryLabel,
+        optionType: position.optionType,
+        strikePrice: position.strikePrice.toNumber(),
+        action: position.action,
+        quantity: position.quantity,
+        entryPrice: position.entryPrice.toNumber(),
+        securityId: latestTick?.securityId ?? undefined
+      };
+    })
+  );
+}
+
+// Informational-only margin lookup support for orders that haven't filled
+// yet: given a just-placed order, returns every PENDING order that should
+// be priced together for a margin quote (every other leg sharing the same
+// groupId, or just the order itself for an ordinary single-leg ticket).
+// Uses the requested price (there's no fill price yet) and whatever the
+// latest known securityId is for that contract - deliberately not filtered
+// by tick freshness, since this needs to work outside market hours (Dhan's
+// margin calculator is a static SPAN/exposure lookup, not a live quote).
+export async function getPendingOrdersForMarginGroup(orderId: string, groupId: string | null | undefined, client: PrismaClient = prisma): Promise<MarginQuoteLeg[]> {
+  const orders = groupId ? await client.paperOrder.findMany({ where: { groupId, status: "PENDING" } }) : await client.paperOrder.findMany({ where: { id: orderId, status: "PENDING" } });
+
+  return Promise.all(
+    orders.map(async (order) => {
+      const latestTick = await client.optionContractTick.findFirst({
+        where: {
+          underlyingSymbol: order.underlyingSymbol,
+          expiryLabel: order.expiryLabel,
+          optionType: order.optionType,
+          strikePrice: order.strikePrice
+        },
+        orderBy: { tickTime: "desc" }
+      });
+
+      return {
+        id: order.id,
+        underlyingSymbol: order.underlyingSymbol,
+        expiryLabel: order.expiryLabel,
+        optionType: order.optionType,
+        strikePrice: order.strikePrice.toNumber(),
+        action: order.action,
+        quantity: order.quantity,
+        entryPrice: order.requestedPrice.toNumber(),
+        securityId: latestTick?.securityId ?? undefined
+      };
+    })
+  );
+}
+
+// Persists the informational margin figure onto every position in a group
+// (denormalized on purpose - lets the UI show "margin required" per row
+// without a join). Never throws on a bad/missing Dhan response; the caller
+// is expected to treat margin lookup as best-effort and skip this call on
+// failure rather than fail the fill.
+export async function recordPositionMargin(positionIds: string[], marginRequired: number, marginBreakdown: Record<string, unknown>, client: PrismaClient = prisma): Promise<void> {
+  if (positionIds.length === 0) {
+    return;
+  }
+  await client.paperPosition.updateMany({
+    where: { id: { in: positionIds } },
+    data: { marginRequired, marginBreakdown: marginBreakdown as Prisma.InputJsonValue }
+  });
+}
+
+// Same as recordPositionMargin, but for still-pending orders - the
+// order-placement-time margin estimate (see getPendingOrdersForMarginGroup).
+export async function recordOrderMargin(orderIds: string[], marginRequired: number, marginBreakdown: Record<string, unknown>, client: PrismaClient = prisma): Promise<void> {
+  if (orderIds.length === 0) {
+    return;
+  }
+  await client.paperOrder.updateMany({
+    where: { id: { in: orderIds } },
+    data: { marginRequired, marginBreakdown: marginBreakdown as Prisma.InputJsonValue }
+  });
 }
 
 async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, client: PrismaClient) {
@@ -445,7 +639,7 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
 
       const latestPrice = latestTick?.lastPrice?.toNumber();
       if (latestPrice === undefined || !shouldFillPaperOrder(order.action, order.requestedPrice.toNumber(), latestPrice)) {
-        return false;
+        return null;
       }
 
       const filledPrice = normalizeTradablePrice(order.requestedPrice.toNumber());
@@ -472,10 +666,10 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
 
         if (updateResult.count === 0) {
           // Another concurrent request already filled or cancelled this order.
-          return false;
+          return null;
         }
 
-        await tx.paperPosition.create({
+        const position = await tx.paperPosition.create({
           data: {
             userId: order.userId,
             orderId: order.id,
@@ -495,16 +689,35 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
             targetPrice,
             status: "OPEN",
             realizedPnl: 0,
-            openedAt: now
+            openedAt: now,
+            // Carry the order's leg-grouping onto the resulting position so
+            // hedge legs stay linked once they're live positions.
+            groupId: order.groupId,
+            legRole: order.legRole
           }
         });
 
-        return true;
+        const filledLeg: FilledPaperLeg = {
+          positionId: position.id,
+          groupId: order.groupId,
+          legRole: order.legRole,
+          underlyingSymbol: order.underlyingSymbol,
+          expiryLabel: order.expiryLabel,
+          optionType: order.optionType,
+          strikePrice: order.strikePrice.toNumber(),
+          action: order.action,
+          quantity: order.quantity,
+          filledPrice,
+          securityId: latestTick?.securityId ?? undefined
+        };
+
+        return filledLeg;
       });
     })
   );
 
-  return results.filter(Boolean).length;
+  const filledLegs = results.filter((result): result is FilledPaperLeg => Boolean(result));
+  return { filledCount: filledLegs.length, filledLegs };
 }
 
 async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, client: PrismaClient) {
@@ -663,6 +876,10 @@ async function mapOrder(
   status: string;
   strategyName: string;
   reasonText: string | null;
+  groupId?: string | null;
+  legRole?: string | null;
+  marginRequired?: Prisma.Decimal | null;
+  marginBreakdown?: Prisma.JsonValue | null;
   createdAt: Date;
   user?: {
     email: string;
@@ -693,6 +910,10 @@ async function mapOrder(
     status: order.status,
     strategyName: order.strategyName,
     reasonText: order.reasonText ?? undefined,
+    groupId: order.groupId ?? undefined,
+    legRole: order.legRole ?? "MAIN",
+    marginRequired: order.marginRequired ? order.marginRequired.toNumber() : undefined,
+    marginBreakdown: (order.marginBreakdown as Record<string, unknown> | null) ?? undefined,
     createdAt: order.createdAt.toISOString(),
     ownerEmail: order.user?.email,
     ownerName: order.user?.displayName ?? undefined
@@ -718,6 +939,10 @@ async function mapPosition(
   targetPrice: Prisma.Decimal;
   status: string;
   openedAt: Date;
+  groupId?: string | null;
+  legRole?: string | null;
+  marginRequired?: Prisma.Decimal | null;
+  marginBreakdown?: Prisma.JsonValue | null;
   user?: {
     email: string;
     displayName: string | null;
@@ -756,6 +981,10 @@ async function mapPosition(
     deltaExposure,
     unrealizedPnl: (currentPrice - entryPrice) * position.quantity * direction,
     openedAt: position.openedAt.toISOString(),
+    groupId: position.groupId ?? undefined,
+    legRole: position.legRole ?? "MAIN",
+    marginRequired: position.marginRequired ? position.marginRequired.toNumber() : undefined,
+    marginBreakdown: (position.marginBreakdown as Record<string, unknown> | null) ?? undefined,
     ownerEmail: position.user?.email,
     ownerName: position.user?.displayName ?? undefined
   };

@@ -1,5 +1,6 @@
 import type {
   AlertThresholdConfig,
+  AtmStraddleExpectedMove,
   ChainStats,
   MarketAlert,
   MarketBiasSummary,
@@ -39,11 +40,22 @@ function topZones(ticks: OptionContractTick[], spotPrice: number, label: "suppor
   const rankedTicks = directionalTicks.length ? directionalTicks : ticks;
   const averageVolume = averageLotsVolume(ticks);
   return rankedTicks
-    .map((tick) => ({
-      strikePrice: tick.strikePrice,
-      score: Math.round(pressureValue(tick, averageVolume)),
-      reason: `${tick.optionType} ${label} pressure from OI, OI change, and volume in lots`
-    }))
+    .map((tick) => {
+      // Breakeven cushion (the playbook's "true" defense line): a
+      // resistance (CE) wall's real ceiling is the strike PLUS what writers
+      // collected; a support (PE) floor's real ground is the strike MINUS
+      // premium collected. Only computable when the anchoring tick has a
+      // live premium — left undefined otherwise rather than guessed.
+      const premium = tick.lastPrice && tick.lastPrice > 0 ? tick.lastPrice : undefined;
+      const trueZone = premium === undefined ? undefined : label === "resistance" ? tick.strikePrice + premium : Math.max(0, tick.strikePrice - premium);
+      return {
+        strikePrice: tick.strikePrice,
+        score: Math.round(pressureValue(tick, averageVolume)),
+        reason: `${tick.optionType} ${label} pressure from OI, OI change, and volume in lots`,
+        premium,
+        trueZone
+      };
+    })
     .sort((left, right) => right.score - left.score)
     .slice(0, 5);
 }
@@ -194,7 +206,78 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
     });
   }
 
+  const gammaRiskAlert = buildGammaRiskAlert(snapshot, now, nearestResistance, nearestSupport, resistanceDistance, supportDistance);
+  if (gammaRiskAlert) {
+    alerts.push(gammaRiskAlert);
+  }
+
   return alerts.slice(0, 7);
+}
+
+// Fraction of spot price within which a written strike is considered "under
+// gamma threat" on the eve of / on expiry itself — the playbook's 0.5% rule.
+const GAMMA_RISK_PROXIMITY_PERCENT = 0.5;
+// Gamma risk is flagged once the current expiry is this close (in calendar
+// days) — 1 day covers "expiry is tomorrow" and 0 covers "expiry is today,"
+// matching the playbook's "roll by the evening/morning before expiry" rule.
+const GAMMA_RISK_DAYS_TO_EXPIRY = 1;
+
+/**
+ * Deliberately NOT keyed off a hardcoded weekday (e.g. "Wednesday/Thursday
+ * for Nifty"). Since the September 2025 SEBI expiry-day rationalization,
+ * Nifty 50 expires Tuesdays and Sensex expires Thursdays — and any exchange
+ * holiday shifts the actual expiry date further. Deriving purely from
+ * `snapshot.expiry` (the real expiry date already on the snapshot) is
+ * correct for both indices and every holiday-shifted date, with no
+ * per-symbol day-of-week table to keep in sync as expiry-day rules change
+ * again in the future.
+ */
+function getCalendarDaysToExpiry(expiry: string, asOfMs: number): number {
+  // NSE/BSE index options expire at market close (15:30 IST = 10:00 UTC).
+  const expiryMs = Date.parse(`${expiry}T10:00:00.000Z`);
+  if (!Number.isFinite(expiryMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return (expiryMs - asOfMs) / 86_400_000;
+}
+
+function buildGammaRiskAlert(
+  snapshot: OptionChainSnapshot,
+  now: Date,
+  nearestResistance: PressureZone | undefined,
+  nearestSupport: PressureZone | undefined,
+  resistanceDistance: number | undefined,
+  supportDistance: number | undefined
+): MarketAlert | undefined {
+  if (snapshot.spotPrice <= 0) {
+    return undefined;
+  }
+
+  const daysToExpiry = getCalendarDaysToExpiry(snapshot.expiry, now.getTime());
+  if (daysToExpiry > GAMMA_RISK_DAYS_TO_EXPIRY || daysToExpiry < -1) {
+    return undefined;
+  }
+
+  const proximityPoints = snapshot.spotPrice * (GAMMA_RISK_PROXIMITY_PERCENT / 100);
+  const threatenedZone =
+    resistanceDistance !== undefined && resistanceDistance <= proximityPoints
+      ? { zone: nearestResistance, type: "CE" as const }
+      : supportDistance !== undefined && supportDistance <= proximityPoints
+        ? { zone: nearestSupport, type: "PE" as const }
+        : undefined;
+
+  if (!threatenedZone?.zone) {
+    return undefined;
+  }
+
+  return {
+    id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-gamma-risk`,
+    severity: "critical",
+    title: "Gamma risk — roll or close short strikes",
+    message: `${snapshot.underlyingSymbol} expires in ${daysToExpiry <= 0 ? "hours" : "under a day"} and spot is within ${GAMMA_RISK_PROXIMITY_PERCENT}% of the ${threatenedZone.type} ${threatenedZone.type === "CE" ? "resistance" : "support"} wall at ${formatStrike(threatenedZone.zone.strikePrice)}. Premium on a short here can spike 300-500% on a small move — roll or buy back now rather than holding into the close.`,
+    metric: "gammaRisk",
+    createdAt: now.toISOString()
+  };
 }
 
 function formatStrike(value: number) {
@@ -270,6 +353,35 @@ function calculateStrikeTrend(tick?: OptionContractTick): number {
   const oiTrend = toLots(tick.changeInOpenInterest, tick);
   const ltpTrend = (tick.lastPriceChangePercent ?? 0) * 2;
   return Math.round(oiTrend + ltpTrend);
+}
+
+/**
+ * The playbook's ATM Straddle Rule: ATM Call LTP + ATM Put LTP is the
+ * market's own priced-in expected move for the current expiry cycle.
+ * Distinct from the India-VIX-derived expected-move band used elsewhere in
+ * this codebase for chain-display range (spot * VIX% * sqrt(days/365)) —
+ * that's a reasonable alternative but not what the playbook means by
+ * "expected move," so both are kept as separate, independently-checkable
+ * numbers rather than one replacing the other. Returns undefined when
+ * either ATM leg has no live premium to anchor the calculation to (e.g. a
+ * stale snapshot, or the ATM strike missing from this chain).
+ */
+export function calculateAtmStraddleExpectedMove(snapshot: OptionChainSnapshot): AtmStraddleExpectedMove | undefined {
+  const atmCall = snapshot.ticks.find((tick) => tick.optionType === "CE" && tick.strikePrice === snapshot.atmStrike);
+  const atmPut = snapshot.ticks.find((tick) => tick.optionType === "PE" && tick.strikePrice === snapshot.atmStrike);
+  if (!atmCall?.lastPrice || atmCall.lastPrice <= 0 || !atmPut?.lastPrice || atmPut.lastPrice <= 0) {
+    return undefined;
+  }
+
+  const atmStraddlePrice = atmCall.lastPrice + atmPut.lastPrice;
+  return {
+    atmStrike: snapshot.atmStrike,
+    atmCallPrice: atmCall.lastPrice,
+    atmPutPrice: atmPut.lastPrice,
+    atmStraddlePrice,
+    expectedUpperBoundary: snapshot.spotPrice + atmStraddlePrice,
+    expectedLowerBoundary: Math.max(0, snapshot.spotPrice - atmStraddlePrice)
+  };
 }
 
 /**

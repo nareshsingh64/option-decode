@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, PressureScore } from "@option-decode/types";
 import {
+  calculateAtmStraddleExpectedMove,
   calculateChainStats,
   calculateMarketBias,
   calculateMarketPulse,
@@ -395,4 +396,120 @@ test("calculateMarketPulse normalizes by actual elapsed minutes, not sample coun
   assert.equal(pulse.sampleCount, 2);
   assert.equal(pulse.windowMinutes, 5);
   assert.equal(pulse.spotRatePerMin, 10);
+});
+
+// ---------------------------------------------------------------------
+// Breakeven cushion on support/resistance zones (PressureZone.trueZone)
+// ---------------------------------------------------------------------
+
+test("calculatePressureScore zones carry the premium-adjusted true breakeven line, not just the raw OI strike", () => {
+  const snap = snapshot(
+    [
+      tick({ optionType: "PE", strikePrice: 24800, openInterest: 5000, lastPrice: 40 }),
+      tick({ optionType: "CE", strikePrice: 25200, openInterest: 4000, lastPrice: 35 })
+    ],
+    25000,
+    25000
+  );
+
+  const pressure = calculatePressureScore(snap);
+  const support = pressure.supportZones[0];
+  const resistance = pressure.resistanceZones[0];
+
+  assert.equal(support.premium, 40);
+  assert.equal(support.trueZone, 24760); // strike - premium collected
+  assert.equal(resistance.premium, 35);
+  assert.equal(resistance.trueZone, 25235); // strike + premium collected
+});
+
+test("calculatePressureScore leaves trueZone/premium undefined when the anchoring tick has no live premium", () => {
+  const snap = snapshot([tick({ optionType: "PE", strikePrice: 24800, openInterest: 5000, lastPrice: undefined })], 25000, 25000);
+  const support = calculatePressureScore(snap).supportZones[0];
+  assert.equal(support.premium, undefined);
+  assert.equal(support.trueZone, undefined);
+});
+
+// ---------------------------------------------------------------------
+// ATM Straddle expected-move (the playbook's literal Weekly ATM Straddle Rule)
+// ---------------------------------------------------------------------
+
+test("calculateAtmStraddleExpectedMove sums ATM CE+PE premium into an expected-move band around spot", () => {
+  const snap = snapshot(
+    [
+      tick({ optionType: "CE", strikePrice: 25000, lastPrice: 120 }),
+      tick({ optionType: "PE", strikePrice: 25000, lastPrice: 100 })
+    ],
+    25050,
+    25000
+  );
+
+  const move = calculateAtmStraddleExpectedMove(snap);
+  assert.ok(move);
+  assert.equal(move!.atmStraddlePrice, 220);
+  assert.equal(move!.expectedUpperBoundary, 25270);
+  assert.equal(move!.expectedLowerBoundary, 24830);
+});
+
+test("calculateAtmStraddleExpectedMove returns undefined when either ATM leg has no live premium", () => {
+  const snap = snapshot([tick({ optionType: "CE", strikePrice: 25000, lastPrice: 120 })], 25050, 25000);
+  assert.equal(calculateAtmStraddleExpectedMove(snap), undefined);
+});
+
+// ---------------------------------------------------------------------
+// Gamma-risk alert (index-agnostic: driven by the snapshot's own expiry
+// date, not a hardcoded per-symbol weekday)
+// ---------------------------------------------------------------------
+
+test("generateMarketAlerts fires a critical gamma-risk alert when expiry is imminent and spot is pinned against a written wall", () => {
+  const snap: OptionChainSnapshot = { ...snapshot([], 25000, 25000), expiry: "2026-07-02" };
+  const pressure: PressureScore = {
+    bullishPressure: 50,
+    bearishPressure: 50,
+    supportZones: [],
+    resistanceZones: [{ strikePrice: 25050, score: 500, reason: "test" }], // within 0.5% of 25000 spot (125 pts)
+    pcr: 1,
+    maxPain: undefined
+  };
+
+  // "Now" is same-day as expiry, well inside the gamma-risk window.
+  const alerts = generateMarketAlerts(snap, pressure, new Date("2026-07-02T04:00:00.000Z"));
+  const gammaAlert = alerts.find((alert) => alert.metric === "gammaRisk");
+  assert.ok(gammaAlert, "expected a gammaRisk alert when expiry is imminent and spot is pinned to a wall");
+  assert.equal(gammaAlert?.severity, "critical");
+});
+
+test("generateMarketAlerts does not fire gamma-risk when expiry is still far away, even if spot is pinned to a wall", () => {
+  const snap: OptionChainSnapshot = { ...snapshot([], 25000, 25000), expiry: "2026-07-31" };
+  const pressure: PressureScore = {
+    bullishPressure: 50,
+    bearishPressure: 50,
+    supportZones: [],
+    resistanceZones: [{ strikePrice: 25050, score: 500, reason: "test" }],
+    pcr: 1,
+    maxPain: undefined
+  };
+
+  const alerts = generateMarketAlerts(snap, pressure, new Date("2026-07-02T04:00:00.000Z"));
+  assert.equal(
+    alerts.find((alert) => alert.metric === "gammaRisk"),
+    undefined
+  );
+});
+
+test("generateMarketAlerts does not fire gamma-risk when expiry is imminent but spot is nowhere near a written wall", () => {
+  const snap: OptionChainSnapshot = { ...snapshot([], 25000, 25000), expiry: "2026-07-02" };
+  const pressure: PressureScore = {
+    bullishPressure: 50,
+    bearishPressure: 50,
+    supportZones: [],
+    resistanceZones: [{ strikePrice: 26000, score: 500, reason: "test" }], // 1000pts away, well outside 0.5%
+    pcr: 1,
+    maxPain: undefined
+  };
+
+  const alerts = generateMarketAlerts(snap, pressure, new Date("2026-07-02T04:00:00.000Z"));
+  assert.equal(
+    alerts.find((alert) => alert.metric === "gammaRisk"),
+    undefined
+  );
 });

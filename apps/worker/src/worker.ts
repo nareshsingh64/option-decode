@@ -1,7 +1,8 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, saveOptionChainSnapshot } from "@option-decode/db";
-import { DhanClient, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import type { FilledPaperLeg } from "@option-decode/db";
+import { DhanClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { MarketAlert, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
@@ -261,8 +262,13 @@ async function monitorPaperTrading(snapshot: { underlyingSymbol: string; expiry:
       console.log("Paper trading monitor completed", {
         underlying: snapshot.underlyingSymbol,
         expiry: snapshot.expiry,
-        ...result
+        filledOrders: result.filledOrders,
+        checkedPositions: result.checkedPositions,
+        closedPositions: result.closedPositions
       });
+    }
+    if (result.filledLegs.length) {
+      await recordMarginForFilledLegs(result.filledLegs);
     }
   } catch (error) {
     console.error("Paper trading monitor failed after market snapshot", {
@@ -270,6 +276,75 @@ async function monitorPaperTrading(snapshot: { underlyingSymbol: string; expiry:
       expiry: snapshot.expiry,
       error
     });
+  }
+}
+
+// Informational-only margin lookup (per user request - never blocks or
+// resizes a paper trade). Runs after a fill is already committed: on any
+// failure (rate limit, missing Dhan credentials, mock market feed) this
+// just skips leaving no margin figure for this cycle, rather than failing
+// the fill itself. Groups legs by groupId so a multi-leg (hedge) ticket
+// gets priced as one combined margin request, matching how Dhan itself
+// prices a hedged position.
+async function recordMarginForFilledLegs(filledLegs: FilledPaperLeg[]) {
+  const processedGroupIds = new Set<string>();
+
+  for (const leg of filledLegs) {
+    if (leg.groupId) {
+      if (processedGroupIds.has(leg.groupId)) {
+        continue;
+      }
+      processedGroupIds.add(leg.groupId);
+    }
+
+    try {
+      const groupLegs = await getOpenPositionsForMarginGroup(leg.positionId, leg.groupId);
+      const scriptLegs = groupLegs.filter((groupLeg) => groupLeg.securityId);
+      if (!scriptLegs.length) {
+        // Most common cause: the fill came from mock/demo ticks (no real
+        // Dhan securityId ever attached), not a real Dhan option-chain
+        // snapshot. Logged (unlike a Dhan API failure) because this isn't
+        // transient - it won't resolve on the next snapshot cycle either.
+        console.warn("Margin lookup skipped: no leg in this group has a known Dhan securityId", {
+          positionId: leg.positionId,
+          groupId: leg.groupId,
+          underlyingSymbol: leg.underlyingSymbol,
+          expiryLabel: leg.expiryLabel,
+          mockMarketFeedEnabled: config.MOCK_MARKET_FEED_ENABLED
+        });
+        continue;
+      }
+
+      const margin = await dhan.calculateMultiOrderMargin(
+        scriptLegs.map((groupLeg) => ({
+          transactionType: groupLeg.action === "SELL" ? "SELL" : "BUY",
+          quantity: groupLeg.quantity,
+          securityId: groupLeg.securityId as string,
+          price: groupLeg.entryPrice,
+          exchangeSegment: getFnoExchangeSegment(groupLeg.underlyingSymbol)
+        }))
+      );
+
+      await recordPositionMargin(
+        groupLegs.map((groupLeg) => groupLeg.id),
+        margin.totalMargin,
+        {
+          spanMargin: margin.spanMargin,
+          exposureMargin: margin.exposureMargin,
+          foMargin: margin.foMargin,
+          commodityMargin: margin.commodityMargin,
+          currency: margin.currency,
+          hedgeBenefit: margin.hedgeBenefit ?? null,
+          legCount: scriptLegs.length
+        }
+      );
+    } catch (error) {
+      console.warn("Margin lookup skipped for filled paper trade (informational only)", {
+        positionId: leg.positionId,
+        groupId: leg.groupId,
+        error: error instanceof Error ? error.message : error
+      });
+    }
   }
 }
 

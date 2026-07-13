@@ -627,6 +627,74 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
   };
 }
 
+export interface OiWeightedPriceResult {
+  avgSellPrice: number;
+  totalOi: number;
+  sampleCount: number;
+}
+
+// Real-data version of the "average sell price" concept (as opposed to a
+// single point-in-time LTP): walks a strike's full tick history and, for
+// every tick where open interest increased, treats that as "this much OI
+// got written at this price." The result is Σ(price × ΔOI) ÷ ΣΔOI across
+// every such buildup event - an approximation of what the currently-open
+// interest actually got sold for, on average, rather than what it would
+// cost to write right now. Does not adjust for OI unwinds (see
+// PressureZone.avgSellPrice's doc comment in @option-decode/types) since
+// exchanges don't publish which price-level lots close when OI drops -
+// this is the same simplifying assumption virtually every tool doing this
+// kind of calculation makes. Returns one result per "optionType:strike"
+// key, omitting any strike with no OI-buildup history to derive it from.
+export async function calculateOiWeightedAverageSellPrices(underlyingSymbol: string, expiryLabel: string, strikes: Array<{ optionType: OptionType; strikePrice: number }>, client: DbClient = prisma): Promise<Map<string, OiWeightedPriceResult>> {
+  const results = new Map<string, OiWeightedPriceResult>();
+  if (!strikes.length) {
+    return results;
+  }
+
+  await Promise.all(
+    strikes.map(async ({ optionType, strikePrice }) => {
+      const ticks = await client.optionContractTick.findMany({
+        where: {
+          underlyingSymbol,
+          expiryLabel,
+          optionType,
+          strikePrice
+        },
+        orderBy: { tickTime: "asc" },
+        select: {
+          lastPrice: true,
+          changeInOpenInterest: true
+        }
+      });
+
+      let weightedSum = 0;
+      let totalOi = 0;
+      let sampleCount = 0;
+
+      for (const tick of ticks) {
+        const price = toNumber(tick.lastPrice);
+        const oiDelta = toNumber(tick.changeInOpenInterest);
+        if (price === undefined || price <= 0 || oiDelta === undefined || oiDelta <= 0) {
+          continue;
+        }
+        weightedSum += price * oiDelta;
+        totalOi += oiDelta;
+        sampleCount += 1;
+      }
+
+      if (totalOi > 0) {
+        results.set(`${optionType}:${strikePrice}`, {
+          avgSellPrice: Number((weightedSum / totalOi).toFixed(2)),
+          totalOi,
+          sampleCount
+        });
+      }
+    })
+  );
+
+  return results;
+}
+
 export async function pruneMarketDataBefore(cutoff: Date, batchSize = 500, client: PrismaClient = prisma) {
   const snapshots = await client.optionChainSnapshot.findMany({
     where: {

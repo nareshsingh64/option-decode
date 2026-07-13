@@ -51,6 +51,30 @@ export interface PressureZone {
   strikePrice: number;
   score: number;
   reason: string;
+  // Premium-adjusted "true" defense line, per the institutional playbook:
+  // a writer's real breakeven isn't the bare strike, it's the strike offset
+  // by the premium they collected. `premium` is the live LTP of the option
+  // that anchors this zone (the same tick the zone's strike/score came
+  // from); `trueZone` is strike + premium for a resistance (CE) zone, or
+  // strike - premium for a support (PE) zone. Both are undefined when the
+  // anchoring tick has no live premium to derive them from.
+  premium?: number;
+  trueZone?: number;
+  // Alternative, more rigorous defense line: instead of `premium` (a single
+  // point-in-time LTP), this is the open-interest-weighted average price
+  // this strike's OI was actually written at, derived from historical
+  // tick-by-tick OI buildup (Σ price × ΔOI at each buildup event ÷ ΣΔOI).
+  // Deliberately kept alongside `premium`/`trueZone` rather than replacing
+  // them - the two answer different questions ("what would it cost to
+  // write this right now" vs "what did the open interest actually get
+  // sold for, on average"). Undefined when there's no OI-buildup history
+  // to derive it from (e.g. a freshly-listed contract). Doesn't account
+  // for OI unwinds, since exchanges don't publish which price-level lots
+  // got closed when open interest drops - a standard approximation shared
+  // by essentially every tool doing this kind of calculation.
+  avgSellPrice?: number;
+  weightedTrueZone?: number;
+  weightedSampleOi?: number;
 }
 
 export interface PressureScore {
@@ -168,6 +192,53 @@ export interface RecommendedTradeSetup {
   breakevenToday: number;
 }
 
+// Which execution timeframe a seller-side setup was sized for — determines
+// which delta band (and therefore which strike) buildSellerTradeSetup picks.
+// See the Institutional Option Seller's Playbook: 0.15-0.20 delta intraday,
+// 0.10-0.15 delta weekly, 0.05-0.10 delta monthly.
+export type TradeTimeframe = "intraday" | "weekly" | "monthly";
+
+// The seller-side counterpart to RecommendedTradeSetup. Where the buy-side
+// setup answers "what do I pay and where's my stop," this answers the
+// mirror-image question for someone writing (selling) the option: what
+// premium do I collect, and at what premium do I buy it back for a loss
+// (stopLoss, ABOVE entry) or a profit (target, BELOW entry). See
+// @option-decode/trading#buildSellerTradeSetup for the derivation — strike
+// chosen by nearest-to-target delta for the given timeframe, stop-loss sized
+// at the playbook's 1.5x-2x collected-premium multiple, target sized at the
+// playbook's ~50% profit-take rule.
+export interface RecommendedSellSetup {
+  optionType: OptionType;
+  strike: number;
+  timeframe: TradeTimeframe;
+  // The delta band's target value for this timeframe (e.g. 0.125 for
+  // weekly) — what the strike search was aiming for.
+  targetDelta: number;
+  // The selected strike's actual |delta| (broker feed if present, else the
+  // Black-Scholes fallback) — may differ from targetDelta when the chain's
+  // strike spacing doesn't land exactly on the target.
+  actualDelta: number;
+  // Premium collected at entry (the option's LTP when written).
+  entryPrice: number;
+  // Buy-back price that closes the trade at a defined loss — always ABOVE
+  // entryPrice for a short option, unlike the buy-side stopLoss which sits
+  // below entry.
+  stopLoss: number;
+  // The multiple of entryPrice used to size stopLoss (1.5-2x per the
+  // playbook's intraday system-stop rule, applied uniformly across
+  // timeframes as a conservative default).
+  stopLossMultiplier: number;
+  // Buy-back price that closes the trade at a defined profit — BELOW
+  // entryPrice, reflecting the playbook's "buy back at ~50% of collected
+  // premium" theta-decay exit rule.
+  target: number;
+  riskRewardRatio: number;
+  // Underlying spot level at which the short option is exactly break-even
+  // at expiry: strike + premium collected for a CE, strike - premium for a
+  // PE — the same "true zone" math as PressureZone.trueZone.
+  breakevenAtExpiry: number;
+}
+
 export interface Recommendation {
   id: string;
   category: RecommendationCategory;
@@ -176,7 +247,15 @@ export interface Recommendation {
   explanation: string;
   action: string;
   confidence: number;
+  // Buy-side setup — unchanged, still populated exactly as before for every
+  // recommendation that suggests buying a CE/PE.
   tradeSetup?: RecommendedTradeSetup;
+  // Seller-side setup(s) — additive. One entry for a single-leg write
+  // (e.g. "sell this PE"), two for a strangle-style two-leg recommendation
+  // (one CE + one PE). Never populated on the same recommendation as
+  // tradeSetup — a given recommendation is either a buy idea or a sell
+  // idea, matching its own action text.
+  sellSetups?: RecommendedSellSetup[];
 }
 
 export interface MarketPulsePoint {
@@ -197,6 +276,22 @@ export interface MarketPulse {
   pressureNetRatePerMin?: number;
   pcrRatePerMin?: number;
   direction: MarketPulseDirection;
+}
+
+// The playbook's literal "ATM Straddle Rule": ATM Call LTP + ATM Put LTP is
+// the market's own expected move for the current expiry cycle. Distinct
+// from the India-VIX-derived expected-move band already used elsewhere in
+// this codebase (see apps/web's buildVixStrikeRange) — that's a legitimate
+// alternative (annualized-IV-implied) calculation, but it isn't what the
+// playbook means by "expected move," so it's kept as its own field rather
+// than folded into or replacing the VIX band.
+export interface AtmStraddleExpectedMove {
+  atmStrike: number;
+  atmCallPrice: number;
+  atmPutPrice: number;
+  atmStraddlePrice: number;
+  expectedUpperBoundary: number;
+  expectedLowerBoundary: number;
 }
 
 export interface PaperOrderRequest {

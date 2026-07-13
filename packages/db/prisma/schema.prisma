@@ -302,6 +302,19 @@ model PaperOrder {
   status           PaperOrderStatus @default(PENDING)
   strategyName     String
   reasonText       String?          @db.Text
+  // groupId links multiple legs submitted together in one order ticket
+  // (e.g. a sold main leg + a bought hedge leg) into a single strategy.
+  // Null/absent for ordinary single-leg orders placed before this feature
+  // existed and for any order that isn't part of a multi-leg ticket.
+  groupId          String?
+  legRole          String           @default("MAIN")
+  // Informational only, estimated at order placement using the requested
+  // price and the last known securityId for this contract (works even
+  // outside market hours - Dhan's margin calculator is a static SPAN/
+  // exposure lookup, not a live quote). Refreshed with the real fill price
+  // once the order actually fills (see PaperPosition.marginRequired).
+  marginRequired   Decimal?         @db.Decimal(14, 2)
+  marginBreakdown  Json?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   user             User             @relation(fields: [userId], references: [id])
@@ -311,6 +324,7 @@ model PaperOrder {
   @@index([userId, createdAt])
   @@index([tradingDate, underlyingSymbol, status])
   @@index([status, createdAt])
+  @@index([groupId])
 }
 
 model PaperPosition {
@@ -336,6 +350,15 @@ model PaperPosition {
   openedAt         DateTime
   closedAt         DateTime?
   exitReason       String?
+  // Mirrors the originating order's leg-grouping, so open positions that
+  // belong to the same multi-leg strategy can be displayed together.
+  groupId          String?
+  legRole          String              @default("MAIN")
+  // Informational only (per user request) - Dhan's margin calculator
+  // result captured at fill time, using actual fill prices/quantities.
+  // Never used to block or size a paper trade.
+  marginRequired   Decimal?            @db.Decimal(14, 2)
+  marginBreakdown  Json?
   user             User                @relation(fields: [userId], references: [id])
   order            PaperOrder          @relation(fields: [orderId], references: [id])
   trade            PaperTrade?
@@ -344,6 +367,7 @@ model PaperPosition {
   @@index([userId, status, openedAt])
   @@index([tradingDate, underlyingSymbol, status])
   @@index([status, openedAt])
+  @@index([groupId])
 }
 
 model PaperTrade {

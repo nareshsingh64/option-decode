@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { useMemo, useRef } from "react";
 import { Info } from "lucide-react";
 import type { MarketPulse } from "@option-decode/types";
+import { SupportResistanceZonesPanel } from "./pressure-engine";
+import { buildZoneRows } from "./strike-pressure-analytics";
 import { TradeRecommendations } from "./trade-recommendations";
 
 interface DashboardMainPanelProps {
@@ -50,6 +52,14 @@ export function DashboardMainPanel({
   tradeInterpretation,
   showRecommendations = true
 }: DashboardMainPanelProps) {
+  // Same builder the Pressure Engine tab uses (see
+  // strike-pressure-analytics.ts#buildZoneRows) - computed here from the
+  // `overview` prop this component already receives, rather than requiring
+  // every caller (live dashboard, replay lab) to thread a new zoneRows prop
+  // through. Keeps this card and the Pressure Engine tab's identical block
+  // from ever showing different numbers for the same snapshot.
+  const zoneRows = useMemo(() => buildZoneRows(overview), [overview]);
+
   return (
     <section className="grid gap-4">
       <Panel title="Market Detail">
@@ -131,7 +141,12 @@ export function DashboardMainPanel({
           </div>
         </div>
       </Panel>
-      {showRecommendations ? <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} /> : null}
+      {showRecommendations ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <TradeRecommendations recommendations={overview.recommendations} snapshotTime={overview.snapshot.snapshotTime} formatTime={formatTime} />
+          <SupportResistanceZonesPanel zoneRows={zoneRows} formatStrike={formatStrike} />
+        </div>
+      ) : null}
     </section>
   );
 }
