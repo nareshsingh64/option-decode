@@ -1911,13 +1911,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
 }
 
 
+// Every strike Dhan returned for this expiry, not a window around ATM -
+// capping this used to silently make deep OTM strikes unreachable in the
+// Strike dropdown (both the main order ticket and hedge legs), which
+// directly conflicted with the seller-side setups elsewhere in this app
+// that recommend exactly this kind of far-OTM strike.
 function buildStrikeChoices(overview: MarketOverview) {
-  const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
-  const atmIndex = strikes.findIndex((strike) => strike === overview.snapshot.atmStrike);
-  if (atmIndex < 0) {
-    return strikes.slice(0, 12);
-  }
-  return strikes.slice(Math.max(0, atmIndex - 6), atmIndex + 7);
+  return [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
 }
 
 function findOptionTick(overview: MarketOverview, strikePrice: number, optionType: "CE" | "PE") {
