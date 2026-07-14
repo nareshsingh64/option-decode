@@ -29,6 +29,14 @@ const MARKET_AUX_CACHE_MS = 5_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 const MARKET_EXPIRIES_CACHE_MS = 10_000;
 const MARKET_PULSE_CACHE_MS = 10_000;
+// enrichZonesWithAvgSellPrice() runs one historical-tick-history DB query
+// per support/resistance zone (typically 4-10 zones), in parallel. Unlike
+// every other data source on this endpoint (snapshot/expiries/pulse), it
+// had no caching at all, so every overview poll - and especially the first
+// poll right after switching symbols - paid that full cost on every call.
+// Same TTL as the snapshot cache: zones are a deterministic function of the
+// snapshot, so this can't be any staler than the snapshot data already is.
+const OI_WEIGHTED_ZONES_CACHE_MS = MARKET_SNAPSHOT_CACHE_MS;
 // How far back to look for the market-pulse rate-of-change calculation.
 // Long enough that a couple of noisy ~30s snapshots don't dominate the
 // trend line, short enough to still describe "right now" rather than the
@@ -51,6 +59,7 @@ const marketAuxCache = new Map<
   }
 >();
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
+const oiWeightedZonesCache = new Map<string, HotCacheEntry<PressureScore>>();
 const marketPulseCache = new Map<string, HotCacheEntry<MarketPulse | null>>();
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tradableExpiriesCache = new Map<string, HotCacheEntry<string[]>>();
@@ -388,7 +397,9 @@ app.get<{
     userPromise
   ]);
   const marketPulsePromise = getCachedMarketPulse(snapshot.underlyingSymbol, snapshot.expiry);
-  const pressure = await enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry);
+  const pressure = await getHotCacheValue(oiWeightedZonesCache, `${snapshot.underlyingSymbol}:${snapshot.expiry}`, OI_WEIGHTED_ZONES_CACHE_MS, () =>
+    enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry)
+  );
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
   const strikeMovement = calculateStrikeMovement(snapshot);
@@ -715,7 +726,13 @@ app.get<{
     return reply.status(404).send({ message: "Replay snapshot was not found." });
   }
 
-  const pressure = await enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry);
+  // Keyed by the immutable snapshot id (not underlying:expiry, as the live
+  // overview cache above is) since replay can jump between many different
+  // historical snapshots of the same underlying/expiry - a past snapshot's
+  // data never changes, so this is safe to cache the same way.
+  const pressure = await getHotCacheValue(oiWeightedZonesCache, `replay:${request.params.id}`, OI_WEIGHTED_ZONES_CACHE_MS, () =>
+    enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry)
+  );
   const user = await getRequestUser(request.headers.cookie);
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const strikeMovement = calculateStrikeMovement(snapshot);
