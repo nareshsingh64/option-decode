@@ -634,7 +634,7 @@ export interface OiWeightedPriceResult {
 }
 
 // Real-data version of the "average sell price" concept (as opposed to a
-// single point-in-time LTP): walks a strike's full tick history and, for
+// single point-in-time LTP): walks a strike's recent tick history and, for
 // every tick where open interest increased, treats that as "this much OI
 // got written at this price." The result is Σ(price × ΔOI) ÷ ΣΔOI across
 // every such buildup event - an approximation of what the currently-open
@@ -645,6 +645,18 @@ export interface OiWeightedPriceResult {
 // this is the same simplifying assumption virtually every tool doing this
 // kind of calculation makes. Returns one result per "optionType:strike"
 // key, omitting any strike with no OI-buildup history to derive it from.
+//
+// Bounded to the most recent MAX_TICK_SAMPLE ticks per strike, not the
+// contract's entire lifetime. Confirmed in production: OptionContractTick
+// has grown to 34M+ rows, and an unbounded per-strike scan (this function
+// is called once per support/resistance zone, in parallel, on every
+// dashboard poll) was taking 15-16 seconds per /api/market/overview call.
+// The weighted sum is order-independent, so capping to the most recent
+// window is both a real perf fix and a reasonable product tradeoff -
+// "recent buildup" is arguably more actionable than the strike's full
+// multi-week history anyway.
+const MAX_TICK_SAMPLE = 3_000;
+
 export async function calculateOiWeightedAverageSellPrices(underlyingSymbol: string, expiryLabel: string, strikes: Array<{ optionType: OptionType; strikePrice: number }>, client: DbClient = prisma): Promise<Map<string, OiWeightedPriceResult>> {
   const results = new Map<string, OiWeightedPriceResult>();
   if (!strikes.length) {
@@ -660,7 +672,8 @@ export async function calculateOiWeightedAverageSellPrices(underlyingSymbol: str
           optionType,
           strikePrice
         },
-        orderBy: { tickTime: "asc" },
+        orderBy: { tickTime: "desc" },
+        take: MAX_TICK_SAMPLE,
         select: {
           lastPrice: true,
           changeInOpenInterest: true
