@@ -35,18 +35,20 @@ export interface OptionContractTick {
   // input for day-cumulative reads (support/resistance zone strength) but
   // the wrong one for anything meant to represent live movement.
   changeInOpenInterest?: number;
-  // Change over a trailing ~5-minute window within the SAME session
-  // (undefined until that much of the session has actually elapsed).
-  // Distinct from changeInOpenInterest/lastPriceChangePercent above, which
-  // are both day-level - mixing a day-cumulative figure into a "movement"
-  // calculation made the Strike Movement trend arrow stay pointing one way
-  // for most of a session. Deliberately NOT a single-poll (e.g. 30s)
-  // delta either - that turned out to be pure bid/ask noise, flipping
-  // every strike in lockstep on every poll with no real change in
-  // activity. 5 minutes is the same window Market Pulse already uses
-  // elsewhere for this "recent but not instant" concept.
-  recentOiChange?: number;
-  recentPriceChangePercent?: number;
+  // Change since TODAY's own market open (undefined only until the
+  // session's first snapshot exists). Distinct from
+  // changeInOpenInterest/lastPriceChangePercent above, which compare
+  // against the PREVIOUS day's close - mixing that day-over-day figure
+  // into a "movement" calculation made the Strike Movement trend arrow
+  // stay pointing one way for most of a session. Also deliberately not a
+  // short rolling window (single-poll or a few minutes) - both were tried
+  // and were mostly bid/ask noise, flipping every strike in the ATM +/-4
+  // window in lockstep with no real change in activity. Anchoring to
+  // session open means the reference point never moves during the day, so
+  // this reflects genuine day-so-far drift and builds progressively
+  // through the session instead of flickering or staying static.
+  sessionOiChange?: number;
+  sessionPriceChangePercent?: number;
   impliedVolatility?: number;
   delta?: number;
   gamma?: number;

@@ -203,13 +203,14 @@ test("calculateStrikeMovement matches a hand-computed worked example exactly", (
   const strikes = [24800, 24900, 25000, 25100, 25200];
   const ticks: OptionContractTick[] = [];
   for (const strike of strikes) {
-    // recentOiChange/recentPriceChangePercent (poll-to-poll) are set here
-    // to the same figures changeInOpenInterest/lastPriceChangePercent
-    // (day-level) used to carry, purely so this worked example's numbers
-    // still line up - calculateStrikeTrend reads the "recent" pair now,
-    // not the day-level one (see its doc comment for why).
-    ticks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 4000, changeInOpenInterest: 600, lastPriceChange: -1, lastPriceChangePercent: -1, recentOiChange: 600, recentPriceChangePercent: -1, volume: 500 }));
-    ticks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 50, lastPriceChange: 0.2, lastPriceChangePercent: 0.5, recentOiChange: 50, recentPriceChangePercent: 0.5, volume: 100 }));
+    // sessionOiChange/sessionPriceChangePercent (since today's market
+    // open) are set here to the same figures changeInOpenInterest/
+    // lastPriceChangePercent (vs previous day's close) used to carry,
+    // purely so this worked example's numbers still line up -
+    // calculateStrikeTrend reads the "session" pair now, not the
+    // previous-day one (see its doc comment for why).
+    ticks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 4000, changeInOpenInterest: 600, lastPriceChange: -1, lastPriceChangePercent: -1, sessionOiChange: 600, sessionPriceChangePercent: -1, volume: 500 }));
+    ticks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 50, lastPriceChange: 0.2, lastPriceChangePercent: 0.5, sessionOiChange: 50, sessionPriceChangePercent: 0.5, volume: 100 }));
   }
   const snap = snapshot(ticks, 25000, 25000);
   const rows = calculateStrikeMovement(snap);
@@ -222,8 +223,8 @@ test("calculateStrikeMovement matches a hand-computed worked example exactly", (
   assert.equal(atmRow.bias, "Up / support");
 
   // trendScore per strike = strikeTrend(pe) - strikeTrend(ce), built from
-  // recentOiChange/recentPriceChangePercent (poll-to-poll), not the
-  // day-level changeInOpenInterest/lastPriceChangePercent above:
+  // sessionOiChange/sessionPriceChangePercent (since today's open), not
+  // the previous-day changeInOpenInterest/lastPriceChangePercent above:
   //   strikeTrend(pe) = 600 + (-1)*2 = 598, strikeTrend(ce) = 50 + 0.5*2 = 51
   //   trendScore = 547 for every strike, which exceeds the fixed
   // STRIKE_TREND_THRESHOLD, so a uniform chain-wide PE-writing move across

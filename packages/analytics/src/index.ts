@@ -348,23 +348,24 @@ function getSellerSafetyScore(tick?: OptionContractTick): number {
   return 0;
 }
 
-// Deliberately uses recentOiChange/recentPriceChangePercent (trailing
-// ~5min window, same session) rather than changeInOpenInterest/
-// lastPriceChangePercent (both day-level, vs previous close). The
-// day-level fields barely move within a session, so a trend arrow built
-// from them stayed pointing one direction for most of the day even though
-// this function reruns on every snapshot - it looked live but its inputs
-// weren't. An earlier version of this fix compared against a single poll
-// (~30s) instead of a 5min window, which was worse in a different way:
-// that's mostly bid/ask noise, and every strike near the money shares the
-// same underlying's short-term jitter, so the whole ATM +/-4 window
-// flipped Flat/support/resistance together on every poll with no real
-// change in activity. See OptionContractTick's doc comments in
-// @option-decode/types for the full distinction between the field pairs.
+// Deliberately uses sessionOiChange/sessionPriceChangePercent (since
+// TODAY's market open) rather than changeInOpenInterest/
+// lastPriceChangePercent (both vs the PREVIOUS day's close). Two earlier
+// approaches were tried and rejected: the day-level fields barely move
+// within a session, so a trend arrow built from them stayed pointing one
+// direction all day. A single-poll (~30s) or rolling 5min delta fixed
+// that but was too short-horizon to read genuine day-basis direction -
+// mostly bid/ask noise, flipping the whole ATM +/-4 window in lockstep on
+// every poll with no real change in activity. Session-open keeps a fixed
+// reference point for the whole day: this builds progressively as real
+// activity accumulates, reads Flat at market open (correctly - there's
+// nothing to report yet), and won't flicker on short-term noise. See
+// OptionContractTick's doc comments in @option-decode/types for the full
+// distinction between the field pairs.
 function calculateStrikeTrend(tick?: OptionContractTick): number {
   if (!tick) return 0;
-  const oiTrend = toLots(tick.recentOiChange, tick);
-  const ltpTrend = (tick.recentPriceChangePercent ?? 0) * 2;
+  const oiTrend = toLots(tick.sessionOiChange, tick);
+  const ltpTrend = (tick.sessionPriceChangePercent ?? 0) * 2;
   return Math.round(oiTrend + ltpTrend);
 }
 
@@ -437,15 +438,18 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
 // not a backtested number — revisit it once the backtest engine can
 // calibrate it against real historical accuracy instead of a guess.
 //
-// Lowered from 10 now that trendScore is built from recentOiChange/
-// recentPriceChangePercent (poll-to-poll) instead of the old day-level
-// changeInOpenInterest/lastPriceChangePercent - a single poll's OI/price
-// move is naturally much smaller in magnitude than a whole day's, so the
-// old threshold would have made almost every strike read "Flat". This
-// number is a guess at the right scale, not a calibrated one - watch it
-// against real intraday behavior and adjust if it's still too sticky
-// (raise it) or too noisy/flickery (lower it further).
-const STRIKE_TREND_THRESHOLD = 3;
+// trendScore is now built from sessionOiChange/sessionPriceChangePercent
+// (since today's market open) rather than the old day-level
+// changeInOpenInterest/lastPriceChangePercent (vs previous close) - see
+// calculateStrikeTrend's doc comment. Magnitude-wise this sits between
+// the two rejected in-between attempts (a single ~30s poll, and a 5min
+// window) and the original day-level version: small right after market
+// open, growing toward day-level scale as the session progresses. This
+// number is a guess at a reasonable middle ground, not a calibrated one -
+// watch it against real intraday behavior across a full session and
+// adjust if it's too sticky early in the day (lower it) or too noisy
+// later in the day (raise it).
+const STRIKE_TREND_THRESHOLD = 5;
 
 /**
  * ATM +/-4 strike movement score — the most important trend-reading panel
