@@ -348,10 +348,18 @@ function getSellerSafetyScore(tick?: OptionContractTick): number {
   return 0;
 }
 
+// Deliberately uses recentOiChange/recentPriceChangePercent (poll-to-poll,
+// same session) rather than changeInOpenInterest/lastPriceChangePercent
+// (both day-level, vs previous close). The day-level fields barely move
+// within a session, so a trend arrow built from them stayed pointing one
+// direction for most of the day even though this function reruns on
+// every snapshot - it looked live but its inputs weren't. See
+// OptionContractTick's doc comments in @option-decode/types for the full
+// distinction between the two field pairs.
 function calculateStrikeTrend(tick?: OptionContractTick): number {
   if (!tick) return 0;
-  const oiTrend = toLots(tick.changeInOpenInterest, tick);
-  const ltpTrend = (tick.lastPriceChangePercent ?? 0) * 2;
+  const oiTrend = toLots(tick.recentOiChange, tick);
+  const ltpTrend = (tick.recentPriceChangePercent ?? 0) * 2;
   return Math.round(oiTrend + ltpTrend);
 }
 
@@ -423,7 +431,16 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
 // zone moves together. This fixed value is a reasonable starting heuristic,
 // not a backtested number — revisit it once the backtest engine can
 // calibrate it against real historical accuracy instead of a guess.
-const STRIKE_TREND_THRESHOLD = 10;
+//
+// Lowered from 10 now that trendScore is built from recentOiChange/
+// recentPriceChangePercent (poll-to-poll) instead of the old day-level
+// changeInOpenInterest/lastPriceChangePercent - a single poll's OI/price
+// move is naturally much smaller in magnitude than a whole day's, so the
+// old threshold would have made almost every strike read "Flat". This
+// number is a guess at the right scale, not a calibrated one - watch it
+// against real intraday behavior and adjust if it's still too sticky
+// (raise it) or too noisy/flickery (lower it further).
+const STRIKE_TREND_THRESHOLD = 3;
 
 /**
  * ATM +/-4 strike movement score — the most important trend-reading panel

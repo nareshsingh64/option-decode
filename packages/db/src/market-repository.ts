@@ -137,6 +137,80 @@ async function getSnapshotReferenceTicks(snapshotId: string, strikePrices: Prism
   });
 }
 
+/**
+ * Reference values from the immediately preceding snapshot in the SAME
+ * trading session - distinct from getLastPriceReferenceMap above, which
+ * compares against the previous day's close (or today's session open) for
+ * the conventional "day change" figures shown throughout the UI. This one
+ * feeds calculateStrikeTrend's "movement" indicator specifically: that
+ * function was using the day-level changeInOpenInterest/lastPriceChange
+ * fields, which barely shift poll to poll (they only drift gradually over
+ * the session), so the trend arrow ended up pointing the same direction
+ * for most of a session even though it was being "recalculated on every
+ * snapshot" - it looked live but its inputs weren't. Returns an empty map
+ * for a session's first snapshot, which is correct: there's no prior poll
+ * to compare against yet.
+ */
+async function getRecentPollReferenceMap(
+  ticks: Array<{
+    optionType: OptionType;
+    strikePrice: Prisma.Decimal;
+  }>,
+  underlyingSymbol: string,
+  expiryId: string,
+  tradingDate: Date,
+  snapshotTime: Date,
+  client: DbClient
+): Promise<Map<string, { lastPrice?: number; openInterest?: number }>> {
+  const references = new Map<string, { lastPrice?: number; openInterest?: number }>();
+  const strikePrices = [...new Map(ticks.map((tick) => [tick.strikePrice.toString(), tick.strikePrice])).values()];
+
+  if (!strikePrices.length) {
+    return references;
+  }
+
+  const previousSnapshot = await client.optionChainSnapshot.findFirst({
+    where: {
+      underlyingSymbol,
+      expiryId,
+      tradingDate,
+      snapshotTime: {
+        lt: snapshotTime
+      }
+    },
+    orderBy: { snapshotTime: "desc" },
+    select: { id: true }
+  });
+
+  if (!previousSnapshot) {
+    return references;
+  }
+
+  const previousTicks = await client.optionContractTick.findMany({
+    where: {
+      snapshotId: previousSnapshot.id,
+      strikePrice: {
+        in: strikePrices
+      }
+    },
+    select: {
+      optionType: true,
+      strikePrice: true,
+      lastPrice: true,
+      openInterest: true
+    }
+  });
+
+  for (const tick of previousTicks) {
+    references.set(tickReferenceKey(tick), {
+      lastPrice: toNumber(tick.lastPrice),
+      openInterest: toNumber(tick.openInterest)
+    });
+  }
+
+  return references;
+}
+
 function labelToDate(label: string): Date {
   return dateOnly(label);
 }
@@ -384,10 +458,15 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
     latest.snapshotTime,
     client
   );
+  const recentPollReferences = await getRecentPollReferenceMap(latest.ticks, latest.underlyingSymbol, latest.expiryId, latest.tradingDate, latest.snapshotTime, client);
   const ticks = latest.ticks.map((tick): OptionContractTick => {
     const lastPrice = toNumber(tick.lastPrice);
     const previousLastPrice = lastPriceReferences.get(tickReferenceKey(tick));
     const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
+    const openInterest = toNumber(tick.openInterest);
+    const recentPoll = recentPollReferences.get(tickReferenceKey(tick));
+    const recentOiChange = openInterest !== undefined && recentPoll?.openInterest !== undefined ? openInterest - recentPoll.openInterest : undefined;
+    const recentPriceChange = lastPrice !== undefined && recentPoll?.lastPrice !== undefined ? lastPrice - recentPoll.lastPrice : undefined;
 
     return {
       tradingDate,
@@ -404,8 +483,10 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
       bidPrice: toNumber(tick.bidPrice),
       askPrice: toNumber(tick.askPrice),
       volume: toNumber(tick.volume),
-      openInterest: toNumber(tick.openInterest),
+      openInterest,
       changeInOpenInterest: toNumber(tick.changeInOpenInterest),
+      recentOiChange,
+      recentPriceChangePercent: recentPriceChange !== undefined && recentPoll?.lastPrice ? (recentPriceChange / recentPoll.lastPrice) * 100 : undefined,
       impliedVolatility: toNumber(tick.impliedVolatility),
       delta: toNumber(tick.deltaValue),
       gamma: toNumber(tick.gammaValue),
@@ -586,10 +667,15 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
     snapshot.snapshotTime,
     client
   );
+  const recentPollReferences = await getRecentPollReferenceMap(snapshot.ticks, snapshot.underlyingSymbol, snapshot.expiryId, snapshot.tradingDate, snapshot.snapshotTime, client);
   const ticks = snapshot.ticks.map((tick): OptionContractTick => {
     const lastPrice = toNumber(tick.lastPrice);
     const previousLastPrice = lastPriceReferences.get(tickReferenceKey(tick));
     const lastPriceChange = lastPrice !== undefined && previousLastPrice !== undefined ? lastPrice - previousLastPrice : undefined;
+    const openInterest = toNumber(tick.openInterest);
+    const recentPoll = recentPollReferences.get(tickReferenceKey(tick));
+    const recentOiChange = openInterest !== undefined && recentPoll?.openInterest !== undefined ? openInterest - recentPoll.openInterest : undefined;
+    const recentPriceChange = lastPrice !== undefined && recentPoll?.lastPrice !== undefined ? lastPrice - recentPoll.lastPrice : undefined;
 
     return {
       tradingDate,
@@ -606,8 +692,10 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
       bidPrice: toNumber(tick.bidPrice),
       askPrice: toNumber(tick.askPrice),
       volume: toNumber(tick.volume),
-      openInterest: toNumber(tick.openInterest),
+      openInterest,
       changeInOpenInterest: toNumber(tick.changeInOpenInterest),
+      recentOiChange,
+      recentPriceChangePercent: recentPriceChange !== undefined && recentPoll?.lastPrice ? (recentPriceChange / recentPoll.lastPrice) * 100 : undefined,
       impliedVolatility: toNumber(tick.impliedVolatility),
       delta: toNumber(tick.deltaValue),
       gamma: toNumber(tick.gammaValue),

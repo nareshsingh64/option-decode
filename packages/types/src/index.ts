@@ -29,7 +29,22 @@ export interface OptionContractTick {
   askPrice?: number;
   volume?: number;
   openInterest?: number;
+  // Day-level change vs the previous trading day's close (as reported by
+  // the exchange/broker feed) - the conventional "today's OI change"
+  // figure. Barely moves poll to poll within a session, so it's the right
+  // input for day-cumulative reads (support/resistance zone strength) but
+  // the wrong one for anything meant to represent live movement.
   changeInOpenInterest?: number;
+  // Change since the immediately preceding snapshot in the SAME session
+  // (undefined for a session's first snapshot, since there's no prior
+  // poll yet). Distinct from changeInOpenInterest/lastPriceChangePercent
+  // above, which are both day-level - mixing a day-cumulative figure into
+  // a "movement" calculation made the Strike Movement trend arrow stay
+  // pointing one way for most of a session even though it looked like it
+  // was recalculating live. Use these two for anything meant to reflect
+  // recent/live PE-CE momentum instead.
+  recentOiChange?: number;
+  recentPriceChangePercent?: number;
   impliedVolatility?: number;
   delta?: number;
   gamma?: number;
