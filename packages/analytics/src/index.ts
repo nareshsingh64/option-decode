@@ -348,14 +348,19 @@ function getSellerSafetyScore(tick?: OptionContractTick): number {
   return 0;
 }
 
-// Deliberately uses recentOiChange/recentPriceChangePercent (poll-to-poll,
-// same session) rather than changeInOpenInterest/lastPriceChangePercent
-// (both day-level, vs previous close). The day-level fields barely move
-// within a session, so a trend arrow built from them stayed pointing one
-// direction for most of the day even though this function reruns on
-// every snapshot - it looked live but its inputs weren't. See
-// OptionContractTick's doc comments in @option-decode/types for the full
-// distinction between the two field pairs.
+// Deliberately uses recentOiChange/recentPriceChangePercent (trailing
+// ~5min window, same session) rather than changeInOpenInterest/
+// lastPriceChangePercent (both day-level, vs previous close). The
+// day-level fields barely move within a session, so a trend arrow built
+// from them stayed pointing one direction for most of the day even though
+// this function reruns on every snapshot - it looked live but its inputs
+// weren't. An earlier version of this fix compared against a single poll
+// (~30s) instead of a 5min window, which was worse in a different way:
+// that's mostly bid/ask noise, and every strike near the money shares the
+// same underlying's short-term jitter, so the whole ATM +/-4 window
+// flipped Flat/support/resistance together on every poll with no real
+// change in activity. See OptionContractTick's doc comments in
+// @option-decode/types for the full distinction between the field pairs.
 function calculateStrikeTrend(tick?: OptionContractTick): number {
   if (!tick) return 0;
   const oiTrend = toLots(tick.recentOiChange, tick);

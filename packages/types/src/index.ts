@@ -35,14 +35,16 @@ export interface OptionContractTick {
   // input for day-cumulative reads (support/resistance zone strength) but
   // the wrong one for anything meant to represent live movement.
   changeInOpenInterest?: number;
-  // Change since the immediately preceding snapshot in the SAME session
-  // (undefined for a session's first snapshot, since there's no prior
-  // poll yet). Distinct from changeInOpenInterest/lastPriceChangePercent
-  // above, which are both day-level - mixing a day-cumulative figure into
-  // a "movement" calculation made the Strike Movement trend arrow stay
-  // pointing one way for most of a session even though it looked like it
-  // was recalculating live. Use these two for anything meant to reflect
-  // recent/live PE-CE momentum instead.
+  // Change over a trailing ~5-minute window within the SAME session
+  // (undefined until that much of the session has actually elapsed).
+  // Distinct from changeInOpenInterest/lastPriceChangePercent above, which
+  // are both day-level - mixing a day-cumulative figure into a "movement"
+  // calculation made the Strike Movement trend arrow stay pointing one way
+  // for most of a session. Deliberately NOT a single-poll (e.g. 30s)
+  // delta either - that turned out to be pure bid/ask noise, flipping
+  // every strike in lockstep on every poll with no real change in
+  // activity. 5 minutes is the same window Market Pulse already uses
+  // elsewhere for this "recent but not instant" concept.
   recentOiChange?: number;
   recentPriceChangePercent?: number;
   impliedVolatility?: number;

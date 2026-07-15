@@ -137,19 +137,33 @@ async function getSnapshotReferenceTicks(snapshotId: string, strikePrices: Prism
   });
 }
 
+// How far back "recent" looks for calculateStrikeTrend's movement signal.
+// Deliberately NOT the single immediately-preceding snapshot: the default
+// SNAPSHOT_INTERVAL_MS is 30s, and comparing against a single poll that
+// close turned out to be pure noise in practice - exchange-reported OI
+// often doesn't refresh that fast, and a 30s price wiggle is bid/ask
+// bounce, not a trend. Since every strike near the money shares exposure
+// to the same underlying's short-term jitter, that noise moved the whole
+// ATM +/-4 window in lockstep, flipping Flat/support/resistance on every
+// poll with no actual change in OI-buildup activity. 5 minutes mirrors
+// the window MARKET_PULSE_WINDOW_MS already uses elsewhere in this app
+// for the same "recent but not day-level, not instant" concept.
+const RECENT_TREND_WINDOW_MS = 5 * 60 * 1000;
+
 /**
- * Reference values from the immediately preceding snapshot in the SAME
- * trading session - distinct from getLastPriceReferenceMap above, which
- * compares against the previous day's close (or today's session open) for
- * the conventional "day change" figures shown throughout the UI. This one
- * feeds calculateStrikeTrend's "movement" indicator specifically: that
- * function was using the day-level changeInOpenInterest/lastPriceChange
- * fields, which barely shift poll to poll (they only drift gradually over
- * the session), so the trend arrow ended up pointing the same direction
- * for most of a session even though it was being "recalculated on every
- * snapshot" - it looked live but its inputs weren't. Returns an empty map
- * for a session's first snapshot, which is correct: there's no prior poll
- * to compare against yet.
+ * Reference values from the most recent snapshot at least
+ * RECENT_TREND_WINDOW_MS old, in the SAME trading session - distinct from
+ * getLastPriceReferenceMap above, which compares against the previous
+ * day's close (or today's session open) for the conventional "day change"
+ * figures shown throughout the UI. This one feeds calculateStrikeTrend's
+ * "movement" indicator specifically: that function was using the
+ * day-level changeInOpenInterest/lastPriceChange fields, which barely
+ * shift within a session, so the trend arrow ended up pointing the same
+ * direction for most of the day even though it was being "recalculated on
+ * every snapshot" - it looked live but its inputs weren't. Returns an
+ * empty map until RECENT_TREND_WINDOW_MS has actually elapsed in the
+ * session, which is correct: there's no meaningful "recent trend" to
+ * report yet that early.
  */
 async function getRecentPollReferenceMap(
   ticks: Array<{
@@ -169,26 +183,26 @@ async function getRecentPollReferenceMap(
     return references;
   }
 
-  const previousSnapshot = await client.optionChainSnapshot.findFirst({
+  const referenceSnapshot = await client.optionChainSnapshot.findFirst({
     where: {
       underlyingSymbol,
       expiryId,
       tradingDate,
       snapshotTime: {
-        lt: snapshotTime
+        lte: new Date(snapshotTime.getTime() - RECENT_TREND_WINDOW_MS)
       }
     },
     orderBy: { snapshotTime: "desc" },
     select: { id: true }
   });
 
-  if (!previousSnapshot) {
+  if (!referenceSnapshot) {
     return references;
   }
 
-  const previousTicks = await client.optionContractTick.findMany({
+  const referenceTicks = await client.optionContractTick.findMany({
     where: {
-      snapshotId: previousSnapshot.id,
+      snapshotId: referenceSnapshot.id,
       strikePrice: {
         in: strikePrices
       }
@@ -201,7 +215,7 @@ async function getRecentPollReferenceMap(
     }
   });
 
-  for (const tick of previousTicks) {
+  for (const tick of referenceTicks) {
     references.set(tickReferenceKey(tick), {
       lastPrice: toNumber(tick.lastPrice),
       openInterest: toNumber(tick.openInterest)
