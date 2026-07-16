@@ -1668,14 +1668,21 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         />
       ) : null}
 
-      {initialView === "new-dashboard" ? (
+      {/* Unlike the other panels, Strike Matrix stays MOUNTED on every view
+          and is only hidden with CSS. Conditional rendering unmounted it on
+          tab switch, which killed its background refresh interval — so a
+          trader flipping back to the tab momentarily saw stale numbers. The
+          `contents` wrapper is layout-transparent when visible, and keeping
+          the component alive also preserves the horizon / trading-date
+          selection across tab switches. */}
+      <div className={initialView === "new-dashboard" ? "contents" : "hidden"}>
         <StrikeMatrixPanel
           underlying={overview.selectedUnderlying}
           expiry={overview.selectedExpiry}
           formatStrike={formatStrike}
           formatTime={formatIstShortDateTime}
         />
-      ) : null}
+      </div>
 
       {initialView === "pressure" ? (
         <PressureEngine
