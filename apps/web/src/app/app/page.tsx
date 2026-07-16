@@ -26,7 +26,7 @@ export default async function AppPage({ searchParams }: AppPageProps) {
 }
 
 function normalizeView(value?: string): DashboardView {
-  const views: DashboardView[] = ["dashboard", "option-chain", "pressure", "replay", "paper", "alerts", "account", "admin", "settings"];
+  const views: DashboardView[] = ["dashboard", "new-dashboard", "option-chain", "pressure", "replay", "paper", "alerts", "account", "admin", "settings"];
   return views.includes(value as DashboardView) ? (value as DashboardView) : "dashboard";
 }
 

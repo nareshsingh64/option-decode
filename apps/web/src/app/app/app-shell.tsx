@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Bell, CandlestickChart, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
+import { Activity, Bell, CandlestickChart, Crosshair, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -9,6 +9,7 @@ import type { AuthUser, DashboardView, MarketOverview } from "../../components/l
 
 const protectedNavItems: Array<[DashboardView, string, LucideIcon]> = [
   ["dashboard", "Dashboard", Activity],
+  ["new-dashboard", "Strike Matrix", Crosshair],
   ["option-chain", "Option Chain", CandlestickChart],
   ["pressure", "Pressure Engine", ShieldCheck],
   ["replay", "Replay Lab", Play],

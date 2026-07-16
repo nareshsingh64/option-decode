@@ -1,3 +1,4 @@
+import type { StrikeMatrixAnalysis, TradingHorizon } from "@option-decode/types";
 import type {
   AdminOverview,
   AlertThreshold,
@@ -333,6 +334,34 @@ export async function fetchReplayTradingDates(underlying: string, expiry: string
   }
   const payload = (await response.json()) as { tradingDates: string[] };
   return payload.tradingDates;
+}
+
+export interface StrikeMatrixResponse {
+  underlying: string;
+  expiry: string;
+  tradingDate: string;
+  snapshotTime: string;
+  spotPrice: number;
+  atmStrike: number;
+  analysis: StrikeMatrixAnalysis;
+}
+
+export async function fetchStrikeMatrix(underlying: string, expiry: string, horizon: TradingHorizon, tradingDate?: string): Promise<StrikeMatrixResponse> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ underlying, horizon });
+  if (expiry) {
+    search.set("expiry", expiry);
+  }
+  if (tradingDate) {
+    search.set("tradingDate", tradingDate);
+  }
+  const response = await fetch(`${apiUrl}/api/market/strike-matrix?${search.toString()}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`Strike matrix failed with HTTP ${response.status}`);
+  }
+  return response.json() as Promise<StrikeMatrixResponse>;
 }
 
 export async function fetchReplayTimeline(underlying: string, expiry: string, tradingDate?: string): Promise<ReplaySnapshotSummary[]> {

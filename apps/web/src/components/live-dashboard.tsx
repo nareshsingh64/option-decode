@@ -57,6 +57,7 @@ import {
 } from "./dashboard-formatters";
 import { DashboardMainPanel, useStrikeScoreTrends } from "./dashboard-main-panel";
 import { MarketControls } from "./market-controls";
+import { StrikeMatrixPanel } from "./strike-matrix-panel";
 import {
   buildAtmStrikeRange,
   buildChainRows,
@@ -429,7 +430,7 @@ interface LiveDashboardProps {
   onNavigateToView?: (view: DashboardView) => void;
 }
 
-export type DashboardView = "dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
+export type DashboardView = "dashboard" | "new-dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
 type NumberFormatMode = "indian" | "metric";
 type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
@@ -1664,6 +1665,15 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           strikeMovementSummary={strikeMovementSummary}
           strikeTrends={strikeTrends}
           tradeInterpretation={tradeInterpretation}
+        />
+      ) : null}
+
+      {initialView === "new-dashboard" ? (
+        <StrikeMatrixPanel
+          underlying={overview.selectedUnderlying}
+          expiry={overview.selectedExpiry}
+          formatStrike={formatStrike}
+          formatTime={formatIstShortDateTime}
         />
       ) : null}
 

@@ -667,3 +667,6 @@ export function calculateMarketPulse(points: MarketPulsePoint[]): MarketPulse | 
     direction
   };
 }
+
+// Strike Matrix (WCI / DRC / DRCR) engine — see strike-matrix.ts
+export { calculateStrikeMatrix, isTradingHorizon, STRIKE_MATRIX_HORIZONS } from "./strike-matrix.js";

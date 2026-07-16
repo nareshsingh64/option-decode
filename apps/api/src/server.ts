@@ -4,7 +4,7 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculateAtmStraddleExpectedMove, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts } from "@option-decode/analytics";
+import { calculateAtmStraddleExpectedMove, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
@@ -461,6 +461,53 @@ app.get<{
   const parsedLimit = Number(request.query.limit ?? 60);
   return {
     trend: await listPcrTrend(requestedUnderlying, requestedExpiry, Number.isFinite(parsedLimit) ? parsedLimit : 60)
+  };
+});
+
+app.get<{
+  Querystring: {
+    underlying?: string;
+    expiry?: string;
+    horizon?: string;
+    tradingDate?: string;
+  };
+}>("/api/market/strike-matrix", async (request, reply) => {
+  const requestedUnderlying = normalizeUnderlying(request.query.underlying);
+  const requestedExpiry = request.query.expiry?.trim() || undefined;
+  const requestedHorizon = request.query.horizon?.trim().toLowerCase();
+  const requestedTradingDate = request.query.tradingDate?.trim() || undefined;
+  const horizon = isTradingHorizon(requestedHorizon) ? requestedHorizon : "intraday";
+
+  // Historical mode: when a trading date is picked on the calendar, analyse
+  // that day's LAST stored snapshot (listReplaySnapshots orders desc), the
+  // same data the Replay Lab reads. Otherwise use the live cached snapshot.
+  let snapshot: OptionChainSnapshot;
+  if (requestedTradingDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedTradingDate)) {
+      return reply.status(400).send({ message: "tradingDate must be formatted as YYYY-MM-DD." });
+    }
+    const daySnapshots = await listReplaySnapshots(requestedUnderlying, requestedExpiry, requestedTradingDate);
+    const latest = daySnapshots[0];
+    if (!latest) {
+      return reply.status(404).send({ message: `No option chain snapshots stored for ${requestedUnderlying} on ${requestedTradingDate}.` });
+    }
+    const stored = await getOptionChainSnapshotById(latest.id);
+    if (!stored) {
+      return reply.status(404).send({ message: "Stored snapshot could not be loaded." });
+    }
+    snapshot = stored;
+  } else {
+    snapshot = await getCachedLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry);
+  }
+
+  return {
+    underlying: snapshot.underlyingSymbol,
+    expiry: snapshot.expiry,
+    tradingDate: snapshot.tradingDate,
+    snapshotTime: snapshot.snapshotTime,
+    spotPrice: snapshot.spotPrice,
+    atmStrike: snapshot.atmStrike,
+    analysis: calculateStrikeMatrix(snapshot, horizon)
   };
 });
 

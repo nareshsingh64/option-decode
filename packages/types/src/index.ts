@@ -313,6 +313,71 @@ export interface AtmStraddleExpectedMove {
   expectedLowerBoundary: number;
 }
 
+// --- Strike Matrix (Strikes Movement Design & Decision Matrix) ---
+// WCI = OI Change / Volume; DRC = OI Change × Delta (signed);
+// DRCR = Σ|DRC| puts / Σ|DRC| calls. See docs/New Dashboard ver 1.0.
+
+export type TradingHorizon = "intraday" | "weekly" | "monthly";
+
+// DRCR bands: Bullish > 1.5, Neutral 0.8–1.2, Bearish < 0.6. Readings in
+// the gaps (0.6–0.8, 1.2–1.5) are deliberately "Transitional" rather than
+// force-fitted into a tradable bias.
+export type StrikeMatrixBias = "Bullish" | "Neutral" | "Bearish" | "Transitional";
+
+export interface StrikeMatrixRow {
+  optionType: OptionType;
+  strikePrice: number;
+  delta: number;
+  volume: number;
+  oiChange: number;
+  openInterest: number;
+  // undefined when the strike traded zero volume (WCI is a ratio over volume)
+  wci?: number;
+  drc: number;
+}
+
+export interface StrikeMatrixWall {
+  optionType: OptionType;
+  strikePrice: number;
+  wci: number;
+  meetsThreshold: boolean;
+  delta: number;
+  oiChange: number;
+  volume: number;
+}
+
+export interface StrikeMatrixRecommendation {
+  structure: string;
+  targetDelta: number;
+  // Execution strikes closest to ±targetDelta inside the active universe.
+  // Only the side(s) the structure actually writes are populated.
+  callStrike?: number;
+  callStrikeDelta?: number;
+  putStrike?: number;
+  putStrikeDelta?: number;
+  theoreticalPop: number;
+  note: string;
+}
+
+export interface StrikeMatrixAnalysis {
+  horizon: TradingHorizon;
+  deltaMin: number;
+  deltaMax: number;
+  wciThreshold: number;
+  targetDelta: number;
+  // Active universe S: strikes whose |delta| falls inside the horizon band
+  universe: StrikeMatrixRow[];
+  putDrcTotal: number;
+  callDrcTotal: number;
+  // undefined when the call side has zero aggregate |DRC| (division guard)
+  drcr?: number;
+  bias: StrikeMatrixBias;
+  callWall?: StrikeMatrixWall;
+  putWall?: StrikeMatrixWall;
+  recommendation?: StrikeMatrixRecommendation;
+  riskRule: string;
+}
+
 export interface PaperOrderRequest {
   userId: string;
   underlyingSymbol: UnderlyingSymbol;
