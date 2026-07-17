@@ -3,6 +3,7 @@ import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
+import type { DhanOhlcQuote } from "@option-decode/dhan";
 import type { MarketAlert, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
@@ -371,6 +372,24 @@ async function publishSnapshotSaved(snapshotId: string, snapshot: { underlyingSy
   }
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// BullMQ's repeatable "every 30000ms" job fires this on a fixed :00/:30
+// clock-second grid, so this OHLC call left the process every single cycle
+// at almost the exact same instant, every day, for as long as the worker
+// has been running. In production this consistently got HTTP 429 (Dhan
+// error 805, "too many requests or connections") on nearly every attempt,
+// while the API's own Market Quote calls (same account, same code path,
+// same request shape confirmed via manual replica) succeeded fine, and a
+// one-off manual retry moments later also succeeded. That points at
+// something specific to firing on a predictable, unjittered clock
+// boundary every cycle rather than a genuinely broken payload or account
+// block, so this: (1) starts with a small random jitter so it stops
+// landing on the exact same instant every cycle, and (2) retries once
+// after a short backoff on failure, per Dhan's own documented rate-limit
+// guidance (docs.dhanhq.co/api/v2/guides/rate-limits).
 async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
   const resolvedUnderlyings = await dhan.resolveQuoteUnderlyings(underlyings);
   const quoteUnderlyings = resolvedUnderlyings.filter((underlying) => underlying.quoteSecurityId);
@@ -378,16 +397,26 @@ async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
     return new Map<string, number>();
   }
 
-  try {
-    const quotes = await dhan.getOhlcQuotes(quoteUnderlyings);
-    return new Map(
+  await sleep(Math.floor(Math.random() * 2000));
+
+  const toMap = (quotes: Map<string, DhanOhlcQuote>) =>
+    new Map(
       quoteUnderlyings
         .map((underlying) => [underlying.key, quotes.get(underlying.key)?.lastPrice] as const)
         .filter((entry): entry is readonly [string, number] => typeof entry[1] === "number")
     );
-  } catch (error) {
-    console.warn("Unable to fetch futures quote overrides; option-chain spot prices may use generic underlyings", error);
-    return new Map<string, number>();
+
+  try {
+    return toMap(await dhan.getOhlcQuotes(quoteUnderlyings));
+  } catch (firstError) {
+    console.warn("Futures quote override fetch failed, retrying once after backoff", { error: firstError instanceof Error ? firstError.message : firstError });
+    await sleep(2500);
+    try {
+      return toMap(await dhan.getOhlcQuotes(quoteUnderlyings));
+    } catch (error) {
+      console.warn("Unable to fetch futures quote overrides; option-chain spot prices may use generic underlyings", error);
+      return new Map<string, number>();
+    }
   }
 }
 
