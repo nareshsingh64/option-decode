@@ -1549,13 +1549,31 @@ async function getHotCacheValue<T>(cache: Map<string, HotCacheEntry<T>>, key: st
   return pending;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function getFreshMarketAuxData(symbols: string[]) {
   const definitions = symbols.map((symbol) => getUnderlyingDefinition(symbol)).filter((definition): definition is NonNullable<typeof definition> => Boolean(definition));
 
   try {
     const quoteDefinitions = await dhan.resolveQuoteUnderlyings(definitions);
     const quoteUnderlyings = [...quoteDefinitions, INDIA_VIX_UNDERLYING];
-    const [ltpResult, ohlcResult] = await Promise.allSettled([dhan.getLtpQuotes(quoteUnderlyings), dhan.getOhlcQuotes(quoteUnderlyings)]);
+    // Dhan caps Market Quote calls at 1 request/sec ACROSS BOTH the LTP and
+    // OHLC endpoints combined (not 1/sec each) - see
+    // https://docs.dhanhq.co/api/v2/guides/rate-limits. Firing these two
+    // calls concurrently via Promise.all therefore breached the limit on
+    // every single refresh, regardless of how infrequently refreshes
+    // themselves happened. Run them sequentially with a >1s gap instead.
+    const ltpResult = await dhan
+      .getLtpQuotes(quoteUnderlyings)
+      .then((value) => ({ status: "fulfilled" as const, value }))
+      .catch((reason) => ({ status: "rejected" as const, reason }));
+    await sleep(1100);
+    const ohlcResult = await dhan
+      .getOhlcQuotes(quoteUnderlyings)
+      .then((value) => ({ status: "fulfilled" as const, value }))
+      .catch((reason) => ({ status: "rejected" as const, reason }));
     const ltpQuotes = ltpResult.status === "fulfilled" ? ltpResult.value : new Map<string, { lastPrice?: number }>();
     const ohlcQuotes = ohlcResult.status === "fulfilled" ? ohlcResult.value : new Map<string, { lastPrice?: number; previousClose?: number }>();
     if (ltpResult.status === "rejected") {
