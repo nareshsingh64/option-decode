@@ -56,6 +56,7 @@ const marketAuxCache = new Map<
       indiaVix?: number;
       ticker: MarketTickerItem[];
     };
+    refreshing?: boolean;
   }
 >();
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
@@ -1466,12 +1467,40 @@ function normalizeTickerSymbols(symbols: Array<string | undefined>) {
   return normalized.length ? [...new Set(normalized)] : undefined;
 }
 
+// Stale-while-revalidate: ticker/India VIX data is auxiliary display info
+// (getFreshMarketAuxData already wraps the underlying Dhan calls in
+// Promise.allSettled with a graceful per-quote fallback), but the old
+// version still made every /api/market/overview response WAIT on a fresh
+// Dhan round trip whenever the 5s cache had expired - which, given the
+// dashboard polls roughly every 25-30s, was effectively every single
+// request. Confirmed in production this was adding ~1s to every overview
+// call, worse whenever the ongoing DhanApiError issue (LTP/OHLC/ticker
+// fetch failures - still unresolved, token/rate-limit/outage unconfirmed)
+// meant that second was spent failing rather than succeeding. Now: once
+// we have ANY cached value, serve it immediately even if stale, and
+// refresh in the background for next time - only a cold start (no cached
+// value at all yet) still blocks on a live fetch.
 async function getMarketAuxData(symbols?: string[]) {
   const requestedSymbols = normalizeTickerSymbols(symbols ?? tickerUnderlyings) ?? tickerUnderlyings;
   const cacheKey = requestedSymbols.slice().sort().join(",");
   const now = Date.now();
   const cached = marketAuxCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  if (cached) {
+    if (!cached.refreshing) {
+      cached.refreshing = true;
+      getFreshMarketAuxData(requestedSymbols)
+        .then((value) => {
+          marketAuxCache.set(cacheKey, { expiresAt: Date.now() + MARKET_AUX_CACHE_MS, value });
+        })
+        .catch((error) => {
+          cached.refreshing = false;
+          app.log.warn({ error }, "Background market aux refresh failed; continuing to serve stale ticker data");
+        });
+    }
     return cached.value;
   }
 
