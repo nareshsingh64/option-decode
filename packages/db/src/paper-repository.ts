@@ -1200,12 +1200,28 @@ function hasMovedInFavor(action: string, entryPrice: number, latestPrice: number
 }
 
 async function getAtmWindowScoreSignal(underlyingSymbol: string, expiryLabel: string, client: PrismaClient) {
+  // Resolve expiryLabel -> expiryId first rather than filtering
+  // OptionChainSnapshot through the nested expiry relation directly - the
+  // latter prevents MySQL from using the [underlyingSymbol, expiryId,
+  // snapshotTime] composite index (confirmed via EXPLAIN in production on
+  // the identical pattern in market-repository.ts), turning a single-row
+  // lookup into a scan of thousands of rows. Expiry itself is tiny, so
+  // this extra lookup is effectively free.
+  const expiry = await client.expiry.findFirst({
+    where: {
+      expiryLabel,
+      underlying: { symbol: underlyingSymbol }
+    },
+    select: { id: true }
+  });
+  if (!expiry) {
+    return 0;
+  }
+
   const snapshot = await client.optionChainSnapshot.findFirst({
     where: {
       underlyingSymbol,
-      expiry: {
-        expiryLabel
-      }
+      expiryId: expiry.id
     },
     include: {
       ticks: true
