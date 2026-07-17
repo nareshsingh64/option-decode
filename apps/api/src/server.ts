@@ -25,7 +25,14 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
   segment: "IDX_I",
   lotSize: 1
 };
-const MARKET_AUX_CACHE_MS = 5_000;
+// Was 5s, which meant the ticker's stale-while-revalidate cache went stale
+// almost as fast as the frontend polled it, so nearly every poll cycle kicked
+// off a fresh Dhan LTP/OHLC round trip. Combined with the worker's own 30s
+// snapshot-cycle Dhan calls, this pushed total request volume over Dhan's
+// rate limit and surfaced as intermittent HTTP 429 DhanApiErrors. Ticker
+// data doesn't need sub-25s freshness, so raising the TTL cuts most of that
+// call volume directly.
+const MARKET_AUX_CACHE_MS = 25_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 const MARKET_EXPIRIES_CACHE_MS = 10_000;
 const MARKET_PULSE_CACHE_MS = 10_000;
