@@ -122,7 +122,36 @@ async function captureOnce() {
       ticks: snapshot.ticks.length
     });
 
-    await captureExtraExpiriesForPaperTrading(underlying, expiry, quoteOverrides.get(underlying.key));
+    const capturedExpiries = new Set([expiry]);
+
+    // The Dashboard/Strike Matrix expiry picker (getExpiriesOrEmpty in
+    // apps/api/src/server.ts) only offers expiries we've already captured
+    // snapshot history for - it doesn't fall back to Dhan's live expiry
+    // list once we have ANY stored history. Without this, the next week's
+    // expiry never becomes selectable there until the current nearest
+    // expiry rolls off and it becomes expiries[0] itself, even though Dhan
+    // already lists it as tradable well before then. Keep the next-nearest
+    // expiry's snapshot history warm too so it shows up in advance.
+    const nextExpiry = expiries[1];
+    if (nextExpiry) {
+      try {
+        const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
+        const nextSnapshotId = await saveOptionChainSnapshot(nextSnapshot);
+        await monitorPaperTrading(nextSnapshot);
+        await publishSnapshotSaved(nextSnapshotId, nextSnapshot);
+        console.log("Saved Dhan market snapshot for next expiry", {
+          snapshotId: nextSnapshotId,
+          underlying: nextSnapshot.underlyingSymbol,
+          expiry: nextSnapshot.expiry,
+          ticks: nextSnapshot.ticks.length
+        });
+        capturedExpiries.add(nextExpiry);
+      } catch (error) {
+        console.warn("Unable to capture next expiry for dashboard availability", { underlying: underlying.key, expiry: nextExpiry, error });
+      }
+    }
+
+    await captureExtraExpiriesForPaperTrading(underlying, capturedExpiries, quoteOverrides.get(underlying.key));
   }
 }
 
@@ -135,7 +164,7 @@ async function captureOnce() {
 // straight from the OptionContractTick table). So for every OTHER expiry
 // that currently has a pending order or open position, fetch and store its
 // live chain too, then run the same paper-trading monitor pass on it.
-async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinition, alreadyCapturedExpiry: string, spotPriceOverride?: number) {
+async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinition, alreadyCapturedExpiries: Set<string>, spotPriceOverride?: number) {
   let extraExpiries: string[];
   try {
     extraExpiries = await listExpiriesNeedingLiveData(underlying.key);
@@ -145,7 +174,7 @@ async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinit
   }
 
   for (const expiry of extraExpiries) {
-    if (expiry === alreadyCapturedExpiry) {
+    if (alreadyCapturedExpiries.has(expiry)) {
       continue;
     }
 
