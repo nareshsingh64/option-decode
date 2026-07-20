@@ -327,6 +327,9 @@ export type StrikeMatrixBias = "Bullish" | "Neutral" | "Bearish" | "Transitional
 export interface StrikeMatrixRow {
   optionType: OptionType;
   strikePrice: number;
+  // undefined only if the tick genuinely has no last-traded price yet
+  // (e.g. a strike that hasn't traded this session).
+  lastPrice?: number;
   delta: number;
   volume: number;
   oiChange: number;

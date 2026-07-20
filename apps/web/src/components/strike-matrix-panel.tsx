@@ -15,6 +15,7 @@ import { Crosshair, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { StrikeMatrixAnalysis, StrikeMatrixRow, TradingHorizon } from "@option-decode/types";
 import { CalendarDatePicker } from "./calendar-date-picker";
+import { formatPrice } from "./dashboard-formatters";
 import { fetchReplayTradingDates, fetchStrikeMatrix } from "./dashboard-client";
 import type { StrikeMatrixResponse } from "./dashboard-client";
 
@@ -194,6 +195,7 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                     <tr className="border-b border-terminal-line text-xs uppercase text-terminal-muted">
                       <th className="py-1.5 pr-2 text-left">Type</th>
                       <th className="py-1.5 pr-2">Strike</th>
+                      <th className="py-1.5 pr-2">LTP</th>
                       <th className="py-1.5 pr-2">Delta</th>
                       <th className="py-1.5 pr-2">OI Chg</th>
                       <th className="py-1.5 pr-2">Volume</th>
@@ -209,6 +211,7 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                           {isWall(row, analysis) ? <span className="ml-1 rounded bg-terminal-amber/20 px-1 text-[0.65rem] text-terminal-amber">WALL</span> : null}
                         </td>
                         <td className="py-1 pr-2">{formatStrike(row.strikePrice)}</td>
+                        <td className="py-1 pr-2">{formatPrice(row.lastPrice)}</td>
                         <td className="py-1 pr-2">{row.delta.toFixed(2)}</td>
                         <td className="py-1 pr-2">{formatCompact(row.oiChange)}</td>
                         <td className="py-1 pr-2">{formatCompact(row.volume)}</td>

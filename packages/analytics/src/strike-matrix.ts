@@ -105,6 +105,7 @@ function buildRow(tick: OptionContractTick): StrikeMatrixRow | null {
   return {
     optionType: tick.optionType,
     strikePrice: tick.strikePrice,
+    lastPrice: tick.lastPrice,
     delta: tick.delta,
     volume,
     oiChange,
