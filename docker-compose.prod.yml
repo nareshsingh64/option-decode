@@ -39,9 +39,24 @@ services:
     working_dir: /workspace
     env_file:
       - .env.production
+    # Docker's own container logs (docker compose logs) live under
+    # /var/lib/docker/containers/<container-id>/ and are tied to that
+    # specific container instance - they're gone the moment a deploy
+    # recreates the container (--force-recreate), even though the app
+    # itself never crashed. On a day with several deploys this made
+    # tracing an earlier error impossible because the container that
+    # logged it no longer existed. Tee stdout/stderr into a bind-mounted
+    # host directory too, so logs survive recreates/redeploys - still
+    # visible live via `docker compose logs` exactly as before, but also
+    # persisted on the host at ./logs/api regardless of how many times
+    # the container gets recreated afterward. See logrotate.d/option-decode
+    # for the retention/rotation policy on these files.
     command: >
-      sh -lc "pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
-      pnpm --filter @option-decode/api exec tsx src/server.ts"
+      sh -lc "mkdir -p /var/log/option-decode &&
+      pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma &&
+      pnpm --filter @option-decode/api exec tsx src/server.ts 2>&1 | tee -a /var/log/option-decode/api.log"
+    volumes:
+      - ./logs/api:/var/log/option-decode
     environment:
       NODE_ENV: production
       API_PORT: 4000
@@ -80,8 +95,13 @@ services:
     working_dir: /workspace
     env_file:
       - .env.production
+    # See the matching comment on the api service above - same reasoning,
+    # same persistence approach, just its own log file/directory.
     command: >
-      sh -lc "pnpm --filter @option-decode/worker exec tsx src/worker.ts"
+      sh -lc "mkdir -p /var/log/option-decode &&
+      pnpm --filter @option-decode/worker exec tsx src/worker.ts 2>&1 | tee -a /var/log/option-decode/worker.log"
+    volumes:
+      - ./logs/worker:/var/log/option-decode
     environment:
       NODE_ENV: production
       API_PORT: 4000
