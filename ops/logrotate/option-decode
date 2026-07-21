@@ -6,4 +6,5 @@
   missingok
   notifempty
   copytruncate
+  su root root
 }
