@@ -344,6 +344,12 @@ model PaperPosition {
   trailingStop     Boolean             @default(true)
   trailDistance    Decimal?            @db.Decimal(12, 2)
   bestPrice        Decimal?            @db.Decimal(12, 2)
+  // Consecutive refreshOpenPositionPrices cycles (~30s each) the WCI/DRC
+  // "danger" signal has read against this position, back to back. The
+  // dynamic trailing stop only lets a danger reading actually tighten the
+  // stop once this reaches DANGER_STREAK_REQUIRED - a single noisy tick no
+  // longer permanently ratchets the stop to breakeven.
+  dangerSignalStreak Int               @default(0)
   targetPrice      Decimal             @db.Decimal(12, 2)
   status           PaperPositionStatus @default(OPEN)
   realizedPnl      Decimal             @default(0) @db.Decimal(14, 2)

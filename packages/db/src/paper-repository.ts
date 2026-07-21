@@ -763,7 +763,22 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
       const currentBestPrice = position.bestPrice?.toNumber() ?? position.entryPrice.toNumber();
       const nextBestPrice = isBuy ? Math.max(currentBestPrice, latestPrice) : Math.min(currentBestPrice, latestPrice);
       const scoreSignal = position.trailingStop ? await getCachedScoreSignal(position.underlyingSymbol, position.expiryLabel) : 0;
-      const nextStopLoss = position.trailingStop ? getDynamicTrailingStopLoss(position.action, position.optionType, position.entryPrice.toNumber(), latestPrice, targetPrice, nextBestPrice, trailDistance, scoreSignal) : currentStopLoss;
+
+      // A single noisy 30s-cycle reading against the position used to
+      // tighten the stop straight to breakeven (or trail tight) instantly,
+      // and since the stop only ever ratchets tighter, a one-off blip that
+      // reversed the very next cycle left the position permanently stuck
+      // at that tight level. Now a danger reading only takes effect once
+      // it's held for DANGER_STREAK_REQUIRED consecutive cycles in a row -
+      // a genuine reversal still gets caught, just not a single flicker.
+      // Favorable (profit-locking) readings are unaffected - they apply
+      // immediately as before, since that's the wanted behavior.
+      const isDangerNow = position.trailingStop && isTradeSignalDanger(position.action, position.optionType, scoreSignal);
+      const nextDangerStreak = isDangerNow ? position.dangerSignalStreak + 1 : 0;
+      const dangerConfirmed = nextDangerStreak >= DANGER_STREAK_REQUIRED;
+      const effectiveScoreSignal = isDangerNow && !dangerConfirmed ? 0 : scoreSignal;
+
+      const nextStopLoss = position.trailingStop ? getDynamicTrailingStopLoss(position.action, position.optionType, position.entryPrice.toNumber(), latestPrice, targetPrice, nextBestPrice, trailDistance, effectiveScoreSignal) : currentStopLoss;
       const stopLoss = position.trailingStop ? (isBuy ? Math.max(currentStopLoss, nextStopLoss) : Math.min(currentStopLoss, nextStopLoss)) : currentStopLoss;
       const hitStop = isBuy ? latestPrice <= stopLoss : latestPrice >= stopLoss;
       const hitTarget = isBuy ? latestPrice >= targetPrice : latestPrice <= targetPrice;
@@ -774,7 +789,8 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
           currentPrice: latestPrice,
           stopLoss: normalizeTradablePrice(stopLoss),
           trailDistance,
-          bestPrice: nextBestPrice
+          bestPrice: nextBestPrice,
+          dangerSignalStreak: nextDangerStreak
         }
       });
 
@@ -1144,6 +1160,13 @@ function getFallbackLotSizeForUnderlying(underlyingSymbol: string) {
 function lotsFromQuantity(quantity: number, lotSize: number) {
   return Math.max(1, Math.round(quantity / lotSize));
 }
+
+// Number of consecutive refreshOpenPositionPrices cycles (~30s apart) the
+// danger signal must hold before it's allowed to actually tighten a
+// position's stop - see the call site in refreshOpenPositionPrices for the
+// full reasoning. 3 cycles is roughly 60-90s of confirmation depending on
+// snapshot timing jitter.
+const DANGER_STREAK_REQUIRED = 3;
 
 function getTrailingStopLoss(action: string, referencePrice: number, trailDistance: number) {
   const rawStopLoss = action === "BUY" ? Math.max(0, referencePrice - trailDistance) : referencePrice + trailDistance;
