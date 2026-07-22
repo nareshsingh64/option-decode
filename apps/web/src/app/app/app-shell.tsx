@@ -67,9 +67,15 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   }, [initialParams]);
 
   const handleViewChange = useCallback((view: DashboardView) => {
+    // Role-based tab access: ignore programmatic navigation (quick-order
+    // buttons, signal handoffs, header shortcuts) to tabs this user was
+    // not assigned - the nav filter above is the single source of truth.
+    if (!navItems.some(([allowedView]) => allowedView === view)) {
+      return;
+    }
     setActiveView(view);
     window.history.pushState(null, "", buildViewHref(view, currentParams));
-  }, [currentParams]);
+  }, [currentParams, navItems]);
 
   const handleMarketSelectionChange = useCallback((params: { underlying: string; expiry: string }) => {
     setCurrentParams((current) => ({

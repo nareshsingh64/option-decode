@@ -45,7 +45,7 @@ export function AccountPanel({
 }: AccountPanelProps) {
   return (
     <Panel title="Account">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.45fr)]">
+      <div className={authUser ? "grid gap-4" : "grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.45fr)]"}>
         <div className="grid gap-4 rounded border border-terminal-line bg-white/[0.03] p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -104,6 +104,11 @@ export function AccountPanel({
           )}
         </div>
 
+        {/* The login/register form is only for signed-out visitors. A
+            signed-in user must not be able to create additional accounts
+            from here - registration for new users is an admin/onboarding
+            concern, not a self-service action inside a live session. */}
+        {authUser ? null : (
         <form className="grid gap-3 rounded border border-terminal-line bg-white/[0.03] p-4" onSubmit={handleAuthSubmit}>
           <div className="flex rounded border border-terminal-line bg-terminal-input p-1 text-sm">
             <button className={`min-h-9 flex-1 rounded px-3 font-semibold transition ${authMode === "login" ? "bg-terminal-blue text-white" : "text-terminal-muted hover:text-terminal-text"}`} type="button" onClick={() => {
@@ -141,6 +146,7 @@ export function AccountPanel({
           {authError ? <p className="text-sm text-terminal-red">{authError}</p> : null}
           {authMessage ? <p className="text-sm text-terminal-emerald">{authMessage}</p> : null}
         </form>
+        )}
       </div>
     </Panel>
   );

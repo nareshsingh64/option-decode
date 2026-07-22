@@ -1209,6 +1209,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const orderOverview = isOrderExpiryDivergent ? orderExpiryOverview : overview;
   const isLoadingOrderExpiry = isOrderExpiryDivergent && !orderExpiryOverview && !orderExpiryError;
   const strikeChoices = useMemo(() => (orderOverview ? buildStrikeChoices(orderOverview) : []), [orderOverview]);
+  // Role-based tab access: whether this user may open Paper Trading Pro.
+  // Gates the Strike Matrix "Paper Trade This" handoff - the button is
+  // hidden entirely for users without the pro tab. A missing allowedViews
+  // (older cached session payload) means no restriction.
+  const canAccessPaperPro = useMemo(() => Boolean(authUser && (authUser.role === "ADMIN" || !authUser.allowedViews || authUser.allowedViews.includes("paper-pro"))), [authUser]);
   const orderTick = useMemo(() => (orderOverview ? findOptionTick(orderOverview, Number(orderStrike), orderOptionType) : undefined), [orderOptionType, orderOverview, orderStrike]);
   const marketEntryPrice = orderTick?.lastPrice ?? 0;
   const orderEntryPrice = normalizeTradablePrice(Number(orderEntry || marketEntryPrice));
@@ -1704,7 +1709,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           expiry={overview.selectedExpiry}
           formatStrike={formatStrike}
           formatTime={formatIstShortDateTime}
-          onPaperTradePro={() => onNavigateToView?.("paper-pro")}
+          onPaperTradePro={canAccessPaperPro ? () => onNavigateToView?.("paper-pro") : undefined}
         />
       </div>
 
