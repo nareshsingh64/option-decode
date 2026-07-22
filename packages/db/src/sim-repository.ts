@@ -235,6 +235,9 @@ async function getSimLotSize(underlyingSymbol: string, expiry: string, client: P
   if (stored) {
     return stored;
   }
+  // Keep in sync with getFallbackLotSizeForUnderlying in
+  // market-repository.ts - a miss here silently sizes the whole position
+  // at 1 unit, which makes every P&L figure round to zero.
   const fallback: Record<string, number> = {
     NIFTY: 65,
     BANKNIFTY: 30,
@@ -242,7 +245,11 @@ async function getSimLotSize(underlyingSymbol: string, expiry: string, client: P
     MIDCPNIFTY: 120,
     NIFTYNXT50: 25,
     SENSEX: 20,
-    BANKEX: 30
+    BANKEX: 30,
+    CRUDEOIL: 100,
+    NATURALGAS: 1250,
+    COPPER: 2500,
+    SILVER: 30
   };
   return fallback[underlyingSymbol.toUpperCase()] ?? 1;
 }
