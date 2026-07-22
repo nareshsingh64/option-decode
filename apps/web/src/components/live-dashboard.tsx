@@ -31,6 +31,7 @@ import {
   submitAuth,
   updateAdminUserDisabled,
   updateAdminUserRole,
+  updateAdminUserTabs,
   updateAlertThreshold,
   updateDefaultWatchlist,
   updatePaperPositionRisk,
@@ -71,6 +72,7 @@ import { IvSkewChart, OiBuildupChart } from "./option-chain-charts";
 import { OptionChainPanel } from "./option-chain-panel";
 import { PaperTradingPanel } from "./paper-trading-panel";
 import type { HedgeLegDraft } from "./paper-trading-panel";
+import { PaperTradingProPanel } from "./paper-trading-pro-panel";
 import { PressureEngine } from "./pressure-engine";
 import { ReplayLab } from "./replay-lab";
 import { SettingsPanel } from "./settings-panel";
@@ -282,6 +284,9 @@ export interface AuthUser {
   emailVerified: boolean;
   disabled: boolean;
   lastLoginAt?: string;
+  // Role-based tab access: views this user may open. Optional for
+  // backward compatibility with cached sessions; absent = no restriction.
+  allowedViews?: string[];
   plan?: {
     code: string;
     name: string;
@@ -302,6 +307,8 @@ export interface AdminOverview {
     disabled: boolean;
     lastLoginAt?: string;
     createdAt: string;
+    // Role-based tab access: effective tab set for this user.
+    tabs: string[];
     plan?: {
       code: string;
       name: string;
@@ -430,7 +437,7 @@ interface LiveDashboardProps {
   onNavigateToView?: (view: DashboardView) => void;
 }
 
-export type DashboardView = "dashboard" | "new-dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "alerts" | "account" | "admin" | "settings";
+export type DashboardView = "dashboard" | "new-dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "paper-pro" | "alerts" | "account" | "admin" | "settings";
 type NumberFormatMode = "indian" | "metric";
 type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
@@ -1556,6 +1563,22 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     }
   };
 
+  const handleUpdateAdminUserTabs = async (userId: string, tabs: string[]) => {
+    setUpdatingAdminUserId(userId);
+    setAdminError(null);
+    try {
+      await updateAdminUserTabs(userId, tabs);
+      setAdminOverview(await fetchAdminOverview());
+      if (authUser?.id === userId) {
+        await refreshAuthUser();
+      }
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Unable to update tab assignment");
+    } finally {
+      setUpdatingAdminUserId(null);
+    }
+  };
+
   const handleUpdateAdminUserDisabled = async (userId: string, disabled: boolean) => {
     setUpdatingAdminUserId(userId);
     setAdminError(null);
@@ -1681,6 +1704,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           expiry={overview.selectedExpiry}
           formatStrike={formatStrike}
           formatTime={formatIstShortDateTime}
+          onPaperTradePro={() => onNavigateToView?.("paper-pro")}
         />
       </div>
 
@@ -1749,6 +1773,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           formatIstShortDateTime={formatIstShortDateTime}
           handleUpdateAdminUserDisabled={handleUpdateAdminUserDisabled}
           handleUpdateAdminUserRole={handleUpdateAdminUserRole}
+          handleUpdateAdminUserTabs={handleUpdateAdminUserTabs}
           refreshAdminOverview={refreshAdminOverview}
           updatingAdminUserId={updatingAdminUserId}
         />
@@ -1870,6 +1895,10 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           handleClosePosition={handleClosePosition}
           recentPaperOrders={recentPaperOrders}
         />
+      ) : null}
+
+      {initialView === "paper-pro" ? (
+        <PaperTradingProPanel overview={overview} />
       ) : null}
 
       {initialView === "replay" ? (

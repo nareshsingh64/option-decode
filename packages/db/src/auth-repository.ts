@@ -2,6 +2,7 @@ import type { UserRole } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "./index.js";
+import { ASSIGNABLE_TABS, DEFAULT_TABS, sanitizeTabs } from "./tab-access-repository.js";
 
 export interface AuthUserDto {
   id: string;
@@ -11,6 +12,10 @@ export interface AuthUserDto {
   emailVerified: boolean;
   disabled: boolean;
   lastLoginAt?: string;
+  // Role-based tab access: the dashboard views this user may open.
+  // Admins always get the full set; other users get their assignment
+  // (or the default set when no assignment exists).
+  allowedViews: string[];
   plan?: {
     code: string;
     name: string;
@@ -231,7 +236,8 @@ const activeSubscriptionInclude = {
       createdAt: "desc" as const
     },
     take: 1
-  }
+  },
+  tabAccess: true
 };
 
 function mapAuthUser(user: {
@@ -252,8 +258,10 @@ function mapAuthUser(user: {
       replayLimit: number | null;
     };
   }>;
+  tabAccess?: { tabs: unknown } | null;
 }): AuthUserDto {
   const subscription = user.subscriptions[0];
+  const allowedViews = user.role === "ADMIN" ? [...ASSIGNABLE_TABS] : user.tabAccess ? sanitizeTabs(user.tabAccess.tabs) : [...DEFAULT_TABS];
   return {
     id: user.id,
     email: user.email,
@@ -262,6 +270,7 @@ function mapAuthUser(user: {
     emailVerified: user.emailVerified,
     disabled: user.disabled,
     lastLoginAt: user.lastLoginAt?.toISOString(),
+    allowedViews,
     plan: subscription
       ? {
           code: subscription.plan.code,

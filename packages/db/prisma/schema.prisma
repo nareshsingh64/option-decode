@@ -48,6 +48,20 @@ model User {
   paperPositions PaperPosition[]
   alertThresholds AlertThreshold[]
   pushSubscriptions PushSubscription[]
+  simAccounts    SimAccount[]
+  tabAccess      UserTabAccess?
+}
+
+// Role-based tab access: which dashboard tabs a user may see. No row =
+// the default tab set (Dashboard, Strike Matrix, Option Chain, Paper
+// Trading). Admins implicitly see every tab regardless of this table.
+model UserTabAccess {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  tabs      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id])
 }
 
 model AlertThreshold {
@@ -390,6 +404,171 @@ model PaperTrade {
   position    PaperPosition @relation(fields: [positionId], references: [id])
 
   @@index([closedAt])
+}
+
+// ============================================================
+// Paper Trading Pro (seller strategy simulator) - fully separate
+// from the existing PaperOrder/PaperPosition/PaperTrade module.
+// Additive only; no existing table is modified.
+// ============================================================
+
+enum SimStrategyType {
+  SHORT_STRADDLE
+  BULL_PUT_SPREAD
+  BEAR_CALL_SPREAD
+  IRON_CONDOR
+  NAKED_CALL
+  NAKED_PUT
+}
+
+enum SimHorizon {
+  INTRADAY
+  WEEKLY
+  MONTHLY
+}
+
+enum SimTradeStatus {
+  OPEN
+  CLOSED
+  EXPIRED
+  LIQUIDATED // Phase 3
+}
+
+enum SimLegSide {
+  SELL
+  BUY
+}
+
+enum SimExitRule {
+  PROFIT_TARGET
+  HARD_STOP_3X
+  DTE_GAMMA
+  EXPIRY_ITM
+  DELTA_2X_INTRADAY // Phase 2
+  MARGIN_CALL       // Phase 3
+  DELIVERY_RISK     // Phase 3: stock option ITM inside expiry week
+}
+
+enum SimExitAction {
+  FLAGGED      // Phase 1: surfaced in UI, user closes manually
+  AUTO_CLOSED  // Phase 2
+  LIQUIDATED   // Phase 3
+}
+
+model SimAccount {
+  id              String     @id @default(cuid())
+  userId          String
+  name            String     @default("Default")
+  startingCapital Decimal    @db.Decimal(16, 2)
+  cash            Decimal    @db.Decimal(16, 2)
+  // Sizing guardrail: max % of buying power a single trade may consume.
+  maxTradeBpPct   Decimal    @default(5.00) @db.Decimal(5, 2)
+  isActive        Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  resetAt         DateTime?
+  user            User       @relation(fields: [userId], references: [id])
+  trades          SimTrade[]
+
+  @@index([userId, isActive])
+}
+
+model SimTrade {
+  id                String          @id @default(cuid())
+  accountId         String
+  strategyType      SimStrategyType
+  underlyingSymbol  String
+  expiryLabel       String
+  expiryDate        DateTime        @db.Date
+  horizon           SimHorizon
+  lotSize           Int
+  lots              Int
+  status            SimTradeStatus  @default(OPEN)
+  // Money amounts are total INR for the whole position (per-unit x lotSize x lots).
+  netCredit         Decimal         @db.Decimal(14, 2)
+  // Null = undefined risk (straddle / naked legs).
+  maxLoss           Decimal?        @db.Decimal(14, 2)
+  // Buying power effect reserved at entry.
+  bpe               Decimal         @db.Decimal(16, 2)
+  // Entry context for seller analytics / VRP tracking.
+  underlyingAtEntry Decimal         @db.Decimal(12, 2)
+  ivAtEntry         Decimal?        @db.Decimal(10, 4)
+  hv20AtEntry       Decimal?        @db.Decimal(10, 4)
+  ivHvRatio         Decimal?        @db.Decimal(10, 4)
+  lowEdgeFlag       Boolean         @default(false) // IV/HV < 1.1 at entry
+  // Phase 2: signal attribution from the Strike Matrix engine.
+  entryWci          Decimal?        @db.Decimal(10, 4)
+  entryDrcr         Decimal?        @db.Decimal(10, 4)
+  signalRef         String?
+  openedAt          DateTime        @default(now())
+  closedAt          DateTime?
+  exitReason        String?
+  realizedPnl       Decimal?        @db.Decimal(14, 2)
+  account           SimAccount      @relation(fields: [accountId], references: [id])
+  legs              SimLeg[]
+  snapshots         SimMtmSnapshot[]
+  exitEvents        SimExitEvent[]
+
+  @@index([accountId, status])
+  @@index([underlyingSymbol, expiryLabel, status])
+  @@index([status, expiryDate])
+}
+
+model SimLeg {
+  id              String     @id @default(cuid())
+  tradeId         String
+  side            SimLegSide
+  optionType      OptionType
+  strikePrice     Decimal    @db.Decimal(12, 2)
+  // Fill realism captured at entry (all per-unit premium values).
+  midAtFill       Decimal    @db.Decimal(12, 2)
+  bidAtFill       Decimal    @db.Decimal(12, 2)
+  askAtFill       Decimal    @db.Decimal(12, 2)
+  slippageChi     Decimal    @db.Decimal(4, 2) // 0.25 standard, 0.50 high-IV regime
+  fillPrice       Decimal    @db.Decimal(12, 2) // SELL: mid - chi*spread, BUY: mid + chi*spread
+  oiAtFill        Decimal?   @db.Decimal(20, 2)
+  deltaAtFill     Decimal?   @db.Decimal(10, 6)
+  ivAtFill        Decimal?   @db.Decimal(10, 4)
+  // Per-unit premium paid/received to close this leg (set when trade closes).
+  closeFillPrice  Decimal?   @db.Decimal(12, 2)
+  // Phase 3: partial-fill tranches for large orders on thin strikes -
+  // [{ lots, price }]; fillPrice above is the volume-weighted average.
+  fillBreakdown   Json?
+  trade           SimTrade   @relation(fields: [tradeId], references: [id])
+
+  @@index([tradeId])
+}
+
+// Phase 1: one row per open trade per EOD run. Phase 2 adds intraday rows.
+model SimMtmSnapshot {
+  id        String   @id @default(cuid())
+  tradeId   String
+  ts        DateTime
+  // Total INR cost to close the whole position now (slippage applied).
+  closeCost Decimal  @db.Decimal(14, 2)
+  pnl       Decimal  @db.Decimal(14, 2)
+  netDelta  Decimal? @db.Decimal(12, 4)
+  netGamma  Decimal? @db.Decimal(12, 6)
+  netTheta  Decimal? @db.Decimal(12, 2)
+  netVega   Decimal? @db.Decimal(12, 2)
+  marginReq Decimal? @db.Decimal(16, 2)
+  trade     SimTrade @relation(fields: [tradeId], references: [id])
+
+  @@unique([tradeId, ts])
+  @@index([ts])
+}
+
+model SimExitEvent {
+  id          String        @id @default(cuid())
+  tradeId     String
+  rule        SimExitRule
+  action      SimExitAction
+  detail      String?       @db.VarChar(255)
+  triggeredAt DateTime      @default(now())
+  trade       SimTrade      @relation(fields: [tradeId], references: [id])
+
+  @@index([tradeId, rule])
+  @@index([triggeredAt])
 }
 
 model BacktestRun {

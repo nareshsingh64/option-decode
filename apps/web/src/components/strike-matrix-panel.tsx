@@ -11,13 +11,15 @@
 // the strikes inside the horizon's delta band (a naturally small set) and
 // the cards stay in a fixed grid.
 
-import { Crosshair, RefreshCw } from "lucide-react";
+import { Crosshair, FlaskConical, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { StrikeMatrixAnalysis, StrikeMatrixRow, TradingHorizon } from "@option-decode/types";
 import { CalendarDatePicker } from "./calendar-date-picker";
 import { formatPrice } from "./dashboard-formatters";
 import { fetchReplayTradingDates, fetchStrikeMatrix } from "./dashboard-client";
 import type { StrikeMatrixResponse } from "./dashboard-client";
+import { storeSimTicketDraft } from "./paper-trading-pro-panel";
+import type { SimTicketDraft } from "./paper-trading-pro-panel";
 
 const HORIZON_LABELS: Array<[TradingHorizon, string]> = [
   ["intraday", "Intraday"],
@@ -33,14 +35,49 @@ const REFRESH_MS: Record<TradingHorizon, number> = {
   monthly: 15 * 60_000
 };
 
+// Map a recommendation onto a Paper Trading Pro strategy from which side(s)
+// the structure writes: put-only -> bull put spread, call-only -> bear call
+// spread, both -> iron condor. Defined-risk defaults on purpose - the sim
+// ticket lets the trader switch to the naked variant deliberately.
+function buildSimDraft(underlying: string, expiry: string, horizon: TradingHorizon, data: StrikeMatrixResponse): SimTicketDraft | null {
+  const { analysis } = data;
+  const recommendation = analysis.recommendation;
+  if (!recommendation) {
+    return null;
+  }
+  const hasPut = recommendation.putStrike !== undefined;
+  const hasCall = recommendation.callStrike !== undefined;
+  if (!hasPut && !hasCall) {
+    return null;
+  }
+  const strategyType: SimTicketDraft["strategyType"] = hasPut && hasCall ? "IRON_CONDOR" : hasPut ? "BULL_PUT_SPREAD" : "BEAR_CALL_SPREAD";
+  const wallWcis = [analysis.callWall?.wci, analysis.putWall?.wci].filter((value): value is number => value !== undefined).map((value) => Math.abs(value));
+  return {
+    underlyingSymbol: underlying,
+    expiry,
+    strategyType,
+    horizon: horizon === "intraday" ? "INTRADAY" : horizon === "weekly" ? "WEEKLY" : "MONTHLY",
+    shortPutStrike: recommendation.putStrike,
+    shortCallStrike: recommendation.callStrike,
+    wci: wallWcis.length ? Math.max(...wallWcis) : null,
+    drcr: analysis.drcr ?? null,
+    signalRef: `${underlying}:${data.expiry}:${horizon}:${data.snapshotTime}`,
+    note: `${analysis.bias} bias - ${recommendation.structure}`
+  };
+}
+
 interface StrikeMatrixPanelProps {
   underlying: string;
   expiry: string;
   formatStrike: (value: number) => string;
   formatTime: (value: string) => string;
+  // Phase 2 handoff: store the recommendation as a sim-ticket draft and
+  // navigate to the Paper Trading Pro tab. Optional so this panel stays
+  // usable anywhere the pro module isn't wired up.
+  onPaperTradePro?: () => void;
 }
 
-export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime }: StrikeMatrixPanelProps) {
+export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime, onPaperTradePro }: StrikeMatrixPanelProps) {
   const [horizon, setHorizon] = useState<TradingHorizon>("intraday");
   const [tradingDate, setTradingDate] = useState("");
   const [tradingDates, setTradingDates] = useState<string[]>([]);
@@ -175,6 +212,38 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                       <span className="rounded border border-terminal-line bg-terminal-input px-2 py-1 text-terminal-muted">~{analysis.recommendation.theoreticalPop}% POP</span>
                     </div>
                     <p className="text-sm text-terminal-muted">{analysis.recommendation.note}</p>
+                    {onPaperTradePro && data ? (() => {
+                      const draft = buildSimDraft(underlying, expiry, horizon, data);
+                      if (!draft) {
+                        return null;
+                      }
+                      // The conviction gate the sim server enforces: below the
+                      // horizon's WCI threshold the wall lacks institutional
+                      // backing, so the trade can only be placed as a manual
+                      // practice trade (no signal attribution, no scorecard).
+                      const hasConviction = draft.wci !== null && Math.abs(draft.wci) > analysis.wciThreshold;
+                      const buttonDraft = hasConviction ? draft : { ...draft, signalRef: "", wci: null, drcr: null, note: `${draft.note} (low conviction - WCI ${draft.wci?.toFixed(2) ?? "--"} below ${analysis.wciThreshold})` };
+                      return (
+                        <div className="mt-1 grid gap-1">
+                          <button
+                            className={`inline-flex w-fit items-center gap-2 rounded border px-3 py-1.5 text-sm font-semibold transition ${hasConviction ? "border-terminal-blue bg-terminal-blue/10 text-terminal-blue hover:bg-terminal-blue hover:text-white" : "border-terminal-amber bg-terminal-amber/10 text-terminal-amber hover:bg-terminal-amber hover:text-black"}`}
+                            type="button"
+                            onClick={() => {
+                              storeSimTicketDraft(buttonDraft);
+                              onPaperTradePro();
+                            }}
+                          >
+                            <FlaskConical size={15} />
+                            {hasConviction ? "Paper Trade This" : "Practice Trade (low conviction)"}
+                          </button>
+                          {!hasConviction ? (
+                            <p className="text-xs text-terminal-amber">
+                              Wall WCI {draft.wci?.toFixed(2) ?? "--"} is below the {analysis.wciThreshold} conviction threshold - this places as a manual practice trade, not a signal trade.
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })() : null}
                   </div>
                 ) : (
                   <p className="mt-2 text-sm text-terminal-muted">

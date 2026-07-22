@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Bell, CandlestickChart, Crosshair, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
+import { Activity, Bell, CandlestickChart, Crosshair, FlaskConical, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -14,6 +14,7 @@ const protectedNavItems: Array<[DashboardView, string, LucideIcon]> = [
   ["pressure", "Pressure Engine", ShieldCheck],
   ["replay", "Replay Lab", Play],
   ["paper", "Paper Trading", WalletCards],
+  ["paper-pro", "Paper Trading Pro", FlaskConical],
   ["alerts", "Alerts", Bell],
   ["account", "Account", UserCircle],
   ["admin", "Admin", ShieldCheck],
@@ -37,11 +38,29 @@ export function AppShell({ initialOverview, initialAuthUser, initialParams, requ
   const [activeView, setActiveView] = useState(requestedView);
   const [currentParams, setCurrentParams] = useState(initialParams);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const navItems = useMemo(() => protectedNavItems.filter(([view]) => view !== "admin" || authUser?.role === "ADMIN"), [authUser?.role]);
+  // Role-based tab access: admins see everything; other users see only
+  // their assigned tabs (Account and Settings are always available).
+  // A missing allowedViews (older cached session payload) means no
+  // restriction, so existing sessions keep working until refresh.
+  const navItems = useMemo(() => protectedNavItems.filter(([view]) => {
+    if (view === "admin") {
+      return authUser?.role === "ADMIN";
+    }
+    if (view === "account" || view === "settings") {
+      return true;
+    }
+    if (authUser?.role === "ADMIN" || !authUser?.allowedViews) {
+      return true;
+    }
+    return authUser.allowedViews.includes(view);
+  }), [authUser?.role, authUser?.allowedViews]);
 
   useEffect(() => {
-    setActiveView(requestedView);
-  }, [requestedView]);
+    // Guard direct URL access to an unassigned tab: fall back to the first
+    // tab this user is actually allowed to see.
+    const isAllowed = navItems.some(([view]) => view === requestedView);
+    setActiveView(isAllowed ? requestedView : navItems[0]?.[0] ?? "account");
+  }, [requestedView, navItems]);
 
   useEffect(() => {
     setCurrentParams(initialParams);

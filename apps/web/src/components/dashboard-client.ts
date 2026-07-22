@@ -304,6 +304,22 @@ export async function updateAdminUserRole(userId: string, role: AdminOverview["u
   }
 }
 
+export async function updateAdminUserTabs(userId: string, tabs: string[]) {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/admin/users/${userId}/tabs`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json"
+    },
+    credentials: "include",
+    body: JSON.stringify({ tabs })
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Tab assignment failed with HTTP ${response.status}`);
+  }
+}
+
 export async function updateAdminUserDisabled(userId: string, disabled: boolean) {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/admin/users/${userId}/disabled`, {

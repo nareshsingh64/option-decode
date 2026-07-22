@@ -9,6 +9,7 @@ import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 import Redis from "ioredis";
 import webpush from "web-push";
+import { startSimEodScheduler } from "./sim-eod-mtm.js";
 
 const config = loadConfig();
 const MARKET_SNAPSHOT_QUEUE = "market-snapshot";
@@ -613,9 +614,13 @@ async function startWorker() {
     retentionDays: config.SNAPSHOT_RETENTION_DAYS
   });
 
+  // Paper Trading Pro seller simulator: self-contained EOD MTM scheduler
+  // (own queue/worker) - see sim-eod-mtm.ts.
+  const simEodScheduler = await startSimEodScheduler(redisConnection);
+
   async function shutdown(signal: NodeJS.Signals) {
     console.log("Shutting down market snapshot worker", { signal });
-    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), redisPublisher.quit()]);
+    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), redisPublisher.quit()]);
     process.exit(0);
   }
 

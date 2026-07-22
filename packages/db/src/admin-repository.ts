@@ -1,5 +1,6 @@
 import type { PrismaClient, UserRole } from "@prisma/client";
 import { prisma } from "./index.js";
+import { ASSIGNABLE_TABS, DEFAULT_TABS, sanitizeTabs } from "./tab-access-repository.js";
 
 export interface AdminOverviewDto {
   users: Array<{
@@ -11,6 +12,8 @@ export interface AdminOverviewDto {
     disabled: boolean;
     lastLoginAt?: string;
     createdAt: string;
+    // Role-based tab access: current effective tab set for this user.
+    tabs: string[];
     plan?: {
       code: string;
       name: string;
@@ -58,7 +61,8 @@ export async function getAdminOverview(client: PrismaClient = prisma): Promise<A
             createdAt: "desc"
           },
           take: 1
-        }
+        },
+        tabAccess: true
       }
     }),
     client.plan.findMany({
@@ -102,6 +106,7 @@ export async function getAdminOverview(client: PrismaClient = prisma): Promise<A
         disabled: user.disabled,
         lastLoginAt: user.lastLoginAt?.toISOString(),
         createdAt: user.createdAt.toISOString(),
+        tabs: user.role === "ADMIN" ? [...ASSIGNABLE_TABS] : user.tabAccess ? sanitizeTabs(user.tabAccess.tabs) : [...DEFAULT_TABS],
         plan: subscription
           ? {
               code: subscription.plan.code,

@@ -2,6 +2,21 @@ import { LineChart, Play, ShieldCheck, UserCircle, WalletCards } from "lucide-re
 import type { ReactNode } from "react";
 import type { AdminOverview } from "./live-dashboard";
 
+// Role-based tab access: the assignable tab set and its display labels.
+// Mirrors ASSIGNABLE_TABS/TAB_LABELS in @option-decode/db. Dashboard,
+// Strike Matrix, Option Chain, and Paper Trading are the defaults for
+// users without an explicit assignment; admins always see everything.
+const ASSIGNABLE_TAB_LABELS: Array<[string, string]> = [
+  ["dashboard", "Dashboard"],
+  ["new-dashboard", "Strike Matrix"],
+  ["option-chain", "Option Chain"],
+  ["pressure", "Pressure Engine"],
+  ["replay", "Replay Lab"],
+  ["paper", "Paper Trading"],
+  ["paper-pro", "Paper Trading Pro"],
+  ["alerts", "Alerts"]
+];
+
 interface AdminPanelProps {
   adminError: string | null;
   adminOverview: AdminOverview | null;
@@ -9,6 +24,7 @@ interface AdminPanelProps {
   formatIstShortDateTime: (value: string) => string;
   handleUpdateAdminUserDisabled: (userId: string, disabled: boolean) => void;
   handleUpdateAdminUserRole: (userId: string, role: AdminOverview["users"][number]["role"]) => void;
+  handleUpdateAdminUserTabs: (userId: string, tabs: string[]) => void;
   refreshAdminOverview: () => void;
   updatingAdminUserId: string | null;
 }
@@ -20,6 +36,7 @@ export function AdminPanel({
   formatIstShortDateTime,
   handleUpdateAdminUserDisabled,
   handleUpdateAdminUserRole,
+  handleUpdateAdminUserTabs,
   refreshAdminOverview,
   updatingAdminUserId
 }: AdminPanelProps) {
@@ -55,6 +72,7 @@ export function AdminPanel({
                   <th className="px-3 py-3 text-left">User</th>
                   <th className="px-3 py-3 text-left">Plan</th>
                   <th className="px-3 py-3 text-left">Role</th>
+                  <th className="px-3 py-3 text-left">Tabs</th>
                   <th className="px-3 py-3 text-right">Verified</th>
                   <th className="px-3 py-3 text-right">Status</th>
                   <th className="px-3 py-3 text-right">Last Login</th>
@@ -81,6 +99,29 @@ export function AdminPanel({
                         <option value="FREE">FREE</option>
                       </select>
                     </td>
+                    <td className="px-3 py-3">
+                      {user.role === "ADMIN" ? (
+                        <span className="text-xs text-terminal-muted">All tabs (admin)</span>
+                      ) : (
+                        <div className="grid max-w-[16rem] grid-cols-2 gap-x-3 gap-y-1">
+                          {ASSIGNABLE_TAB_LABELS.map(([tab, label]) => (
+                            <label key={tab} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-terminal-muted">
+                              <input
+                                checked={user.tabs.includes(tab)}
+                                className="h-3.5 w-3.5 accent-[rgb(96,165,250)]"
+                                disabled={updatingAdminUserId === user.id}
+                                type="checkbox"
+                                onChange={(event) => {
+                                  const nextTabs = event.target.checked ? [...user.tabs, tab] : user.tabs.filter((existing) => existing !== tab);
+                                  handleUpdateAdminUserTabs(user.id, nextTabs);
+                                }}
+                              />
+                              {label}
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </td>
                     <td className={`px-3 py-3 text-right font-semibold ${user.emailVerified ? "text-terminal-emerald" : "text-terminal-amber"}`}>{user.emailVerified ? "Yes" : "No"}</td>
                     <td className={`px-3 py-3 text-right font-semibold ${user.disabled ? "text-terminal-red" : "text-terminal-emerald"}`}>{user.disabled ? "Disabled" : "Active"}</td>
                     <td className="px-3 py-3 text-right text-xs text-terminal-muted">{user.lastLoginAt ? formatIstShortDateTime(user.lastLoginAt) : "--"}</td>
@@ -93,7 +134,7 @@ export function AdminPanel({
                   </tr>
                 ))}
                 {adminOverview && !adminOverview.users.length ? (
-                  <tr><td colSpan={8} className="px-3 py-6 text-center text-terminal-muted">No users found.</td></tr>
+                  <tr><td colSpan={9} className="px-3 py-6 text-center text-terminal-muted">No users found.</td></tr>
                 ) : null}
               </tbody>
             </table>

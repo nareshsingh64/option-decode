@@ -23,7 +23,11 @@ export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, get
 export type { OiWeightedPriceResult } from "./market-repository.js";
 export { cancelPendingPaperOrder, closePaperPosition, getOpenPositionsForMarginGroup, getPaperSummary, getPendingOrdersForMarginGroup, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, recordPositionMargin, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
 export type { FilledPaperLeg, MarginQuoteLeg, PaperOrderInput, PaperOrderLegInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";
+export { SimOrderRejectedError, closeSimTrade, computeSimStress, getOrCreateSimAccount, getSimSummary, placeSimTrade, quoteSimTrade, resetSimAccount, runSimEodMarkToMarket, runSimIntradayEngine } from "./sim-repository.js";
+export type { SimAccountDto, SimAnalyticsDto, SimEodResult, SimFillTranche, SimGreeksDto, SimHorizonName, SimIntradayResult, SimLegInput, SimQuote, SimQuotedLeg, SimSignalScorecardRow, SimStrategyTypeName, SimStressCell, SimStressResult, SimSummary, SimTradeDto, SimTradeInput, SimTradeLegDto } from "./sim-repository.js";
 export { disablePushSubscriptionByEndpoint, disablePushSubscriptionsForUser, listActivePushSubscriptions, upsertPushSubscription } from "./push-repository.js";
 export type { PushSubscriptionDto, PushSubscriptionInput } from "./push-repository.js";
+export { ASSIGNABLE_TABS, DEFAULT_TABS, TAB_LABELS, getUserTabs, sanitizeTabs, setUserTabs } from "./tab-access-repository.js";
+export type { AssignableTab } from "./tab-access-repository.js";
 export { getDefaultWatchlist, updateDefaultWatchlist } from "./watchlist-repository.js";
 export type { WatchlistDto } from "./watchlist-repository.js";

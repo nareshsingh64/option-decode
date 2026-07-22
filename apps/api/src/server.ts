@@ -7,11 +7,12 @@ import { z } from "zod";
 import { calculateAtmStraddleExpectedMove, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { MarketPulse, OptionChainSnapshot, PressureScore, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
+import { registerSimRoutes } from "./sim-routes.js";
 
 const config = loadConfig();
 const supportedUnderlyings = getSupportedUnderlyingKeys();
@@ -344,6 +345,30 @@ app.patch<{
   }
 
   return updateAdminUserDisabled(request.params.id, parsed.data.disabled);
+});
+
+// Role-based tab access: admin assigns which dashboard tabs a user sees.
+const adminTabsSchema = z.object({
+  tabs: z.array(z.string().trim().min(1)).max(20)
+});
+
+app.patch<{
+  Params: {
+    id: string;
+  };
+}>("/api/admin/users/:id/tabs", async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.cookie);
+  if (!admin) {
+    return reply.status(403).send({ message: "Admin access is required." });
+  }
+
+  const parsed = adminTabsSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ message: "Invalid tab assignment." });
+  }
+
+  const tabs = await setUserTabs(request.params.id, parsed.data.tabs);
+  return { id: request.params.id, tabs };
 });
 
 // Enriches support/resistance zones with the OI-buildup-weighted average
@@ -819,6 +844,10 @@ app.get("/api/paper/summary", async (request, reply) => {
 
   return getPaperSummary(user);
 });
+
+// Paper Trading Pro (seller strategy simulator) - separate module, all
+// routes under /api/sim/*. See sim-routes.ts.
+registerSimRoutes(app, getRequestUser);
 
 app.get("/api/watchlist/default", async () => getDefaultWatchlist());
 

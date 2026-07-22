@@ -11,6 +11,29 @@ function dateOnly(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+// Filtering OptionChainSnapshot via a nested `expiry: { expiryLabel }`
+// relation (instead of expiryId directly) prevented MySQL from using the
+// [underlyingSymbol, expiryId, snapshotTime] composite index that exists
+// specifically for this lookup - confirmed via EXPLAIN in production, it
+// fell back to the less selective [underlyingSymbol, snapshotTime] index
+// and scanned thousands of rows for a single-snapshot lookup (this was
+// the real cause of the slow symbol-switch complaint, not a missing
+// index - the index existed, the query just couldn't reach it). Expiry
+// itself is tiny (tens of rows per underlying), so resolving the label to
+// an id first is effectively free, and then filtering
+// OptionChainSnapshot by that id directly lets the existing index do its
+// job. Returns undefined if no matching expiry exists.
+async function resolveExpiryId(underlyingSymbol: string, expiryLabel: string, client: DbClient): Promise<string | undefined> {
+  const expiry = await client.expiry.findFirst({
+    where: {
+      expiryLabel,
+      underlying: { symbol: underlyingSymbol }
+    },
+    select: { id: true }
+  });
+  return expiry?.id;
+}
+
 function toNumber(value: Prisma.Decimal | number | null | undefined): number | undefined {
   if (value === null || value === undefined) {
     return undefined;
@@ -432,16 +455,15 @@ export async function getLatestSpotChange(underlyingSymbol: string, client: DbCl
 }
 
 export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", requestedExpiry?: string, client: DbClient = prisma): Promise<OptionChainSnapshot | null> {
+  const expiryId = requestedExpiry ? await resolveExpiryId(underlyingSymbol, requestedExpiry, client) : undefined;
+  if (requestedExpiry && !expiryId) {
+    return null;
+  }
+
   const latest = await client.optionChainSnapshot.findFirst({
     where: {
       underlyingSymbol,
-      ...(requestedExpiry
-        ? {
-            expiry: {
-              expiryLabel: requestedExpiry
-            }
-          }
-        : {})
+      ...(expiryId ? { expiryId } : {})
     },
     orderBy: { snapshotTime: "desc" },
     include: {
@@ -523,16 +545,15 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
  * way the expiry picker only allows dates with stored expiries.
  */
 export async function listReplayTradingDates(underlyingSymbol = "NIFTY", requestedExpiry?: string, client: DbClient = prisma): Promise<string[]> {
+  const expiryId = requestedExpiry ? await resolveExpiryId(underlyingSymbol, requestedExpiry, client) : undefined;
+  if (requestedExpiry && !expiryId) {
+    return [];
+  }
+
   const rows = await client.optionChainSnapshot.findMany({
     where: {
       underlyingSymbol,
-      ...(requestedExpiry
-        ? {
-            expiry: {
-              expiryLabel: requestedExpiry
-            }
-          }
-        : {})
+      ...(expiryId ? { expiryId } : {})
     },
     distinct: ["tradingDate"],
     select: { tradingDate: true },
@@ -543,16 +564,15 @@ export async function listReplayTradingDates(underlyingSymbol = "NIFTY", request
 }
 
 export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedExpiry?: string, tradingDate?: string, client: DbClient = prisma) {
+  const expiryId = requestedExpiry ? await resolveExpiryId(underlyingSymbol, requestedExpiry, client) : undefined;
+  if (requestedExpiry && !expiryId) {
+    return [];
+  }
+
   const snapshots = await client.optionChainSnapshot.findMany({
     where: {
       underlyingSymbol,
-      ...(requestedExpiry
-        ? {
-            expiry: {
-              expiryLabel: requestedExpiry
-            }
-          }
-        : {}),
+      ...(expiryId ? { expiryId } : {}),
       ...(tradingDate ? { tradingDate: dateOnly(tradingDate) } : {})
     },
     orderBy: { snapshotTime: "desc" },
