@@ -153,7 +153,13 @@ export async function startWaveScreener(redisConnection: { url: string; maxRetri
   const screenerScanWorker = new BullWorker(
     SCREENER_SCAN_QUEUE,
     async (_job: Job) => {
-      if (!isMarketSessionOpen("NSE_EQ")) {
+      // Unlike quote capture (NSE_EQ only - stocks only trade NSE hours),
+      // the universe here also includes MCX commodities, which trade
+      // 09:00-23:30 IST - well past NSE's 15:30 close. Gating this on
+      // NSE_EQ alone silently stopped screening CRUDEOIL/NATURALGAS/COPPER/
+      // SILVER for the back half of every trading day even though fresh
+      // data kept arriving for them the whole time.
+      if (!isMarketSessionOpen("NSE_EQ") && !isMarketSessionOpen("MCX_COMM")) {
         return;
       }
 
