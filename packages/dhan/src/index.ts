@@ -489,12 +489,15 @@ async function getCommodityFutureQuotes() {
 // getEquityQuotes - the F&O contract's own security id is a different,
 // per-expiry number and isn't what the wave engine needs.
 //
-// Column names (EXCH_ID, SEGMENT, SECURITY_ID, SYMBOL_NAME) are per Dhan's
-// published "Instrument List" column reference; SEGMENT "E" = Equity per
-// that same reference. Not independently verified against a live download
-// of the ~multi-MB scrip master in this environment - if resolution rates
-// come back low in production logs, check these column names first against
-// a fresh copy of the CSV.
+// Verified against a live download of the scrip master (2026-07-27): the
+// bare ticker for an equity row is NOT in SYMBOL_NAME - that column holds
+// the full legal company name (e.g. "INFOSYS LIMITED" for INFY).
+// UNDERLYING_SYMBOL is the column that actually holds the plain ticker for
+// equity-segment rows. Also, SEGMENT "E" alone is not sufficient to isolate
+// tradeable mainboard equity - it also covers SME stocks (SERIES "SM"),
+// government securities (SERIES "SG"), and corporate bonds/NCDs (SERIES
+// "YL"), any of which could theoretically collide with a wanted ticker.
+// SERIES "EQ" is what actually scopes this to regular equity trading.
 export async function resolveNseEquitySecurityIds(symbols: string[]): Promise<Map<string, number>> {
   const resolved = new Map<string, number>();
   const wanted = new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean));
@@ -506,24 +509,25 @@ export async function resolveNseEquitySecurityIds(symbols: string[]): Promise<Ma
   const lines = csv.split(/\r?\n/).filter(Boolean);
   const header = splitCsvLine(lines[0] ?? "");
   const columnIndex = new Map(header.map((column, index) => [column, index]));
-  const requiredColumns = ["EXCH_ID", "SEGMENT", "SECURITY_ID", "SYMBOL_NAME"];
+  const requiredColumns = ["EXCH_ID", "SEGMENT", "SECURITY_ID", "UNDERLYING_SYMBOL", "SERIES"];
   if (requiredColumns.some((column) => !columnIndex.has(column))) {
     throw new DhanApiError("Dhan scrip master is missing required columns for equity resolution.");
   }
   const exchangeIndex = columnIndex.get("EXCH_ID")!;
   const segmentIndex = columnIndex.get("SEGMENT")!;
   const securityIdIndex = columnIndex.get("SECURITY_ID")!;
-  const symbolNameIndex = columnIndex.get("SYMBOL_NAME")!;
+  const underlyingSymbolIndex = columnIndex.get("UNDERLYING_SYMBOL")!;
+  const seriesIndex = columnIndex.get("SERIES")!;
 
   for (const line of lines.slice(1)) {
     if (resolved.size === wanted.size) {
       break;
     }
     const columns = splitCsvLine(line);
-    if (columns[exchangeIndex] !== "NSE" || columns[segmentIndex] !== "E") {
+    if (columns[exchangeIndex] !== "NSE" || columns[segmentIndex] !== "E" || columns[seriesIndex] !== "EQ") {
       continue;
     }
-    const symbol = (columns[symbolNameIndex] ?? "").trim().toUpperCase();
+    const symbol = (columns[underlyingSymbolIndex] ?? "").trim().toUpperCase();
     if (!symbol || !wanted.has(symbol) || resolved.has(symbol)) {
       continue;
     }
