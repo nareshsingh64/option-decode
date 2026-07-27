@@ -205,6 +205,84 @@ model FnoLotSize {
   @@index([contractMonth])
 }
 
+// Elliott Wave screener universe: the current F&O-eligible stocks, resolved
+// to a Dhan NSE_EQ security id so the worker can fetch LTP + traded volume
+// for the wave screener (RVOL needs real traded volume, which only equities
+// have - indices are screened straight off the existing option-chain spot
+// price series instead, see WavePricePoint below). Symbol list itself comes
+// from the same Dhan lot-size page already scraped by syncFnoLotSizesFromDhan
+// (see lot-size-repository.ts) - this table only adds the security-id
+// resolution step on top of that existing sync.
+model FnoStock {
+  id           String   @id @default(cuid())
+  symbol       String   @unique
+  displayName  String
+  // Null when the scrip-master lookup couldn't resolve this symbol yet -
+  // the stock stays in the universe list but is skipped by quote capture
+  // until resolved on a later sync.
+  securityId   Int?
+  lotSize      Int?
+  active       Boolean  @default(true)
+  lastSyncedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([active])
+}
+
+// Lightweight price+volume series feeding the Elliott Wave screener for F&O
+// stocks - deliberately NOT the same pipeline as OptionChainSnapshot (which
+// captures full option chains and would multiply Dhan call volume and
+// OptionContractTick row growth across ~150-200 stocks for data the wave
+// engine doesn't need). Captured directly from Dhan's batch quote endpoint
+// on its own 1-minute cadence. Indices/commodities keep using
+// OptionChainSnapshot.spotPrice (see getSpotPriceHistory) since that history
+// already exists and updates on every snapshot cycle - this table exists
+// only to give stocks the same kind of series.
+model WavePricePoint {
+  id               String   @id @default(cuid())
+  underlyingSymbol String
+  time             DateTime
+  price            Decimal  @db.Decimal(12, 2)
+  // Cumulative day volume as reported by Dhan at this instant (not a
+  // per-interval delta) - RVOL calculation derives deltas from consecutive
+  // rows itself. Null for instruments Dhan doesn't report volume for.
+  volume           BigInt?
+  createdAt        DateTime @default(now())
+
+  @@unique([underlyingSymbol, time])
+  @@index([underlyingSymbol, time])
+}
+
+enum WaveAlertType {
+  WAVE2_REVERSAL
+  WAVE3_IMPULSE
+}
+
+// Persisted output of the background Elliott Wave screener (see
+// elliott-wave-options-fno-skill's "Automated Wave Screener Setup" and
+// evaluateWaveScreener in @option-decode/analytics). Needs its own table
+// (unlike the ephemeral, request-time MarketAlert) because the screener
+// scans the whole universe on a schedule, independent of any user viewing a
+// specific symbol.
+model WaveScreenerAlert {
+  id                    String        @id @default(cuid())
+  underlyingSymbol      String
+  alertType             WaveAlertType
+  horizon               String
+  stage                 String
+  direction             String
+  message               String        @db.Text
+  triggeredPrice        Decimal       @db.Decimal(12, 2)
+  fibRetracementPercent Decimal?      @db.Decimal(6, 2)
+  rvol                  Decimal?      @db.Decimal(6, 2)
+  rsi                   Decimal?      @db.Decimal(6, 2)
+  dismissed             Boolean       @default(false)
+  createdAt             DateTime      @default(now())
+
+  @@index([underlyingSymbol, alertType, createdAt])
+  @@index([createdAt])
+}
+
 model OptionChainSnapshot {
   id               String               @id @default(cuid())
   tradingDate      DateTime             @db.Date

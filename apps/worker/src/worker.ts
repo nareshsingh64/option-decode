@@ -10,6 +10,7 @@ import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 import Redis from "ioredis";
 import webpush from "web-push";
 import { startSimEodScheduler } from "./sim-eod-mtm.js";
+import { startWaveScreener } from "./wave-screener.js";
 
 const config = loadConfig();
 const MARKET_SNAPSHOT_QUEUE = "market-snapshot";
@@ -618,9 +619,13 @@ async function startWorker() {
   // (own queue/worker) - see sim-eod-mtm.ts.
   const simEodScheduler = await startSimEodScheduler(redisConnection);
 
+  // Elliott Wave background screener: self-contained universe sync + stock
+  // quote capture + scan schedulers - see wave-screener.ts.
+  const waveScreener = await startWaveScreener(redisConnection, dhan, config.MOCK_MARKET_FEED_ENABLED, config.feedUnderlyings);
+
   async function shutdown(signal: NodeJS.Signals) {
     console.log("Shutting down market snapshot worker", { signal });
-    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), redisPublisher.quit()]);
+    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), waveScreener.close(), redisPublisher.quit()]);
     process.exit(0);
   }
 

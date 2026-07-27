@@ -10,7 +10,7 @@ import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "./index.js";
 
-export const ASSIGNABLE_TABS = ["dashboard", "new-dashboard", "option-chain", "pressure", "replay", "paper", "paper-pro", "alerts"] as const;
+export const ASSIGNABLE_TABS = ["dashboard", "new-dashboard", "elliott-wave", "option-chain", "pressure", "replay", "paper", "paper-pro", "alerts"] as const;
 
 export type AssignableTab = (typeof ASSIGNABLE_TABS)[number];
 
@@ -19,6 +19,7 @@ export const DEFAULT_TABS: AssignableTab[] = ["dashboard", "new-dashboard", "opt
 export const TAB_LABELS: Record<AssignableTab, string> = {
   dashboard: "Dashboard",
   "new-dashboard": "Strike Matrix",
+  "elliott-wave": "Elliott Wave",
   "option-chain": "Option Chain",
   pressure: "Pressure Engine",
   replay: "Replay Lab",

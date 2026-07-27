@@ -19,6 +19,15 @@ export interface DhanOhlcQuote {
   previousClose?: number;
 }
 
+// Elliott Wave screener's stock quote capture - needs traded volume (for
+// RVOL) on top of last price, which /v2/marketfeed/ohlc doesn't return.
+// /v2/marketfeed/quote does (plus market depth we don't need here).
+export interface DhanQuoteSnapshot {
+  securityId: number;
+  lastPrice?: number;
+  volume?: number;
+}
+
 interface CommodityFutureQuote {
   securityId: number;
   expiryDate: string;
@@ -318,6 +327,41 @@ export class DhanClient {
     return quotes;
   }
 
+  // Batch LTP + traded volume for the Elliott Wave stock screener's quote
+  // capture job. NSE_EQ only (the cash-market listing, not the F&O
+  // contract) - the wave engine reads the underlying's own price/volume,
+  // not any specific derivative's. Chunked at Dhan's documented per-request
+  // instrument cap (1000); our F&O stock universe is far smaller than that
+  // today, so this will normally run as a single request.
+  async getEquityQuotes(equities: Array<{ symbol: string; securityId: number }>): Promise<Map<string, DhanQuoteSnapshot>> {
+    const quotes = new Map<string, DhanQuoteSnapshot>();
+    if (!equities.length) {
+      return quotes;
+    }
+
+    const EQUITY_QUOTE_CHUNK_SIZE = 1000;
+    for (let start = 0; start < equities.length; start += EQUITY_QUOTE_CHUNK_SIZE) {
+      const chunk = equities.slice(start, start + EQUITY_QUOTE_CHUNK_SIZE);
+      const payload = await this.postDhan<DhanQuoteResponse>("/v2/marketfeed/quote", {
+        NSE_EQ: chunk.map((equity) => equity.securityId)
+      });
+      const segmentQuotes = payload.NSE_EQ ?? {};
+      for (const equity of chunk) {
+        const raw = segmentQuotes[String(equity.securityId)];
+        if (!raw) {
+          continue;
+        }
+        quotes.set(equity.symbol, {
+          securityId: equity.securityId,
+          lastPrice: toNumber(raw.last_price),
+          volume: toNumber(raw.volume)
+        });
+      }
+    }
+
+    return quotes;
+  }
+
   // Informational-only margin lookup (single leg or multiple legs of one
   // strategy passed together). Never used to block or size a paper trade -
   // callers should treat a thrown/failed call as "margin unavailable" and
@@ -400,10 +444,18 @@ export class DhanClient {
   }
 }
 
-async function getCommodityFutureQuotes() {
+// Raw CSV bytes are cached separately from any one parse's result so that
+// resolveNseEquitySecurityIds (below) and getCommodityFutureQuotes can share
+// one download instead of each fetching this (multi-MB, whole-exchange)
+// file independently when both run close together - e.g. the worker's
+// existing MCX quote-override fetch and the Elliott Wave universe sync.
+const SCRIP_MASTER_CSV_CACHE_MS = 6 * 60 * 60 * 1000;
+let scripMasterCsvCache: { expiresAt: number; csv: string } | undefined;
+
+async function getScripMasterCsv(): Promise<string> {
   const now = Date.now();
-  if (commodityFutureQuoteCache && commodityFutureQuoteCache.expiresAt > now) {
-    return commodityFutureQuoteCache.quotes;
+  if (scripMasterCsvCache && scripMasterCsvCache.expiresAt > now) {
+    return scripMasterCsvCache.csv;
   }
 
   const response = await fetch(DHAN_SCRIP_MASTER_URL);
@@ -412,12 +464,76 @@ async function getCommodityFutureQuotes() {
   }
 
   const csv = await response.text();
+  scripMasterCsvCache = { expiresAt: now + SCRIP_MASTER_CSV_CACHE_MS, csv };
+  return csv;
+}
+
+async function getCommodityFutureQuotes() {
+  const now = Date.now();
+  if (commodityFutureQuoteCache && commodityFutureQuoteCache.expiresAt > now) {
+    return commodityFutureQuoteCache.quotes;
+  }
+
+  const csv = await getScripMasterCsv();
   const quotes = parseCommodityFutureQuotes(csv);
   commodityFutureQuoteCache = {
     expiresAt: now + COMMODITY_QUOTE_CACHE_MS,
     quotes
   };
   return quotes;
+}
+
+// Resolves F&O stock ticker symbols (e.g. from the Dhan lot-size page
+// scraper already used by syncFnoLotSizesFromDhan) to their NSE cash-market
+// (NSE_EQ) security id, needed to fetch the underlying's own LTP/volume via
+// getEquityQuotes - the F&O contract's own security id is a different,
+// per-expiry number and isn't what the wave engine needs.
+//
+// Column names (EXCH_ID, SEGMENT, SECURITY_ID, SYMBOL_NAME) are per Dhan's
+// published "Instrument List" column reference; SEGMENT "E" = Equity per
+// that same reference. Not independently verified against a live download
+// of the ~multi-MB scrip master in this environment - if resolution rates
+// come back low in production logs, check these column names first against
+// a fresh copy of the CSV.
+export async function resolveNseEquitySecurityIds(symbols: string[]): Promise<Map<string, number>> {
+  const resolved = new Map<string, number>();
+  const wanted = new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean));
+  if (!wanted.size) {
+    return resolved;
+  }
+
+  const csv = await getScripMasterCsv();
+  const lines = csv.split(/\r?\n/).filter(Boolean);
+  const header = splitCsvLine(lines[0] ?? "");
+  const columnIndex = new Map(header.map((column, index) => [column, index]));
+  const requiredColumns = ["EXCH_ID", "SEGMENT", "SECURITY_ID", "SYMBOL_NAME"];
+  if (requiredColumns.some((column) => !columnIndex.has(column))) {
+    throw new DhanApiError("Dhan scrip master is missing required columns for equity resolution.");
+  }
+  const exchangeIndex = columnIndex.get("EXCH_ID")!;
+  const segmentIndex = columnIndex.get("SEGMENT")!;
+  const securityIdIndex = columnIndex.get("SECURITY_ID")!;
+  const symbolNameIndex = columnIndex.get("SYMBOL_NAME")!;
+
+  for (const line of lines.slice(1)) {
+    if (resolved.size === wanted.size) {
+      break;
+    }
+    const columns = splitCsvLine(line);
+    if (columns[exchangeIndex] !== "NSE" || columns[segmentIndex] !== "E") {
+      continue;
+    }
+    const symbol = (columns[symbolNameIndex] ?? "").trim().toUpperCase();
+    if (!symbol || !wanted.has(symbol) || resolved.has(symbol)) {
+      continue;
+    }
+    const securityId = Number(columns[securityIdIndex]);
+    if (Number.isFinite(securityId)) {
+      resolved.set(symbol, securityId);
+    }
+  }
+
+  return resolved;
 }
 
 function parseCommodityFutureQuotes(csv: string) {
@@ -514,6 +630,7 @@ interface DhanOptionChainResponse {
 
 type DhanLtpResponse = Record<string, Record<string, { last_price?: unknown }>>;
 type DhanOhlcResponse = Record<string, Record<string, { last_price?: unknown; ohlc?: { close?: unknown } }>>;
+type DhanQuoteResponse = Record<string, Record<string, { last_price?: unknown; volume?: unknown }>>;
 
 interface DhanStrikePayload {
   ce?: DhanOptionLeg;

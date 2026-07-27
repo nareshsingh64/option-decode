@@ -4,12 +4,12 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculateAtmStraddleExpectedMove, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon } from "@option-decode/analytics";
+import { calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
-import type { MarketPulse, OptionChainSnapshot, PressureScore, UnderlyingDefinition } from "@option-decode/types";
+import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 import { registerSimRoutes } from "./sim-routes.js";
@@ -68,6 +68,32 @@ const marketAuxCache = new Map<
   }
 >();
 const marketSnapshotCache = new Map<string, HotCacheEntry<OptionChainSnapshot>>();
+interface ElliottWaveApiResponse {
+  underlying: string;
+  horizon: TradingHorizon;
+  zigZagPercent: number;
+  pointCount: number;
+  analysis: ElliottWaveAnalysis;
+}
+const elliottWaveCache = new Map<string, HotCacheEntry<ElliottWaveApiResponse>>();
+// How far back to pull spot-price history before running ZigZag detection,
+// per horizon - wide enough to contain several confirmed swings at that
+// horizon's threshold (see WAVE_ZIGZAG_PRESETS), capped by
+// getSpotPriceHistory's own MAX_SPOT_PRICE_HISTORY_ROWS row limit regardless
+// of how wide the window is asked to be.
+const ELLIOTT_WAVE_LOOKBACK_MS: Record<TradingHorizon, number> = {
+  intraday: 2 * 24 * 60 * 60 * 1000,
+  weekly: 20 * 24 * 60 * 60 * 1000,
+  monthly: 180 * 24 * 60 * 60 * 1000
+};
+// Matches the Strike Matrix tab's own per-horizon refresh cadence - the
+// underlying spot series doesn't move fast enough at weekly/monthly scale to
+// justify polling more often than that.
+const ELLIOTT_WAVE_CACHE_MS: Record<TradingHorizon, number> = {
+  intraday: 60_000,
+  weekly: 5 * 60_000,
+  monthly: 15 * 60_000
+};
 const oiWeightedZonesCache = new Map<string, HotCacheEntry<PressureScore>>();
 const marketPulseCache = new Map<string, HotCacheEntry<MarketPulse | null>>();
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
@@ -542,6 +568,54 @@ app.get<{
     atmStrike: snapshot.atmStrike,
     analysis: calculateStrikeMatrix(snapshot, horizon)
   };
+});
+
+app.get<{
+  Querystring: {
+    underlying?: string;
+    horizon?: string;
+  };
+}>("/api/market/elliott-wave", async (request) => {
+  const requestedUnderlying = normalizeUnderlying(request.query.underlying);
+  const requestedHorizon = request.query.horizon?.trim().toLowerCase();
+  const horizon = isTradingHorizon(requestedHorizon) ? requestedHorizon : "intraday";
+
+  return getHotCacheValue(elliottWaveCache, `${requestedUnderlying}:${horizon}`, ELLIOTT_WAVE_CACHE_MS[horizon], async () => {
+    const zigZagPercent = WAVE_ZIGZAG_PRESETS[horizon];
+    const sinceMs = Date.now() - ELLIOTT_WAVE_LOOKBACK_MS[horizon];
+    // Not expiry-scoped - spot price is a property of the underlying, so
+    // the series is continuous across expiry rollovers (see
+    // getSpotPriceHistory's doc comment).
+    const points = await getSpotPriceHistory(requestedUnderlying, sinceMs);
+    const analysis = calculateElliottWave(requestedUnderlying, points, zigZagPercent);
+    return {
+      underlying: requestedUnderlying,
+      horizon,
+      zigZagPercent,
+      pointCount: points.length,
+      analysis
+    };
+  });
+});
+
+// Screener alert cache TTL: alerts are written by the worker's scan cycle
+// (every 3 min - see apps/worker/src/wave-screener.ts), so polling this any
+// faster would only ever re-serve the same DB read.
+const WAVE_ALERTS_CACHE_MS = 60_000;
+const waveAlertsCache = new Map<string, HotCacheEntry<ReturnType<typeof listRecentWaveAlerts> extends Promise<infer T> ? T : never>>();
+
+app.get<{
+  Querystring: {
+    underlying?: string;
+    limit?: string;
+  };
+}>("/api/market/elliott-wave/alerts", async (request) => {
+  const underlying = request.query.underlying?.trim() || undefined;
+  const parsedLimit = Number(request.query.limit ?? 50);
+  const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
+
+  const alerts = await getHotCacheValue(waveAlertsCache, `${underlying ?? "*"}:${limit}`, WAVE_ALERTS_CACHE_MS, () => listRecentWaveAlerts(limit, underlying));
+  return { alerts };
 });
 
 const alertThresholdSchema = z.object({

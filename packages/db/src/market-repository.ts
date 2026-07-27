@@ -1,5 +1,5 @@
 import { calculatePressureScore } from "@option-decode/analytics";
-import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick } from "@option-decode/types";
+import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, SpotPricePoint } from "@option-decode/types";
 import type { OptionType, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./index.js";
@@ -39,6 +39,25 @@ function toNumber(value: Prisma.Decimal | number | null | undefined): number | u
     return undefined;
   }
   return typeof value === "number" ? value : value.toNumber();
+}
+
+// Greeks/IV come straight from Dhan's feed with no validation on their side
+// - confirmed in production: a SILVER contract (illiquid far strike) once
+// returned a theta value whose magnitude blew past this column's
+// DECIMAL(10,6) capacity (max ~9999.999999) and threw P2020, which failed
+// the ENTIRE snapshot's createMany() batch (one bad tick poisons every tick
+// in that transaction, not just its own row). A real greek value is never
+// remotely close to this threshold - delta is bounded to [-1, 1], and
+// theta/gamma/vega are small per-unit numbers - so treating an
+// out-of-range reading as "the feed sent garbage for this one leg" (store
+// null, keep the rest of the snapshot) is correct, not just a workaround.
+const GREEK_MAX_ABS = 9999;
+
+function sanitizeGreek(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || Math.abs(value) > GREEK_MAX_ABS) {
+    return undefined;
+  }
+  return value;
 }
 
 async function getLotSizeForExpiry(underlyingSymbol: string, expiryLabel: string, client: DbClient): Promise<number> {
@@ -339,6 +358,54 @@ export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, cli
     })
   );
 
+  let sanitizedTickCount = 0;
+  const tickRows = snapshot.ticks.map((tick) => {
+    const impliedVolatility = sanitizeGreek(tick.impliedVolatility);
+    const deltaValue = sanitizeGreek(tick.delta);
+    const gammaValue = sanitizeGreek(tick.gamma);
+    const thetaValue = sanitizeGreek(tick.theta);
+    const vegaValue = sanitizeGreek(tick.vega);
+    if (
+      (tick.impliedVolatility !== undefined && impliedVolatility === undefined) ||
+      (tick.delta !== undefined && deltaValue === undefined) ||
+      (tick.gamma !== undefined && gammaValue === undefined) ||
+      (tick.theta !== undefined && thetaValue === undefined) ||
+      (tick.vega !== undefined && vegaValue === undefined)
+    ) {
+      sanitizedTickCount += 1;
+    }
+
+    return {
+      tradingDate,
+      tickTime: new Date(tick.tickTime),
+      underlyingSymbol: tick.underlyingSymbol,
+      expiryLabel: tick.expiry,
+      optionType: tick.optionType,
+      strikePrice: tick.strikePrice,
+      securityId: tick.securityId,
+      lastPrice: tick.lastPrice,
+      bidPrice: tick.bidPrice,
+      askPrice: tick.askPrice,
+      volume: tick.volume,
+      openInterest: tick.openInterest,
+      changeInOpenInterest: tick.changeInOpenInterest,
+      impliedVolatility,
+      deltaValue,
+      gammaValue,
+      thetaValue,
+      vegaValue
+    };
+  });
+
+  if (sanitizedTickCount > 0) {
+    console.warn("Dropped out-of-range greek/IV value(s) from Dhan feed before persisting", {
+      underlyingSymbol: snapshot.underlyingSymbol,
+      expiry: snapshot.expiry,
+      affectedTicks: sanitizedTickCount,
+      totalTicks: snapshot.ticks.length
+    });
+  }
+
   const saved = await client.$transaction(async (tx: Prisma.TransactionClient) => {
     const createdSnapshot = await tx.optionChainSnapshot.create({
       data: {
@@ -353,27 +420,7 @@ export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, cli
     });
 
     await tx.optionContractTick.createMany({
-      data: snapshot.ticks.map((tick) => ({
-        snapshotId: createdSnapshot.id,
-        tradingDate,
-        tickTime: new Date(tick.tickTime),
-        underlyingSymbol: tick.underlyingSymbol,
-        expiryLabel: tick.expiry,
-        optionType: tick.optionType,
-        strikePrice: tick.strikePrice,
-        securityId: tick.securityId,
-        lastPrice: tick.lastPrice,
-        bidPrice: tick.bidPrice,
-        askPrice: tick.askPrice,
-        volume: tick.volume,
-        openInterest: tick.openInterest,
-        changeInOpenInterest: tick.changeInOpenInterest,
-        impliedVolatility: tick.impliedVolatility,
-        deltaValue: tick.delta,
-        gammaValue: tick.gamma,
-        thetaValue: tick.theta,
-        vegaValue: tick.vega
-      }))
+      data: tickRows.map((row) => ({ ...row, snapshotId: createdSnapshot.id }))
     });
 
     await tx.pressureScore.create({
@@ -623,6 +670,45 @@ export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?:
     bearishPressure: row.bearishPressure,
     maxPain: row.maxPain?.toNumber()
   }));
+}
+
+// Safety cap mirroring listReplaySnapshots - a single trading day tops out
+// around ~750 rows at the ~30s capture cadence, so this only kicks in for
+// callers that ask for an unusually long lookback window.
+const MAX_SPOT_PRICE_HISTORY_ROWS = 3_000;
+
+/**
+ * Spot-price time series for the Elliott Wave engine's ZigZag pivot
+ * detector (see @option-decode/analytics#calculateElliottWave). Deliberately
+ * reuses OptionChainSnapshot.spotPrice - already captured on every ~30s
+ * worker cycle via saveOptionChainSnapshot - rather than introducing a
+ * dedicated candle/OHLC ingestion pipeline. The existing
+ * [underlyingSymbol, snapshotTime] index serves this query directly. Not
+ * expiry-scoped: spot price is a property of the underlying, not a specific
+ * contract, so a single continuous series is correct even as the app rolls
+ * from one expiry to the next.
+ */
+export async function getSpotPriceHistory(underlyingSymbol: string, sinceMs: number, limit = 1000, client: DbClient = prisma): Promise<SpotPricePoint[]> {
+  const rows = await client.optionChainSnapshot.findMany({
+    where: {
+      underlyingSymbol,
+      snapshotTime: { gte: new Date(sinceMs) }
+    },
+    distinct: ["snapshotTime"],
+    orderBy: { snapshotTime: "desc" },
+    take: Math.max(1, Math.min(MAX_SPOT_PRICE_HISTORY_ROWS, limit)),
+    select: {
+      snapshotTime: true,
+      spotPrice: true
+    }
+  });
+
+  return rows
+    .reverse()
+    .map((row) => ({
+      time: row.snapshotTime.toISOString(),
+      price: row.spotPrice.toNumber()
+    }));
 }
 
 /**

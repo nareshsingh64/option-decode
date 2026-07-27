@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@option-decode/analytics": "workspace:*",
+    "@option-decode/dhan": "workspace:*",
     "@option-decode/types": "workspace:*",
     "@prisma/client": "^6.0.1"
   },

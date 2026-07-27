@@ -163,6 +163,9 @@ importers:
       '@option-decode/analytics':
         specifier: workspace:*
         version: link:../analytics
+      '@option-decode/dhan':
+        specifier: workspace:*
+        version: link:../dhan
       '@option-decode/types':
         specifier: workspace:*
         version: link:../types

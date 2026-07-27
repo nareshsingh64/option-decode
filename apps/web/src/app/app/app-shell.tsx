@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Bell, CandlestickChart, Crosshair, FlaskConical, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
+import { Activity, Bell, CandlestickChart, Crosshair, FlaskConical, LogOut, Play, Settings, ShieldCheck, UserCircle, WalletCards, Waves } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -10,6 +10,7 @@ import type { AuthUser, DashboardView, MarketOverview } from "../../components/l
 const protectedNavItems: Array<[DashboardView, string, LucideIcon]> = [
   ["dashboard", "Dashboard", Activity],
   ["new-dashboard", "Strike Matrix", Crosshair],
+  ["elliott-wave", "Elliott Wave", Waves],
   ["option-chain", "Option Chain", CandlestickChart],
   ["pressure", "Pressure Engine", ShieldCheck],
   ["replay", "Replay Lab", Play],

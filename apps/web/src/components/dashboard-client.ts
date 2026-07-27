@@ -1,4 +1,4 @@
-import type { StrikeMatrixAnalysis, TradingHorizon } from "@option-decode/types";
+import type { ElliottWaveAnalysis, StrikeMatrixAnalysis, TradingHorizon, WaveScreenerAlertType } from "@option-decode/types";
 import type {
   AdminOverview,
   AlertThreshold,
@@ -378,6 +378,54 @@ export async function fetchStrikeMatrix(underlying: string, expiry: string, hori
     throw new Error(`Strike matrix failed with HTTP ${response.status}`);
   }
   return response.json() as Promise<StrikeMatrixResponse>;
+}
+
+export interface ElliottWaveResponse {
+  underlying: string;
+  horizon: TradingHorizon;
+  zigZagPercent: number;
+  pointCount: number;
+  analysis: ElliottWaveAnalysis;
+}
+
+export async function fetchElliottWave(underlying: string, horizon: TradingHorizon): Promise<ElliottWaveResponse> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ underlying, horizon });
+  const response = await fetch(`${apiUrl}/api/market/elliott-wave?${search.toString()}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`Elliott Wave analysis failed with HTTP ${response.status}`);
+  }
+  return response.json() as Promise<ElliottWaveResponse>;
+}
+
+export interface WaveScreenerAlertItem {
+  id: string;
+  underlyingSymbol: string;
+  alertType: WaveScreenerAlertType;
+  horizon: TradingHorizon;
+  stage: string;
+  direction: string;
+  message: string;
+  triggeredPrice: number;
+  fibRetracementPercent?: number;
+  rvol?: number;
+  rsi?: number;
+  createdAt: string;
+}
+
+export async function fetchWaveScreenerAlerts(limit = 50): Promise<WaveScreenerAlertItem[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const search = new URLSearchParams({ limit: String(limit) });
+  const response = await fetch(`${apiUrl}/api/market/elliott-wave/alerts?${search.toString()}`, {
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`Elliott Wave screener alerts failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { alerts: WaveScreenerAlertItem[] };
+  return payload.alerts;
 }
 
 export async function fetchReplayTimeline(underlying: string, expiry: string, tradingDate?: string): Promise<ReplaySnapshotSummary[]> {

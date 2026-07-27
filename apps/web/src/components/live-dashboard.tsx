@@ -59,6 +59,7 @@ import {
 import { DashboardMainPanel, useStrikeScoreTrends } from "./dashboard-main-panel";
 import { MarketControls } from "./market-controls";
 import { StrikeMatrixPanel } from "./strike-matrix-panel";
+import { ElliottWavePanel } from "./elliott-wave-panel";
 import {
   buildAtmStrikeRange,
   buildChainRows,
@@ -437,7 +438,7 @@ interface LiveDashboardProps {
   onNavigateToView?: (view: DashboardView) => void;
 }
 
-export type DashboardView = "dashboard" | "new-dashboard" | "option-chain" | "pressure" | "replay" | "paper" | "paper-pro" | "alerts" | "account" | "admin" | "settings";
+export type DashboardView = "dashboard" | "new-dashboard" | "elliott-wave" | "option-chain" | "pressure" | "replay" | "paper" | "paper-pro" | "alerts" | "account" | "admin" | "settings";
 type NumberFormatMode = "indian" | "metric";
 type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
@@ -1711,6 +1712,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           formatTime={formatIstShortDateTime}
           onPaperTradePro={canAccessPaperPro ? () => onNavigateToView?.("paper-pro") : undefined}
         />
+      </div>
+
+      {/* Kept mounted-and-hidden for the same reason as Strike Matrix above:
+          preserves the horizon selection and background refresh interval
+          across tab switches instead of restarting on every visit. */}
+      <div className={initialView === "elliott-wave" ? "contents" : "hidden"}>
+        <ElliottWavePanel underlying={overview.selectedUnderlying} formatStrike={formatStrike} formatTime={formatIstShortDateTime} />
       </div>
 
       {initialView === "pressure" ? (

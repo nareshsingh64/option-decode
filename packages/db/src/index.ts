@@ -19,7 +19,16 @@ export { createEmailVerificationToken, createPasswordResetToken, createUser, get
 export type { AuthUserDto } from "./auth-repository.js";
 export { buildDemoSnapshot } from "./demo-snapshot.js";
 export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan } from "./lot-size-repository.js";
-export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
+
+export { listActiveFnoStocks, syncFnoStockUniverse } from "./fno-stock-repository.js";
+export type { FnoStockSummary, FnoStockSyncResult } from "./fno-stock-repository.js";
+export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getSpotPriceHistory, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
+
+export { getWavePriceHistory, recordWavePricePoints } from "./wave-price-repository.js";
+export type { WavePricePointInput } from "./wave-price-repository.js";
+
+export { listRecentWaveAlerts, recordWaveAlertIfNew } from "./wave-alert-repository.js";
+export type { WaveAlertInput, WaveAlertRecord } from "./wave-alert-repository.js";
 export type { OiWeightedPriceResult } from "./market-repository.js";
 export { cancelPendingPaperOrder, closePaperPosition, getOpenPositionsForMarginGroup, getPaperSummary, getPendingOrdersForMarginGroup, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, recordPositionMargin, updatePaperPositionRisk, updatePendingPaperOrder } from "./paper-repository.js";
 export type { FilledPaperLeg, MarginQuoteLeg, PaperOrderInput, PaperOrderLegInput, PaperSummary, PendingPaperOrderUpdateInput } from "./paper-repository.js";

@@ -381,6 +381,97 @@ export interface StrikeMatrixAnalysis {
   riskRule: string;
 }
 
+// --- Elliott Wave Engine ---
+// See docs/DECODE OPTION & ELLIOTT WAVE KNOWLEDGE FILE and the
+// elliott-wave-options-fno-skill skill for the source rules. Built as a
+// standalone tab (not folded into the Strike Matrix tab) since it answers a
+// different question - structural wave stage vs. live writer-flow bias -
+// off a different data source (spot price history vs. option chain ticks).
+
+export interface SpotPricePoint {
+  time: string;
+  price: number;
+  // Cumulative day volume at this instant, when the source has real traded
+  // volume to report (F&O stocks via WavePricePoint). Undefined for indices/
+  // commodities (OptionChainSnapshot-derived series) - they don't have
+  // conventional traded volume, so RVOL simply can't be computed for them.
+  volume?: number;
+}
+
+// A confirmed ZigZag swing point. `label` is only set once the pivot has
+// been assigned a place in the most recent wave count - unlabeled pivots
+// exist in the series but fall outside the count currently being displayed.
+export type WaveLabel = "1" | "2" | "3" | "4" | "5" | "A" | "B" | "C";
+
+export interface WavePivot {
+  time: string;
+  price: number;
+  kind: "high" | "low";
+  label?: WaveLabel;
+}
+
+export type WaveDirection = "Bullish" | "Bearish" | "Undetermined";
+
+// What the market is CURRENTLY doing, i.e. the wave forming after the most
+// recent confirmed pivot - not the wave that just finished. E.g. once Wave 1
+// finishes (pivot confirmed), price is now inside Wave 2, so the stage reads
+// "Wave 2 Turning".
+export type WaveStage = "Wave 2 Turning" | "Wave 3 Initiation" | "Wave 4 Range" | "Wave 5 Exhaustion" | "Corrective Phase" | "Undetermined";
+
+export interface WaveRuleCheck {
+  rule: string;
+  description: string;
+  passed: boolean;
+}
+
+export interface WaveFibonacciLevel {
+  label: string;
+  // Actual measured ratio for the leg this level describes (e.g. Wave 2's
+  // actual retracement of Wave 1) - undefined when the leg doesn't exist yet.
+  actualPercent?: number;
+  targetLow: number;
+  targetHigh: number;
+  withinTarget: boolean;
+  description: string;
+}
+
+export interface ElliottWaveStrategyRecommendation {
+  stage: WaveStage;
+  context: string;
+  strategy: string;
+  primaryGreek: string;
+  riskProfile: string;
+}
+
+export type WaveScreenerAlertType = "WAVE2_REVERSAL" | "WAVE3_IMPULSE";
+
+export interface WaveScreenerSignal {
+  alertType: WaveScreenerAlertType;
+  stage: WaveStage;
+  direction: WaveDirection;
+  message: string;
+  triggeredPrice: number;
+  fibRetracementPercent?: number;
+  rvol?: number;
+  rsi?: number;
+}
+
+export interface ElliottWaveAnalysis {
+  underlyingSymbol: string;
+  // ZigZag reversal threshold, as a percent of price, used to confirm pivots.
+  zigZagPercent: number;
+  pivots: WavePivot[];
+  currentStage: WaveStage;
+  direction: WaveDirection;
+  invalidated: boolean;
+  invalidationReason?: string;
+  ruleChecks: WaveRuleCheck[];
+  fibonacciLevels: WaveFibonacciLevel[];
+  recommendation?: ElliottWaveStrategyRecommendation;
+  lastPrice: number;
+  lastUpdated: string;
+}
+
 export interface PaperOrderRequest {
   userId: string;
   underlyingSymbol: UnderlyingSymbol;

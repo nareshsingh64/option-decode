@@ -9,6 +9,7 @@ import type { AdminOverview } from "./live-dashboard";
 const ASSIGNABLE_TAB_LABELS: Array<[string, string]> = [
   ["dashboard", "Dashboard"],
   ["new-dashboard", "Strike Matrix"],
+  ["elliott-wave", "Elliott Wave"],
   ["option-chain", "Option Chain"],
   ["pressure", "Pressure Engine"],
   ["replay", "Replay Lab"],
