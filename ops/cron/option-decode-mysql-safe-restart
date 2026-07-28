@@ -1,0 +1,6 @@
+# Checks daily, after NSE market close (15:30 IST = 10:00 UTC), whether
+# needrestart still has mysqld flagged for a restart (from an
+# unattended-upgrades libc/security patch earlier that day) and restarts it
+# gracefully in this low-traffic window if so. See ops/needrestart/ for the
+# config that stops needrestart from restarting mysql automatically/silently.
+5 10 * * * root /opt/option-decode/scripts/mysql-safe-restart.sh
