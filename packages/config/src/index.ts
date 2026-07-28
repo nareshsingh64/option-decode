@@ -34,7 +34,25 @@ const envSchema = z.object({
   MOCK_MARKET_FEED_ENABLED: z
     .string()
     .default("true")
-    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase()))
+    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase())),
+  // Framework for capturing full option chains (not just LTP/volume) for
+  // the highest-weighted F&O stocks - see FnoStock.indexWeightPercent and
+  // getOptionChainTrackedStocks in @option-decode/db. Defaults to disabled:
+  // flipping this on before indexWeightPercent has been seeded for any
+  // stock is harmless (the tracked-stock list comes back empty), but the
+  // feature is meant to stay off until real weight data is loaded in.
+  STOCK_OPTION_CHAIN_CAPTURE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase())),
+  // Stocks are added to the tracked list, highest weight first, until their
+  // cumulative indexWeightPercent crosses this threshold.
+  STOCK_OPTION_CHAIN_WEIGHT_THRESHOLD_PERCENT: z.coerce.number().positive().default(70),
+  // Hard cap independent of the threshold above, so a data-entry mistake in
+  // seeded weights (e.g. everything left at 1%) can't silently balloon this
+  // into capturing the entire F&O stock universe and blow through Dhan's
+  // rate limits.
+  STOCK_OPTION_CHAIN_MAX_STOCKS: z.coerce.number().int().positive().default(20)
 });
 
 export type AppConfig = z.infer<typeof envSchema> & {

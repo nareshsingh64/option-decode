@@ -1,6 +1,6 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanOhlcQuote } from "@option-decode/dhan";
@@ -155,6 +155,8 @@ async function captureOnce() {
 
     await captureExtraExpiriesForPaperTrading(underlying, capturedExpiries, quoteOverrides.get(underlying.key));
   }
+
+  await captureStockOptionChains();
 }
 
 // Paper trades can now target any expiry (see the Paper Order Ticket's
@@ -193,6 +195,88 @@ async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinit
     } catch (error) {
       console.warn("Unable to capture extra expiry for open paper trading activity", { underlying: underlying.key, expiry, error });
     }
+  }
+}
+
+// Framework for capturing full option chains for the highest-weighted F&O
+// stocks, gated behind STOCK_OPTION_CHAIN_CAPTURE_ENABLED (default false)
+// and getOptionChainTrackedStocks (empty until indexWeightPercent is
+// seeded for at least one stock) - see fno-stock-repository.ts and
+// config/src/index.ts. Both guards mean this is a complete no-op today.
+//
+// Segment note: UnderlyingSeg here must be the UNDERLYING's own segment
+// (mirrors how NIFTY/BANKNIFTY pass "IDX_I", their own index segment, not
+// a derivatives segment) - for an equity underlying that's "NSE_EQ", the
+// same segment resolveNseEquitySecurityIds already resolved FnoStock's
+// securityId against. This is distinct from getFnoExchangeSegment
+// ("NSE_FNO"), which is only for the margin-calculator API acting on the
+// option CONTRACT itself, not for looking up its underlying's chain.
+//
+// Only the nearest expiry is captured per stock (unlike the index loop's
+// current+next), and calls are staggered with a fixed gap rather than
+// fired together, to keep this from adding a burst of up to
+// STOCK_OPTION_CHAIN_MAX_STOCKS simultaneous requests on top of the
+// existing index capture load within the same cycle.
+const STOCK_OPTION_CHAIN_SEGMENT = "NSE_EQ";
+const STOCK_CAPTURE_STAGGER_MS = 500;
+
+async function captureStockOptionChains() {
+  if (!config.STOCK_OPTION_CHAIN_CAPTURE_ENABLED) {
+    return;
+  }
+
+  if (!isMarketSessionOpen(STOCK_OPTION_CHAIN_SEGMENT)) {
+    return;
+  }
+
+  const trackedStocks = await getOptionChainTrackedStocks(config.STOCK_OPTION_CHAIN_WEIGHT_THRESHOLD_PERCENT, config.STOCK_OPTION_CHAIN_MAX_STOCKS);
+  if (!trackedStocks.length) {
+    return;
+  }
+
+  console.log("Capturing option chains for weighted F&O stocks", {
+    count: trackedStocks.length,
+    symbols: trackedStocks.map((stock) => stock.symbol)
+  });
+
+  for (const stock of trackedStocks) {
+    const underlying: UnderlyingDefinition = {
+      key: stock.symbol,
+      symbol: stock.symbol,
+      displayName: stock.displayName,
+      securityId: stock.securityId,
+      segment: STOCK_OPTION_CHAIN_SEGMENT,
+      // Cosmetic only at this layer - normalizeOptionChain embeds this on
+      // each in-memory tick, but saveOptionChainSnapshot doesn't persist
+      // it; the API re-resolves the real lot size from FnoLotSize per
+      // request (see getLotSizeForExpiry), so an unresolved value here
+      // never reaches the UI.
+      lotSize: stock.lotSize ?? 1
+    };
+
+    try {
+      const expiries = await dhan.getExpiryList(underlying);
+      const expiry = expiries[0];
+      if (!expiry) {
+        console.warn("Skipping weighted F&O stock with no expiry", { symbol: stock.symbol });
+        continue;
+      }
+
+      const snapshot = await dhan.getOptionChain({ underlying, expiry });
+      const snapshotId = await saveOptionChainSnapshot(snapshot);
+      await monitorPaperTrading(snapshot);
+      console.log("Saved Dhan option chain snapshot for weighted F&O stock", {
+        snapshotId,
+        symbol: stock.symbol,
+        indexWeightPercent: stock.indexWeightPercent,
+        expiry: snapshot.expiry,
+        ticks: snapshot.ticks.length
+      });
+    } catch (error) {
+      console.warn("Unable to capture option chain for weighted F&O stock", { symbol: stock.symbol, error });
+    }
+
+    await sleep(STOCK_CAPTURE_STAGGER_MS);
   }
 }
 

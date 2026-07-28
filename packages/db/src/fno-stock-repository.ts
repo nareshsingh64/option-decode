@@ -94,3 +94,73 @@ export async function listActiveFnoStocks(client: DbClient = prisma): Promise<Fn
     active: row.active
   }));
 }
+
+// Seeds/updates a stock's index weight - the only way indexWeightPercent
+// ever gets populated, since Dhan has no API for official NSE index
+// weights and NSE only rebalances semi-annually. Call this once per stock
+// after each rebalance with the current published weight (e.g. from the
+// NSE/index-provider factsheet) to keep getOptionChainTrackedStocks below
+// accurate. Passing weightPercent: null clears a stock's weight, which
+// removes it from the tracked list on the next capture cycle without
+// needing a migration or code change.
+export async function setFnoStockIndexWeight(symbol: string, weightPercent: number | null, client: DbClient = prisma): Promise<void> {
+  await client.fnoStock.update({
+    where: { symbol },
+    data: { indexWeightPercent: weightPercent }
+  });
+}
+
+export interface WeightedFnoStock {
+  symbol: string;
+  displayName: string;
+  securityId: number;
+  lotSize?: number;
+  indexWeightPercent: number;
+}
+
+/**
+ * Selects the smallest set of highest-weighted, currently-active F&O
+ * stocks whose indexWeightPercent sums past `cumulativeWeightThresholdPercent`,
+ * capped at `maxStockCount` regardless of how far that threshold reaches -
+ * this is the actual selection logic behind "top N stocks that are >X% of
+ * the index" requested for full option-chain capture. Stocks with no
+ * securityId (never resolved by syncFnoStockUniverse) or no seeded weight
+ * are excluded outright, since neither the Dhan option-chain call nor the
+ * ranking can proceed without them - in particular, this means the result
+ * is an empty array until setFnoStockIndexWeight has been called for at
+ * least one stock, making the whole feature a no-op by default.
+ */
+export async function getOptionChainTrackedStocks(cumulativeWeightThresholdPercent: number, maxStockCount: number, client: DbClient = prisma): Promise<WeightedFnoStock[]> {
+  const candidates = await client.fnoStock.findMany({
+    where: {
+      active: true,
+      securityId: { not: null },
+      indexWeightPercent: { not: null }
+    },
+    orderBy: { indexWeightPercent: "desc" },
+    take: maxStockCount
+  });
+
+  const selected: WeightedFnoStock[] = [];
+  let cumulativeWeight = 0;
+
+  for (const stock of candidates) {
+    if (cumulativeWeight >= cumulativeWeightThresholdPercent) {
+      break;
+    }
+    if (stock.securityId === null || stock.indexWeightPercent === null) {
+      continue;
+    }
+
+    selected.push({
+      symbol: stock.symbol,
+      displayName: stock.displayName,
+      securityId: stock.securityId,
+      lotSize: stock.lotSize ?? undefined,
+      indexWeightPercent: stock.indexWeightPercent.toNumber()
+    });
+    cumulativeWeight += stock.indexWeightPercent.toNumber();
+  }
+
+  return selected;
+}

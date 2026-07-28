@@ -225,8 +225,21 @@ model FnoStock {
   active       Boolean  @default(true)
   lastSyncedAt DateTime @default(now())
   createdAt    DateTime @default(now())
+  // This stock's current weight (%) in the NSE index it's being tracked
+  // for (e.g. Nifty 50) - null until seeded, since Dhan doesn't expose
+  // official index weights via any API and NSE only rebalances the index
+  // semi-annually. Not auto-computed; see setFnoStockIndexWeight in
+  // fno-stock-repository.ts. Feeds getOptionChainTrackedStocks, which picks
+  // the smallest set of highest-weight stocks whose weights sum past a
+  // configurable threshold (STOCK_OPTION_CHAIN_WEIGHT_THRESHOLD_PERCENT) -
+  // this is what selects which stocks get full option-chain capture
+  // (OptionChainSnapshot/OptionContractTick) instead of just the lightweight
+  // LTP+volume series in WavePricePoint below. Stays unseeded (and the
+  // whole feature stays inert) until real weight figures are loaded in.
+  indexWeightPercent Decimal? @db.Decimal(6, 3)
 
   @@index([active])
+  @@index([indexWeightPercent])
 }
 
 // Lightweight price+volume series feeding the Elliott Wave screener for F&O

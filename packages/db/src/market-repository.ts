@@ -34,6 +34,29 @@ async function resolveExpiryId(underlyingSymbol: string, expiryLabel: string, cl
   return expiry?.id;
 }
 
+// Resolves the "current" (nearest, soonest-expiring) contract to serve when
+// no expiry is explicitly requested. Without this, getLatestOptionChainSnapshot
+// picked whichever expiry had the globally most recent snapshotTime across
+// ALL of this underlying's expiries - and since the worker's captureOnce
+// always saves the next-nearest expiry's snapshot a few seconds AFTER
+// saving the current expiry's (see worker.ts), the next expiry's
+// snapshotTime was always slightly newer. Every default (no-expiry-param)
+// request was silently serving next week's chain instead of the current
+// one. Filters to expiryDate >= today the same way listStoredExpiries
+// does, so an expired contract that hasn't rolled off yet is never picked.
+async function resolveNearestExpiryId(underlyingSymbol: string, client: DbClient): Promise<string | undefined> {
+  const expiry = await client.expiry.findFirst({
+    where: {
+      underlying: { symbol: underlyingSymbol },
+      active: true,
+      expiryDate: { gte: todayInMarketTimezone() }
+    },
+    orderBy: { expiryDate: "asc" },
+    select: { id: true }
+  });
+  return expiry?.id;
+}
+
 function toNumber(value: Prisma.Decimal | number | null | undefined): number | undefined {
   if (value === null || value === undefined) {
     return undefined;
@@ -502,7 +525,7 @@ export async function getLatestSpotChange(underlyingSymbol: string, client: DbCl
 }
 
 export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", requestedExpiry?: string, client: DbClient = prisma): Promise<OptionChainSnapshot | null> {
-  const expiryId = requestedExpiry ? await resolveExpiryId(underlyingSymbol, requestedExpiry, client) : undefined;
+  const expiryId = requestedExpiry ? await resolveExpiryId(underlyingSymbol, requestedExpiry, client) : await resolveNearestExpiryId(underlyingSymbol, client);
   if (requestedExpiry && !expiryId) {
     return null;
   }
