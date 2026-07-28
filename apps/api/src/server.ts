@@ -7,7 +7,7 @@ import { z } from "zod";
 import { calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -1517,6 +1517,27 @@ async function getCachedMarketPulse(underlyingSymbol: string, expiry: string) {
   return getHotCacheValue(marketPulseCache, cacheKey, MARKET_PULSE_CACHE_MS, () => computeMarketPulseAsOf(underlyingSymbol, expiry, Date.now()));
 }
 
+// Write-through: any time we're forced to hit Dhan live (either the stored
+// snapshot for this underlying+expiry was stale, or - the slow path this
+// fixes - nothing has ever been captured for this expiry at all, e.g. a
+// Paper Trading order ticket expiry from the broker's full tradableExpiries
+// list that the worker doesn't proactively poll), persist the result the
+// same way the worker does every 30s. Without this, every single visit to
+// an uncaptured expiry paid for a fresh live Dhan round trip with nothing
+// ever cached - this is what made "switching to any available expiry" feel
+// slow. Saved fire-and-forget (not awaited) so persistence never adds to
+// this request's latency; a failure here just means the next visit repeats
+// the same live fetch, so it's safe to only log and move on. The existing
+// isSnapshotStale/isSegmentMarketSessionOpen check above already governs
+// how fresh a persisted snapshot needs to be before it's served straight
+// from storage again, so this doesn't loosen freshness for any expiry that
+// wasn't already tolerating that same window.
+function persistLiveSnapshotInBackground(snapshot: OptionChainSnapshot, underlyingSymbol: string, expiry: string) {
+  saveOptionChainSnapshot(snapshot).catch((error) => {
+    app.log.warn({ error, underlyingSymbol, expiry }, "Failed to persist live-fetched option chain snapshot");
+  });
+}
+
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {
   try {
     const underlying = getUnderlyingDefinition(underlyingSymbol);
@@ -1528,7 +1549,9 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
 
       const liveExpiry = expiry ?? storedSnapshot.expiry;
       try {
-        return await dhan.getOptionChain({ underlying, expiry: liveExpiry, spotPriceOverride });
+        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: liveExpiry, spotPriceOverride });
+        persistLiveSnapshotInBackground(liveSnapshot, underlyingSymbol, liveExpiry);
+        return liveSnapshot;
       } catch (liveError) {
         app.log.warn({ error: liveError, underlyingSymbol, expiry: liveExpiry }, "Stored snapshot is stale; live option-chain refresh failed");
       }
@@ -1539,7 +1562,9 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
     if (underlying) {
       const selectedExpiry = expiry ?? (await dhan.getExpiryList(underlying))[0];
       if (selectedExpiry) {
-        return await dhan.getOptionChain({ underlying, expiry: selectedExpiry, spotPriceOverride });
+        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: selectedExpiry, spotPriceOverride });
+        persistLiveSnapshotInBackground(liveSnapshot, underlyingSymbol, selectedExpiry);
+        return liveSnapshot;
       }
     }
 
