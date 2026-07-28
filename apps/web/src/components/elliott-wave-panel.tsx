@@ -239,9 +239,9 @@ function WaveScreenerAlertsFeed({ formatTime }: { formatTime: (value: string) =>
       {alerts.length ? (
         <ul className="mt-2 grid max-h-56 gap-1.5 overflow-y-auto pr-1">
           {alerts.map((alert) => (
-            <li key={alert.id} className={`rounded border px-2 py-1.5 text-sm ${alert.alertType === "WAVE3_IMPULSE" ? "border-terminal-emerald/40 bg-terminal-emerald/10" : "border-terminal-blue/40 bg-terminal-blue/10"}`}>
+            <li key={alert.id} className={`rounded border px-2 py-1.5 text-sm ${alertDirectionCardClass(alert.direction)}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-terminal-text">
+                <span className={`font-semibold ${alertDirectionTextClass(alert.direction)}`}>
                   {alert.underlyingSymbol} · {alert.alertType === "WAVE3_IMPULSE" ? "Wave 3 Impulse" : "Wave 2 Reversal"}
                 </span>
                 <span className="text-xs text-terminal-muted">{formatTime(alert.createdAt)}</span>
@@ -281,4 +281,21 @@ function stageTone(direction: "Bullish" | "Bearish" | "Undetermined"): "emerald"
   if (direction === "Bullish") return "emerald";
   if (direction === "Bearish") return "red";
   return "amber";
+}
+
+// Screener alert cards were colored by alert type (Wave 2 vs Wave 3), so an
+// explosive upside extension and an explosive downside extension could end
+// up the same color - direction is what actually matters at a glance, so
+// key the card's color on that instead: green for upside (Bullish), red for
+// downside (Bearish), neutral blue for anything Undetermined.
+function alertDirectionCardClass(direction: string): string {
+  if (direction === "Bullish") return "border-terminal-emerald/40 bg-terminal-emerald/10";
+  if (direction === "Bearish") return "border-terminal-red/40 bg-terminal-red/10";
+  return "border-terminal-blue/40 bg-terminal-blue/10";
+}
+
+function alertDirectionTextClass(direction: string): string {
+  if (direction === "Bullish") return "text-terminal-emerald";
+  if (direction === "Bearish") return "text-terminal-red";
+  return "text-terminal-text";
 }
