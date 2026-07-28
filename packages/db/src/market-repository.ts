@@ -527,17 +527,21 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
 
   const tradingDate = latest.tradingDate.toISOString().slice(0, 10);
   const latestExpiryLabel = latest.expiry.expiryLabel;
-  const lotSize = await getLotSizeForExpiry(latest.underlyingSymbol, latestExpiryLabel, client);
-  const lastPriceReferences = await getLastPriceReferenceMap(
-    latest.ticks,
-    latest.underlyingSymbol,
-    latest.expiryId,
-    latestExpiryLabel,
-    latest.tradingDate,
-    latest.snapshotTime,
-    client
-  );
-  const sessionOpenReferences = await getSessionOpenReferenceMap(latest.ticks, latest.underlyingSymbol, latest.expiryId, latest.tradingDate, latest.snapshotTime, client);
+
+  // These three each cost one or two DB round trips and none of them depend
+  // on each other's output - only on `latest`, which is already in hand. Run
+  // them concurrently instead of one after another. This mattered most on
+  // an expiry SWITCH specifically: getCachedLatestSnapshotOrDemo's cache key
+  // is `underlying:expiry`, so picking a new expiry is guaranteed to miss
+  // cache and pay for all three lookups fresh, on the connection's full
+  // round-trip latency - three sequential ~20-40ms round trips reads as a
+  // noticeable stall, even though every query here already hits its
+  // intended index (confirmed via EXPLAIN, see resolveExpiryId above).
+  const [lotSize, lastPriceReferences, sessionOpenReferences] = await Promise.all([
+    getLotSizeForExpiry(latest.underlyingSymbol, latestExpiryLabel, client),
+    getLastPriceReferenceMap(latest.ticks, latest.underlyingSymbol, latest.expiryId, latestExpiryLabel, latest.tradingDate, latest.snapshotTime, client),
+    getSessionOpenReferenceMap(latest.ticks, latest.underlyingSymbol, latest.expiryId, latest.tradingDate, latest.snapshotTime, client)
+  ]);
   const ticks = latest.ticks.map((tick): OptionContractTick => {
     const lastPrice = toNumber(tick.lastPrice);
     const previousLastPrice = lastPriceReferences.get(tickReferenceKey(tick));
