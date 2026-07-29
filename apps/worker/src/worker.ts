@@ -159,7 +159,16 @@ async function captureOnce() {
     // expiry rolls off and it becomes expiries[0] itself, even though Dhan
     // already lists it as tradable well before then. Keep the next-nearest
     // expiry's snapshot history warm too so it shows up in advance.
-    const nextExpiry = expiries[1];
+    //
+    // Skipped for MCX commodities (CRUDEOIL/NATURALGAS/COPPER/SILVER):
+    // next-month contract interest is far lower than NIFTY/BANKNIFTY's
+    // next-week view, and these four are last in config.feedUnderlyings,
+    // so they're the ones that pay whenever the cycle's Dhan call budget
+    // runs out. Dropping this second call for all four frees up real
+    // headroom before COPPER/SILVER's turn (2026-07-29 incident - see
+    // captureOnce's primary-capture try/catch above for the other half of
+    // that fix).
+    const nextExpiry = underlying.segment === "MCX_COMM" ? undefined : expiries[1];
     if (nextExpiry) {
       try {
         const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
