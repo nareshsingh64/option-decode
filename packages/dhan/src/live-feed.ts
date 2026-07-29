@@ -61,6 +61,24 @@ const MAX_INSTRUMENTS_PER_CONNECTION = 5000;
 // protocol-level ping/pong alone won't catch.
 const SILENT_CONNECTION_TIMEOUT_MS = 45_000;
 const WATCHDOG_INTERVAL_MS = 10_000;
+// Node's global WebSocket (the WHATWG/browser-style API used here) has no
+// way to send a raw WS-protocol ping frame from application code - unlike
+// Node-specific libraries (e.g. `ws`), which expose ws.ping(). Dhan's
+// server pings keep the connection alive from ITS side, but our client
+// never sends anything outbound after the initial subscribe messages.
+// Observed in production (2026-07-29): the connection was abnormally
+// closing (code 1006, no close frame) roughly every 11-12 minutes -
+// consistent with a NAT/firewall/load balancer somewhere in the path
+// treating a connection with no CLIENT-originated traffic as one-way/idle
+// and dropping it, even with data flowing in continuously from the
+// server. Re-sending a harmless subscribe message for an
+// already-subscribed instrument periodically puts real outbound traffic
+// on the wire - Dhan's subscribe is idempotent/additive, so resubscribing
+// something already subscribed is a safe no-op on their side. Interval is
+// well under the ~11-12min disconnect cadence observed, so this refreshes
+// the network path's view of the connection before whatever's timing it
+// out gets the chance to.
+const KEEP_ALIVE_INTERVAL_MS = 4 * 60 * 1000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
@@ -124,6 +142,7 @@ export class DhanLiveFeedClient {
   private readonly desired = new Map<string, DhanLiveFeedInstrument>();
   private pendingReconnect: ReturnType<typeof setTimeout> | undefined;
   private watchdog: ReturnType<typeof setInterval> | undefined;
+  private keepAliveTimer: ReturnType<typeof setInterval> | undefined;
   private lastMessageAt = 0;
   private closedByCaller = false;
   private reconnectAttempts = 0;
@@ -145,6 +164,7 @@ export class DhanLiveFeedClient {
       this.pendingReconnect = undefined;
     }
     this.stopWatchdog();
+    this.stopKeepAlive();
     const ws = this.ws;
     if (ws && ws.readyState === ws.OPEN) {
       try {
@@ -198,6 +218,7 @@ export class DhanLiveFeedClient {
       this.options.onStatus?.({ state: "open" });
       this.subscribeAll();
       this.startWatchdog();
+      this.startKeepAlive();
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -217,6 +238,7 @@ export class DhanLiveFeedClient {
 
     ws.onclose = (event: { code: number; reason?: string }) => {
       this.stopWatchdog();
+      this.stopKeepAlive();
       this.ws = undefined;
       if (this.closedByCaller) {
         this.options.onStatus?.({ state: "closed" });
@@ -278,6 +300,33 @@ export class DhanLiveFeedClient {
       clearInterval(this.watchdog);
       this.watchdog = undefined;
     }
+  }
+
+  private startKeepAlive(): void {
+    this.stopKeepAlive();
+    this.keepAliveTimer = setInterval(() => {
+      this.sendKeepAlive();
+    }, KEEP_ALIVE_INTERVAL_MS);
+  }
+
+  private stopKeepAlive(): void {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = undefined;
+    }
+  }
+
+  // See KEEP_ALIVE_INTERVAL_MS's comment - resubscribing one already-
+  // subscribed instrument is a safe, idempotent way to put outbound
+  // traffic on the wire with no protocol support beyond what we already
+  // use.
+  private sendKeepAlive(): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN || !this.desired.size) {
+      return;
+    }
+    const [first] = this.desired.values();
+    this.sendSubscribe([first]);
   }
 
   // Each binary WS message may contain one or more concatenated packets -
