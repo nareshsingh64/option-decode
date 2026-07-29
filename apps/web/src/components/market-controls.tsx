@@ -148,8 +148,18 @@ function MarketTicker({ items }: { items: MarketTickerItem[] }) {
             return (
               <div key={`${item.symbol}-${index}`} className="flex min-w-max items-center gap-2 rounded border border-terminal-line bg-terminal-input px-3 py-1.5 text-sm">
                 <span className="font-semibold text-terminal-text">{item.displayName}</span>
-                <span className="text-terminal-muted">{formatPrice(item.spotPrice)}</span>
-                <span className={`font-semibold ${toneClass}`}>
+                {/* Fixed-width + tabular-nums: the live feed refreshes this
+                    every ~1s now (was ~25s), and these values previously
+                    reflowed the card's intrinsic width on every tick (sign
+                    flips, digit-count changes in the cents). Since the
+                    marquee's scroll animation (market-ticker-scroll in
+                    styles.css) transforms by a PERCENTAGE of the track's own
+                    width, any width change mid-animation visibly jerked the
+                    scroll position - imperceptible at 25s, constant at 1s.
+                    Reserving a stable box here keeps the track's total width
+                    (and therefore the animation) unaffected by price ticks. */}
+                <span className="w-[104px] text-right tabular-nums text-terminal-muted">{formatPrice(item.spotPrice)}</span>
+                <span className={`w-[170px] text-right tabular-nums font-semibold ${toneClass}`}>
                   {hasChange ? `${sign}${formatPrice(change)} (${sign}${item.changePercent?.toFixed(2)}%)` : "Chg --"}
                 </span>
               </div>
