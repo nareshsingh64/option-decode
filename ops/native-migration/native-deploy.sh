@@ -5,18 +5,26 @@
 # instantly by flipping the symlink back, without a rebuild.
 #
 # Layout:
-#   /opt/option-decode/releases/<git-sha>/   - one full checkout+build per deploy
-#   /opt/option-decode/current               - symlink to the active release
-#   /opt/option-decode/shared/.env.production - env file, symlinked into
-#                                                 each release (not duplicated)
-#   /opt/option-decode/logs/{api,worker,web}/ - persistent across releases
+#   $BASE/releases/<git-sha>/   - one full checkout+build per deploy
+#   $BASE/current               - symlink to the active release
+#   $BASE/shared/.env.production - env file, symlinked into each release
+#                                   (not duplicated)
+#   $BASE/logs/{api,worker,web}/ - persistent across releases
 #
-# Usage: ./native-deploy.sh [git-ref]   (defaults to origin/main)
+# BASE defaults to /opt/option-decode-native - kept deliberately separate
+# from /opt/option-decode (the live Docker checkout) for the whole
+# pre-cutover testing phase (steps 1-7), so this script can never touch
+# the live deploy by accident. Only at the actual cutover (step 9) does
+# BASE get pointed at /opt/option-decode itself, as a conscious decision
+# made in that maintenance window - not a default here.
+#
+# Usage: BASE=/opt/option-decode-native ./native-deploy.sh [git-ref]
+#        (defaults to origin/main for the ref, /opt/option-decode-native for BASE)
 
 set -euo pipefail
 
 REPO_URL="git@github.com:nareshsingh64/option-decode.git"
-BASE=/opt/option-decode
+BASE="${BASE:-/opt/option-decode-native}"
 RELEASES="$BASE/releases"
 SHARED="$BASE/shared"
 REF="${1:-origin/main}"
@@ -42,9 +50,14 @@ else
   cd "$RELEASE_DIR"
 
   # Same three steps as the Dockerfile, run directly on the host instead
-  # of inside a build stage.
-  corepack enable
-  corepack prepare pnpm@11.8.0 --activate
+  # of inside a build stage. Installing pnpm via corepack (as the
+  # Dockerfile does) hit a real substitution bug on this host - asking
+  # for pnpm@11.8.0 silently downloaded 11.18.0 instead, even after
+  # clearing the corepack cache. 11.8.0 does exist on the npm registry
+  # (verified directly), so this is a Corepack-side resolution issue, not
+  # a missing version - installing via npm instead sidesteps it and pins
+  # the exact version reliably.
+  command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11.8.0
   pnpm install --frozen-lockfile
   pnpm --filter @option-decode/db db:generate
   pnpm --filter @option-decode/web build

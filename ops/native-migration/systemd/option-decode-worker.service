@@ -7,23 +7,34 @@ Wants=mysql.service redis-server.service
 Type=simple
 User=option-decode
 Group=option-decode
-WorkingDirectory=/opt/option-decode/current
-EnvironmentFile=/opt/option-decode/current/.env.production
+# NOTE: points at /opt/option-decode-native, the isolated pre-cutover
+# testing base - deliberately NOT /opt/option-decode (the live Docker
+# checkout). At cutover (step 9), install a copy of this unit with every
+# /opt/option-decode-native path below changed to /opt/option-decode.
+#
+# IMPORTANT: unlike api/web, do NOT leave this unit running for extended
+# periods while the Docker worker is also live - both would poll/write
+# the same BullMQ jobs against the same production MySQL and the same
+# Dhan credentials. Use `systemctl start` for short verification bursts
+# only, then `systemctl stop option-decode-worker` again. See
+# ops/native-migration/env.native-test.example for the full reasoning.
+WorkingDirectory=/opt/option-decode-native/current
+EnvironmentFile=/opt/option-decode-native/current/.env.production
 Environment=NODE_ENV=production
-Environment=API_PORT=4000
+Environment=API_PORT=4001
 Environment=REDIS_URL=redis://127.0.0.1:6379/0
 
 ExecStart=/usr/bin/pnpm --filter @option-decode/worker exec tsx src/worker.ts
 
-StandardOutput=append:/opt/option-decode/logs/worker/worker.log
-StandardError=append:/opt/option-decode/logs/worker/worker.log
+StandardOutput=append:/opt/option-decode-native/logs/worker/worker.log
+StandardError=append:/opt/option-decode-native/logs/worker/worker.log
 
 Restart=on-failure
 RestartSec=5
 
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/option-decode/logs /opt/option-decode/current
+ReadWritePaths=/opt/option-decode-native/logs /opt/option-decode-native/current
 
 [Install]
 WantedBy=multi-user.target

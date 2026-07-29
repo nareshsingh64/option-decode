@@ -7,22 +7,27 @@ Wants=option-decode-api.service
 Type=simple
 User=option-decode
 Group=option-decode
-WorkingDirectory=/opt/option-decode/current
-EnvironmentFile=/opt/option-decode/current/.env.production
+# NOTE: points at /opt/option-decode-native, the isolated pre-cutover
+# testing base - deliberately NOT /opt/option-decode (the live Docker
+# checkout). At cutover (step 9), install a copy of this unit with every
+# /opt/option-decode-native path below changed to /opt/option-decode.
+WorkingDirectory=/opt/option-decode-native/current
+EnvironmentFile=/opt/option-decode-native/current/.env.production
 Environment=NODE_ENV=production
-Environment=API_URL=http://127.0.0.1:4000
+Environment=API_URL=http://127.0.0.1:4001
+Environment=PORT=3001
 
 ExecStart=/usr/bin/pnpm --filter @option-decode/web start
 
-StandardOutput=append:/opt/option-decode/logs/web/web.log
-StandardError=append:/opt/option-decode/logs/web/web.log
+StandardOutput=append:/opt/option-decode-native/logs/web/web.log
+StandardError=append:/opt/option-decode-native/logs/web/web.log
 
 Restart=on-failure
 RestartSec=5
 
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/option-decode/logs /opt/option-decode/current
+ReadWritePaths=/opt/option-decode-native/logs /opt/option-decode-native/current
 
 [Install]
 WantedBy=multi-user.target
