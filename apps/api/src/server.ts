@@ -32,14 +32,22 @@ const KNOWN_LIVE_FEED_SEGMENTS = new Set<DhanLiveFeedExchangeSegment>(["IDX_I", 
 function toLiveFeedSegment(segment: string): DhanLiveFeedExchangeSegment | undefined {
   return KNOWN_LIVE_FEED_SEGMENTS.has(segment as DhanLiveFeedExchangeSegment) ? (segment as DhanLiveFeedExchangeSegment) : undefined;
 }
-// Was 5s, which meant the ticker's stale-while-revalidate cache went stale
-// almost as fast as the frontend polled it, so nearly every poll cycle kicked
-// off a fresh Dhan LTP/OHLC round trip. Combined with the worker's own 30s
-// snapshot-cycle Dhan calls, this pushed total request volume over Dhan's
-// rate limit and surfaced as intermittent HTTP 429 DhanApiErrors. Ticker
-// data doesn't need sub-25s freshness, so raising the TTL cuts most of that
-// call volume directly.
-const MARKET_AUX_CACHE_MS = 25_000;
+// Was a flat 5s, which meant the ticker's stale-while-revalidate cache
+// went stale almost as fast as the frontend polled it, so nearly every
+// poll cycle kicked off a fresh Dhan LTP/OHLC round trip - combined with
+// the worker's own 30s snapshot-cycle Dhan calls, this pushed total
+// request volume over Dhan's rate limit and surfaced as intermittent
+// HTTP 429 DhanApiErrors. Raised to 25s to fix that (2026-07-29).
+//
+// Now conditional: when the Dhan Live Market Feed is enabled,
+// getFreshMarketAuxData reads most of this data from a Redis tick cache
+// instead of REST (see live-tick-cache.ts) - a 1s TTL costs nothing there,
+// and is what actually lets the ticker strip reflect the feed's ~1s
+// cadence end to end. When the feed is off (or REST is the fallback path
+// for whatever it hasn't reported fresh data for), stay at the
+// proven-safe 25s - a short TTL on pure REST polling is exactly what
+// caused the original incident above.
+const MARKET_AUX_CACHE_MS = config.LIVE_MARKET_FEED_ENABLED ? 1_000 : 25_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
 // Expiry lists only change at rollover - once a week for index weeklies,
 // once a month for stocks/MCX commodities - and only overnight, never
@@ -66,7 +74,12 @@ const OI_WEIGHTED_ZONES_CACHE_MS = MARKET_SNAPSHOT_CACHE_MS;
 const MARKET_PULSE_WINDOW_MS = 5 * 60 * 1000;
 const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
 const LIVE_SNAPSHOT_STALE_MS = 90_000;
-const MARKET_STREAM_TICKER_MS = 5_000;
+// Matches MARKET_AUX_CACHE_MS's reasoning: pushing every 1s only reflects
+// genuinely new data when the live feed is on (getMarketAuxData's own
+// cache TTL is what actually gates freshness) - on pure REST, a 1s push
+// interval would just resend the same 25s-cached value 25x over for no
+// benefit, so keep the wider interval there.
+const MARKET_STREAM_TICKER_MS = config.LIVE_MARKET_FEED_ENABLED ? 1_000 : 5_000;
 const MARKET_STREAM_SNAPSHOT_MS = 30_000;
 const MARKET_STREAM_HEARTBEAT_MS = 15_000;
 const MARKET_SNAPSHOT_SAVED_CHANNEL = "market:snapshot:saved";
@@ -1745,7 +1758,15 @@ async function getFreshMarketAuxData(symbols: string[]) {
         const tick = segment ? liveTicks.get(`${segment}:${securityId}`) : undefined;
         if (tick?.ltp !== undefined) {
           ltpQuotes.set(underlying.key, { lastPrice: tick.ltp });
-          ohlcQuotes.set(underlying.key, { lastPrice: tick.ltp, previousClose: tick.prevClose });
+          // Verified in production (2026-07-29) against NIFTY, SENSEX and an
+          // NSE_EQ stock: Dhan's Quote packet dayClose field actually holds
+          // the previous trading day's close throughout live trading,
+          // despite the docs saying it's "only sent post market close".
+          // The dedicated Prev Close packet (response code 6, tick.prevClose)
+          // never arrived for any instrument in that test, so use dayClose
+          // instead - tick.prevClose is kept as a fallback in case Dhan
+          // starts sending it later.
+          ohlcQuotes.set(underlying.key, { lastPrice: tick.ltp, previousClose: tick.dayClose ?? tick.prevClose });
         } else {
           stillNeeded.push(underlying);
         }
