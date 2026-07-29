@@ -4,49 +4,55 @@
 # release-dir + symlink pattern so a bad deploy can be rolled back
 # instantly by flipping the symlink back, without a rebuild.
 #
+# Source of code is the existing, already-authenticated /opt/option-decode
+# checkout (SOURCE_REPO below), copied via rsync rather than a fresh git
+# clone. This script needs to run as root (sudo) for the later
+# chown/systemctl steps, and root doesn't have the ubuntu user's SSH
+# deploy key that /opt/option-decode's origin remote relies on (its git
+# pull output shows a custom "github.com-option-decode" SSH host alias) -
+# so a git clone/fetch from inside this script would fail under sudo.
+# Run `git -C /opt/option-decode pull` yourself first (same first step as
+# any routine Docker deploy), then run this script.
+#
 # Layout:
-#   $BASE/releases/<git-sha>/   - one full checkout+build per deploy
-#   $BASE/current               - symlink to the active release
+#   $BASE/releases/<git-sha>/    - one full checkout+build per deploy
+#   $BASE/current                - symlink to the active release
 #   $BASE/shared/.env.production - env file, symlinked into each release
 #                                   (not duplicated)
 #   $BASE/logs/{api,worker,web}/ - persistent across releases
 #
 # BASE defaults to /opt/option-decode-native - kept deliberately separate
 # from /opt/option-decode (the live Docker checkout) for the whole
-# pre-cutover testing phase (steps 1-7), so this script can never touch
-# the live deploy by accident. Only at the actual cutover (step 9) does
-# BASE get pointed at /opt/option-decode itself, as a conscious decision
-# made in that maintenance window - not a default here.
+# pre-cutover testing phase (steps 1-7). Only at the actual cutover (step
+# 9) does BASE get pointed at /opt/option-decode itself, as a conscious
+# decision made in that maintenance window - not a default here.
 #
-# Usage: BASE=/opt/option-decode-native ./native-deploy.sh [git-ref]
-#        (defaults to origin/main for the ref, /opt/option-decode-native for BASE)
+# Usage: sudo BASE=/opt/option-decode-native ./native-deploy.sh
 
 set -euo pipefail
 
-REPO_URL="git@github.com:nareshsingh64/option-decode.git"
+SOURCE_REPO=/opt/option-decode
 BASE="${BASE:-/opt/option-decode-native}"
 RELEASES="$BASE/releases"
 SHARED="$BASE/shared"
-REF="${1:-origin/main}"
 KEEP_RELEASES=5
 
 mkdir -p "$RELEASES" "$SHARED" "$BASE/logs/api" "$BASE/logs/worker" "$BASE/logs/web"
 
-cd "$BASE"
-if [ ! -d "$BASE/repo" ]; then
-  git clone "$REPO_URL" "$BASE/repo"
-fi
-cd "$BASE/repo"
-git fetch origin
-git checkout "$REF"
-SHA=$(git rev-parse --short HEAD)
-
+SHA=$(git -C "$SOURCE_REPO" rev-parse --short HEAD)
 RELEASE_DIR="$RELEASES/$SHA"
+
 if [ -d "$RELEASE_DIR" ]; then
   echo "Release $SHA already built, reusing $RELEASE_DIR"
 else
-  echo "Building release $SHA into $RELEASE_DIR"
-  cp -a "$BASE/repo" "$RELEASE_DIR"
+  echo "Building release $SHA into $RELEASE_DIR (from $SOURCE_REPO)"
+  mkdir -p "$RELEASE_DIR"
+  rsync -a \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='.next' \
+    --exclude='logs' \
+    "$SOURCE_REPO/" "$RELEASE_DIR/"
   cd "$RELEASE_DIR"
 
   # Same three steps as the Dockerfile, run directly on the host instead
