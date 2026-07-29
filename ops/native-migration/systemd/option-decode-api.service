@@ -1,0 +1,35 @@
+[Unit]
+Description=Option Decode API (Fastify)
+After=network.target mysql.service redis-server.service
+Wants=mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=option-decode
+Group=option-decode
+WorkingDirectory=/opt/option-decode/current
+EnvironmentFile=/opt/option-decode/current/.env.production
+Environment=NODE_ENV=production
+Environment=API_PORT=4000
+Environment=REDIS_URL=redis://127.0.0.1:6379/0
+
+# Matches the api container's startup command in docker-compose.prod.yml
+# exactly: migrate deploy runs on every start before the server boots.
+ExecStartPre=/usr/bin/pnpm --filter @option-decode/db exec prisma migrate deploy --schema prisma/schema.prisma
+ExecStart=/usr/bin/pnpm --filter @option-decode/api exec tsx src/server.ts
+
+StandardOutput=append:/opt/option-decode/logs/api/api.log
+StandardError=append:/opt/option-decode/logs/api/api.log
+
+Restart=on-failure
+RestartSec=5
+
+# Baseline hardening in place of container isolation. Verify during
+# alt-port testing (step 4) that the app doesn't need to write anywhere
+# outside ReadWritePaths - loosen only if something legitimately fails.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/option-decode/logs /opt/option-decode/current
+
+[Install]
+WantedBy=multi-user.target

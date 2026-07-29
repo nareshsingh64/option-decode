@@ -1,0 +1,29 @@
+[Unit]
+Description=Option Decode Worker (BullMQ)
+After=network.target mysql.service redis-server.service
+Wants=mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=option-decode
+Group=option-decode
+WorkingDirectory=/opt/option-decode/current
+EnvironmentFile=/opt/option-decode/current/.env.production
+Environment=NODE_ENV=production
+Environment=API_PORT=4000
+Environment=REDIS_URL=redis://127.0.0.1:6379/0
+
+ExecStart=/usr/bin/pnpm --filter @option-decode/worker exec tsx src/worker.ts
+
+StandardOutput=append:/opt/option-decode/logs/worker/worker.log
+StandardError=append:/opt/option-decode/logs/worker/worker.log
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/option-decode/logs /opt/option-decode/current
+
+[Install]
+WantedBy=multi-user.target

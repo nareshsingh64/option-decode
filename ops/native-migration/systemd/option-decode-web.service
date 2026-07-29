@@ -1,0 +1,28 @@
+[Unit]
+Description=Option Decode Web (Next.js)
+After=network.target option-decode-api.service
+Wants=option-decode-api.service
+
+[Service]
+Type=simple
+User=option-decode
+Group=option-decode
+WorkingDirectory=/opt/option-decode/current
+EnvironmentFile=/opt/option-decode/current/.env.production
+Environment=NODE_ENV=production
+Environment=API_URL=http://127.0.0.1:4000
+
+ExecStart=/usr/bin/pnpm --filter @option-decode/web start
+
+StandardOutput=append:/opt/option-decode/logs/web/web.log
+StandardError=append:/opt/option-decode/logs/web/web.log
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/option-decode/logs /opt/option-decode/current
+
+[Install]
+WantedBy=multi-user.target
