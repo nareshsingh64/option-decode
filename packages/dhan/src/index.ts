@@ -1,5 +1,8 @@
 import type { OptionChainSnapshot, OptionContractTick, UnderlyingDefinition, UnderlyingSymbol } from "@option-decode/types";
 
+export { DhanLiveFeedClient } from "./live-feed.js";
+export type { DhanLiveFeedExchangeSegment, DhanLiveFeedInstrument, DhanLiveFeedOptions, DhanLiveFeedStatus, DhanLiveFeedTick } from "./live-feed.js";
+
 export interface DhanRequestAuditEvent {
   endpoint: string;
   caller: string;

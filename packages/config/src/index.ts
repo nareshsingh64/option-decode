@@ -52,7 +52,21 @@ const envSchema = z.object({
   // seeded weights (e.g. everything left at 1%) can't silently balloon this
   // into capturing the entire F&O stock universe and blow through Dhan's
   // rate limits.
-  STOCK_OPTION_CHAIN_MAX_STOCKS: z.coerce.number().int().positive().default(20)
+  STOCK_OPTION_CHAIN_MAX_STOCKS: z.coerce.number().int().positive().default(20),
+  // Dhan Live Market Feed (WebSocket, Quote mode) - see
+  // @option-decode/dhan/live-feed.ts. Replaces the polling REST calls that
+  // only ever needed LTP/OHLC/volume (worker:spot-price-override,
+  // api:ticker:ltp/ohlc, worker:wave-screener:quote-capture) with a single
+  // persistent ~1s-refresh connection instead. Does NOT touch the
+  // option-chain endpoint (no Greeks over WS). Defaults to disabled: every
+  // consuming call site keeps its existing REST path as a fallback, so
+  // flipping this on is meant to be a pure addition, not a cutover - REST
+  // stays as the safety net for any instrument the feed hasn't reported
+  // fresh data for yet.
+  LIVE_MARKET_FEED_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase()))
 });
 
 export type AppConfig = z.infer<typeof envSchema> & {

@@ -9,9 +9,11 @@ import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
+import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
+import { getLiveTicks } from "./live-tick-cache.js";
 import { registerSimRoutes } from "./sim-routes.js";
 
 const config = loadConfig();
@@ -26,6 +28,10 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
   segment: "IDX_I",
   lotSize: 1
 };
+const KNOWN_LIVE_FEED_SEGMENTS = new Set<DhanLiveFeedExchangeSegment>(["IDX_I", "NSE_EQ", "NSE_FNO", "NSE_CURRENCY", "BSE_EQ", "MCX_COMM", "BSE_CURRENCY", "BSE_FNO"]);
+function toLiveFeedSegment(segment: string): DhanLiveFeedExchangeSegment | undefined {
+  return KNOWN_LIVE_FEED_SEGMENTS.has(segment as DhanLiveFeedExchangeSegment) ? (segment as DhanLiveFeedExchangeSegment) : undefined;
+}
 // Was 5s, which meant the ticker's stale-while-revalidate cache went stale
 // almost as fast as the frontend polled it, so nearly every poll cycle kicked
 // off a fresh Dhan LTP/OHLC round trip. Combined with the worker's own 30s
@@ -161,6 +167,14 @@ const app = Fastify({
   }
 });
 const redisSubscriber = new Redis(config.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  lazyConnect: true
+});
+// Separate from redisSubscriber on purpose - once a connection calls
+// .subscribe(), ioredis restricts it to pub/sub only and regular commands
+// (GET/MGET) throw. This one is for reading the worker's Dhan live feed
+// tick cache (see live-tick-cache.ts).
+const redisCache = new Redis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
   lazyConnect: true
 });
@@ -1705,31 +1719,73 @@ async function getFreshMarketAuxData(symbols: string[]) {
   try {
     const quoteDefinitions = await dhan.resolveQuoteUnderlyings(definitions);
     const quoteUnderlyings = [...quoteDefinitions, INDIA_VIX_UNDERLYING];
-    // Dhan caps Market Quote calls at 1 request/sec ACROSS BOTH the LTP and
-    // OHLC endpoints combined (not 1/sec each) - see
-    // https://docs.dhanhq.co/api/v2/guides/rate-limits. Firing these two
-    // calls concurrently via Promise.all therefore breached the limit on
-    // every single refresh, regardless of how infrequently refreshes
-    // themselves happened. Run them sequentially with a >1s gap instead.
-    const ltpResult = await dhan
-      .getLtpQuotes(quoteUnderlyings, "api:ticker:ltp")
-      .then((value) => ({ status: "fulfilled" as const, value }))
-      .catch((reason) => ({ status: "rejected" as const, reason }));
-    await sleep(1100);
-    const ohlcResult = await dhan
-      .getOhlcQuotes(quoteUnderlyings, "api:ticker:ohlc")
-      .then((value) => ({ status: "fulfilled" as const, value }))
-      .catch((reason) => ({ status: "rejected" as const, reason }));
-    const ltpQuotes = ltpResult.status === "fulfilled" ? ltpResult.value : new Map<string, { lastPrice?: number }>();
-    const ohlcQuotes = ohlcResult.status === "fulfilled" ? ohlcResult.value : new Map<string, { lastPrice?: number; previousClose?: number }>();
-    if (ltpResult.status === "rejected") {
-      app.log.warn({ error: ltpResult.reason }, "Unable to fetch market LTP from Dhan");
+
+    const ltpQuotes = new Map<string, { lastPrice?: number }>();
+    const ohlcQuotes = new Map<string, { lastPrice?: number; previousClose?: number }>();
+    let restUnderlyings = quoteUnderlyings;
+
+    // Prefer the worker's Dhan live feed tick cache (see live-tick-cache.ts)
+    // over a REST round trip - only underlyings the feed doesn't have
+    // fresh data for fall through to the REST path below, unchanged. When
+    // the feed covers everything requested, this skips both REST calls
+    // (and their mandatory 1.1s rate-limit gap) entirely.
+    if (config.LIVE_MARKET_FEED_ENABLED) {
+      const liveKeys = quoteUnderlyings
+        .map((underlying) => {
+          const segment = toLiveFeedSegment(underlying.quoteSegment ?? underlying.segment);
+          return segment ? { segment, securityId: underlying.quoteSecurityId ?? underlying.securityId } : undefined;
+        })
+        .filter((entry): entry is { segment: DhanLiveFeedExchangeSegment; securityId: number } => Boolean(entry));
+      const liveTicks = await getLiveTicks(redisCache, liveKeys);
+
+      const stillNeeded: UnderlyingDefinition[] = [];
+      for (const underlying of quoteUnderlyings) {
+        const segment = toLiveFeedSegment(underlying.quoteSegment ?? underlying.segment);
+        const securityId = underlying.quoteSecurityId ?? underlying.securityId;
+        const tick = segment ? liveTicks.get(`${segment}:${securityId}`) : undefined;
+        if (tick?.ltp !== undefined) {
+          ltpQuotes.set(underlying.key, { lastPrice: tick.ltp });
+          ohlcQuotes.set(underlying.key, { lastPrice: tick.ltp, previousClose: tick.prevClose });
+        } else {
+          stillNeeded.push(underlying);
+        }
+      }
+      restUnderlyings = stillNeeded;
     }
-    if (ohlcResult.status === "rejected") {
-      app.log.warn({ error: ohlcResult.reason }, "Unable to fetch market OHLC from Dhan");
-    }
-    if (ltpResult.status === "rejected" && ohlcResult.status === "rejected") {
-      throw ltpResult.reason;
+
+    if (restUnderlyings.length) {
+      // Dhan caps Market Quote calls at 1 request/sec ACROSS BOTH the LTP
+      // and OHLC endpoints combined (not 1/sec each) - see
+      // https://docs.dhanhq.co/api/v2/guides/rate-limits. Firing these two
+      // calls concurrently via Promise.all therefore breached the limit on
+      // every single refresh, regardless of how infrequently refreshes
+      // themselves happened. Run them sequentially with a >1s gap instead.
+      const ltpResult = await dhan
+        .getLtpQuotes(restUnderlyings, "api:ticker:ltp")
+        .then((value) => ({ status: "fulfilled" as const, value }))
+        .catch((reason) => ({ status: "rejected" as const, reason }));
+      await sleep(1100);
+      const ohlcResult = await dhan
+        .getOhlcQuotes(restUnderlyings, "api:ticker:ohlc")
+        .then((value) => ({ status: "fulfilled" as const, value }))
+        .catch((reason) => ({ status: "rejected" as const, reason }));
+      if (ltpResult.status === "fulfilled") {
+        for (const [key, value] of ltpResult.value) {
+          ltpQuotes.set(key, value);
+        }
+      } else {
+        app.log.warn({ error: ltpResult.reason }, "Unable to fetch market LTP from Dhan");
+      }
+      if (ohlcResult.status === "fulfilled") {
+        for (const [key, value] of ohlcResult.value) {
+          ohlcQuotes.set(key, value);
+        }
+      } else {
+        app.log.warn({ error: ohlcResult.reason }, "Unable to fetch market OHLC from Dhan");
+      }
+      if (ltpResult.status === "rejected" && ohlcResult.status === "rejected" && !ltpQuotes.size && !ohlcQuotes.size) {
+        throw ltpResult.reason;
+      }
     }
 
     const ticker = await Promise.all(quoteDefinitions.map(async (definition) => {

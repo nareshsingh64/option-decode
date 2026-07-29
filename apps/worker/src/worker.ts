@@ -1,14 +1,15 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActiveFnoStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
-import { DhanClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
-import type { DhanOhlcQuote } from "@option-decode/dhan";
+import { DhanClient, DhanLiveFeedClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
+import type { DhanLiveFeedExchangeSegment, DhanLiveFeedInstrument, DhanOhlcQuote } from "@option-decode/dhan";
 import type { MarketAlert, OptionChainSnapshot, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 import Redis from "ioredis";
 import webpush from "web-push";
+import { cacheLiveTick, getLiveTick } from "./live-tick-cache.js";
 import { startSimEodScheduler } from "./sim-eod-mtm.js";
 import { startWaveScreener } from "./wave-screener.js";
 
@@ -60,10 +61,71 @@ console.log("Option Decode worker starting", {
   cronPattern: config.SNAPSHOT_CRON_PATTERN,
   dhanConfigured: Boolean(dhan),
   mockMarketFeedEnabled: config.MOCK_MARKET_FEED_ENABLED,
+  liveMarketFeedEnabled: config.LIVE_MARKET_FEED_ENABLED,
   queue: MARKET_SNAPSHOT_QUEUE,
   retentionDays: config.SNAPSHOT_RETENTION_DAYS,
   pushNotificationsEnabled
 });
+
+// Dhan Live Market Feed (WebSocket) - see @option-decode/dhan/live-feed.ts
+// for the protocol implementation and its own header comment for scope
+// (Quote mode only, no Greeks, not a replacement for option-chain REST
+// capture). Construction is always cheap/side-effect-free (no connection
+// opens until .connect() is called below, gated on
+// LIVE_MARKET_FEED_ENABLED) - keeping the client itself unconditional
+// avoids threading an `| undefined` through every call site that reads
+// from its tick cache.
+const LIVE_FEED_RESYNC_INTERVAL_MS = 30 * 60 * 1000;
+const KNOWN_LIVE_FEED_SEGMENTS = new Set<DhanLiveFeedExchangeSegment>(["IDX_I", "NSE_EQ", "NSE_FNO", "NSE_CURRENCY", "BSE_EQ", "MCX_COMM", "BSE_CURRENCY", "BSE_FNO"]);
+
+function toLiveFeedSegment(segment: string): DhanLiveFeedExchangeSegment | undefined {
+  return KNOWN_LIVE_FEED_SEGMENTS.has(segment as DhanLiveFeedExchangeSegment) ? (segment as DhanLiveFeedExchangeSegment) : undefined;
+}
+
+const liveFeed = new DhanLiveFeedClient({
+  accessToken: config.DHAN_ACCESS_TOKEN,
+  clientId: config.DHAN_CLIENT_ID,
+  onTick: (tick) => {
+    cacheLiveTick(redisPublisher, tick).catch((error) => {
+      console.warn("Failed to cache Dhan live feed tick", { error, segment: tick.exchangeSegment, securityId: tick.securityId });
+    });
+  },
+  onStatus: (status) => {
+    console.log("Dhan live feed status", status);
+  }
+});
+
+// Builds the desired subscription set from the same two universes REST
+// polling already covers - config.feedUnderlyings (resolved through
+// resolveQuoteUnderlyings so MCX commodities subscribe to their futures
+// proxy contract, exactly like getOhlcQuotes/getSpotPriceOverrides
+// already do) plus the active F&O stock universe (NSE_EQ). Safe to call
+// repeatedly - DhanLiveFeedClient.subscribe() is additive/idempotent, so
+// this also picks up F&O universe changes and MCX futures month-rollovers
+// on each periodic call without needing to diff anything itself.
+async function resyncLiveFeedSubscriptions() {
+  try {
+    const underlyings = config.feedUnderlyings
+      .map((configuredUnderlying) => getUnderlyingDefinition(normalizeUnderlyingKey(configuredUnderlying)))
+      .filter((underlying): underlying is UnderlyingDefinition => Boolean(underlying));
+    const resolvedUnderlyings = await dhan.resolveQuoteUnderlyings(underlyings);
+    const indexInstruments: DhanLiveFeedInstrument[] = resolvedUnderlyings
+      .map((underlying) => {
+        const segment = toLiveFeedSegment(underlying.quoteSegment ?? underlying.segment);
+        return segment ? { exchangeSegment: segment, securityId: underlying.quoteSecurityId ?? underlying.securityId } : undefined;
+      })
+      .filter((instrument): instrument is DhanLiveFeedInstrument => Boolean(instrument));
+
+    const stocks = await listActiveFnoStocks();
+    const stockInstruments: DhanLiveFeedInstrument[] = stocks
+      .filter((stock): stock is typeof stock & { securityId: number } => stock.securityId !== undefined)
+      .map((stock) => ({ exchangeSegment: "NSE_EQ" as const, securityId: stock.securityId }));
+
+    liveFeed.subscribe([...indexInstruments, ...stockInstruments]);
+  } catch (error) {
+    console.warn("Unable to resync Dhan live feed subscriptions", { error });
+  }
+}
 
 type MarketSnapshotJobData = {
   trigger: "startup" | "scheduled";
@@ -581,25 +643,54 @@ async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
     return new Map<string, number>();
   }
 
+  const overrides = new Map<string, number>();
+  let remaining = quoteUnderlyings;
+
+  // Prefer the live feed's cached tick (see live-tick-cache.ts) over a
+  // fresh REST call - only the underlyings the feed doesn't have fresh
+  // data for (feed not yet warmed up, or genuinely down) fall through to
+  // the existing REST path below, unchanged.
+  if (config.LIVE_MARKET_FEED_ENABLED) {
+    const stillNeeded: typeof quoteUnderlyings = [];
+    for (const underlying of quoteUnderlyings) {
+      const segment = toLiveFeedSegment(underlying.quoteSegment ?? underlying.segment);
+      const securityId = underlying.quoteSecurityId ?? underlying.securityId;
+      const tick = segment ? await getLiveTick(redisPublisher, segment, securityId) : undefined;
+      if (tick?.ltp !== undefined) {
+        overrides.set(underlying.key, tick.ltp);
+      } else {
+        stillNeeded.push(underlying);
+      }
+    }
+    remaining = stillNeeded;
+  }
+
+  if (!remaining.length) {
+    return overrides;
+  }
+
   await sleep(Math.floor(Math.random() * 2000));
 
-  const toMap = (quotes: Map<string, DhanOhlcQuote>) =>
-    new Map(
-      quoteUnderlyings
-        .map((underlying) => [underlying.key, quotes.get(underlying.key)?.lastPrice] as const)
-        .filter((entry): entry is readonly [string, number] => typeof entry[1] === "number")
-    );
+  const mergeInto = (quotes: Map<string, DhanOhlcQuote>) => {
+    for (const underlying of remaining) {
+      const lastPrice = quotes.get(underlying.key)?.lastPrice;
+      if (typeof lastPrice === "number") {
+        overrides.set(underlying.key, lastPrice);
+      }
+    }
+    return overrides;
+  };
 
   try {
-    return toMap(await dhan.getOhlcQuotes(quoteUnderlyings, "worker:spot-price-override"));
+    return mergeInto(await dhan.getOhlcQuotes(remaining, "worker:spot-price-override"));
   } catch (firstError) {
     console.warn("Futures quote override fetch failed, retrying once after backoff", { error: firstError instanceof Error ? firstError.message : firstError });
     await sleep(2500);
     try {
-      return toMap(await dhan.getOhlcQuotes(quoteUnderlyings, "worker:spot-price-override"));
+      return mergeInto(await dhan.getOhlcQuotes(remaining, "worker:spot-price-override"));
     } catch (error) {
       console.warn("Unable to fetch futures quote overrides; option-chain spot prices may use generic underlyings", error);
-      return new Map<string, number>();
+      return overrides;
     }
   }
 }
@@ -774,10 +865,28 @@ async function startWorker() {
 
   // Elliott Wave background screener: self-contained universe sync + stock
   // quote capture + scan schedulers - see wave-screener.ts.
-  const waveScreener = await startWaveScreener(redisConnection, dhan, config.MOCK_MARKET_FEED_ENABLED, config.feedUnderlyings);
+  const waveScreener = await startWaveScreener(redisConnection, dhan, config.MOCK_MARKET_FEED_ENABLED, config.feedUnderlyings, config.LIVE_MARKET_FEED_ENABLED, redisPublisher);
+
+  // Dhan Live Market Feed (WebSocket) - off by default (LIVE_MARKET_FEED_ENABLED),
+  // and never opened in mock mode (no real Dhan credentials to connect
+  // with, same reasoning as the REST calls skipped elsewhere in mock mode).
+  let liveFeedResyncTimer: ReturnType<typeof setInterval> | undefined;
+  if (config.LIVE_MARKET_FEED_ENABLED && !config.MOCK_MARKET_FEED_ENABLED) {
+    liveFeed.connect();
+    await resyncLiveFeedSubscriptions();
+    liveFeedResyncTimer = setInterval(() => {
+      resyncLiveFeedSubscriptions().catch((error) => {
+        console.warn("Dhan live feed subscription resync failed", { error });
+      });
+    }, LIVE_FEED_RESYNC_INTERVAL_MS);
+  }
 
   async function shutdown(signal: NodeJS.Signals) {
     console.log("Shutting down market snapshot worker", { signal });
+    if (liveFeedResyncTimer) {
+      clearInterval(liveFeedResyncTimer);
+    }
+    liveFeed.close();
     await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), waveScreener.close(), redisPublisher.quit()]);
     process.exit(0);
   }

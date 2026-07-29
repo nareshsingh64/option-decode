@@ -21,6 +21,8 @@ import type { DhanClient } from "@option-decode/dhan";
 import type { SpotPricePoint } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
+import type Redis from "ioredis";
+import { getLiveTicks } from "./live-tick-cache.js";
 
 const UNIVERSE_SYNC_QUEUE = "wave-fno-universe-sync";
 const UNIVERSE_SYNC_JOB_NAME = "sync";
@@ -60,7 +62,14 @@ interface WaveScreenerHandles {
   close(): Promise<void>;
 }
 
-export async function startWaveScreener(redisConnection: { url: string; maxRetriesPerRequest: null }, dhan: DhanClient, mockMarketFeedEnabled: boolean, feedUnderlyings: string[]): Promise<WaveScreenerHandles> {
+export async function startWaveScreener(
+  redisConnection: { url: string; maxRetriesPerRequest: null },
+  dhan: DhanClient,
+  mockMarketFeedEnabled: boolean,
+  feedUnderlyings: string[],
+  liveMarketFeedEnabled: boolean,
+  tickCacheRedis: Redis
+): Promise<WaveScreenerHandles> {
   const universeSyncQueue = new Queue(UNIVERSE_SYNC_QUEUE, {
     connection: redisConnection,
     defaultJobOptions: {
@@ -116,24 +125,47 @@ export async function startWaveScreener(redisConnection: { url: string; maxRetri
         return;
       }
 
-      const quotes = await dhan.getEquityQuotes(
-        resolvable.map((stock) => ({ symbol: stock.symbol, securityId: stock.securityId })),
-        "worker:wave-screener:quote-capture"
-      );
       const now = new Date();
-      const points = resolvable
-        .map((stock) => {
-          const quote = quotes.get(stock.symbol);
-          if (!quote?.lastPrice) {
-            return undefined;
+      const points: Array<{ underlyingSymbol: string; time: Date; price: number; volume?: number }> = [];
+      let stillNeeded = resolvable;
+
+      // Prefer the live feed's cached ticks (see live-tick-cache.ts, fed by
+      // worker.ts's DhanLiveFeedClient) over a REST round trip - only
+      // stocks the feed doesn't have fresh data for yet fall through to
+      // the original getEquityQuotes REST call below.
+      if (liveMarketFeedEnabled) {
+        const liveTicks = await getLiveTicks(
+          tickCacheRedis,
+          resolvable.map((stock) => ({ segment: "NSE_EQ" as const, securityId: stock.securityId }))
+        );
+        const missing: typeof resolvable = [];
+        for (const stock of resolvable) {
+          const tick = liveTicks.get(`NSE_EQ:${stock.securityId}`);
+          if (tick?.ltp !== undefined) {
+            points.push({ underlyingSymbol: stock.symbol, time: now, price: tick.ltp, volume: tick.volume });
+          } else {
+            missing.push(stock);
           }
-          return { underlyingSymbol: stock.symbol, time: now, price: quote.lastPrice, volume: quote.volume };
-        })
-        .filter((point): point is NonNullable<typeof point> => point !== undefined);
+        }
+        stillNeeded = missing;
+      }
+
+      if (stillNeeded.length) {
+        const quotes = await dhan.getEquityQuotes(
+          stillNeeded.map((stock) => ({ symbol: stock.symbol, securityId: stock.securityId })),
+          "worker:wave-screener:quote-capture"
+        );
+        for (const stock of stillNeeded) {
+          const quote = quotes.get(stock.symbol);
+          if (quote?.lastPrice) {
+            points.push({ underlyingSymbol: stock.symbol, time: now, price: quote.lastPrice, volume: quote.volume });
+          }
+        }
+      }
 
       const stored = await recordWavePricePoints(points);
       if (stored > 0) {
-        console.log("Captured F&O stock quotes for Elliott Wave screener", { requested: resolvable.length, quoted: quotes.size, stored });
+        console.log("Captured F&O stock quotes for Elliott Wave screener", { requested: resolvable.length, viaLiveFeed: resolvable.length - stillNeeded.length, viaRest: stillNeeded.length, stored });
       }
     },
     { connection: redisConnection, concurrency: 1 }
