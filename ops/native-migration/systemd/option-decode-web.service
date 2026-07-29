@@ -27,6 +27,7 @@ RestartSec=5
 
 NoNewPrivileges=true
 ProtectSystem=strict
+PrivateTmp=true
 ReadWritePaths=/opt/option-decode-native/logs /opt/option-decode-native/current
 
 [Install]
