@@ -69,6 +69,31 @@ type MarketSnapshotJobData = {
   trigger: "startup" | "scheduled";
 };
 
+// Front-month/front-week expiry lists change at most once a week (index
+// weeklies) or once a month (stocks/MCX commodities), and only overnight
+// after the prior expiry settles - never mid-session. Fetching this fresh
+// from Dhan on every 30s captureOnce() cycle, for every underlying, was
+// pure waste: the DhanApiRequestLog audit (2026-07-29) showed
+// worker:index-capture:expiry-list alone was ~26% of all Dhan traffic.
+// Cache it in-process per underlying; worst case staleness is a brand-new
+// expiry taking up to EXPIRY_LIST_CACHE_MS to appear, which is harmless
+// since the existing front expiry stays valid until it actually settles.
+// A failed fetch is never cached, so a 429 here just retries next cycle
+// same as before.
+const EXPIRY_LIST_CACHE_MS = 60 * 60 * 1000;
+const expiryListCache = new Map<string, { expiresAt: number; value: string[] }>();
+
+async function getCachedExpiryList(underlying: UnderlyingDefinition, caller: string): Promise<string[]> {
+  const cached = expiryListCache.get(underlying.key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const expiries = await dhan.getExpiryList(underlying, caller);
+  expiryListCache.set(underlying.key, { expiresAt: Date.now() + EXPIRY_LIST_CACHE_MS, value: expiries });
+  return expiries;
+}
+
 async function captureOnce() {
   if (config.MOCK_MARKET_FEED_ENABLED) {
     if (!isMarketSessionOpen("IDX_I")) {
@@ -129,7 +154,7 @@ async function captureOnce() {
     let expiries: string[];
     let expiry: string | undefined;
     try {
-      expiries = await dhan.getExpiryList(underlying, "worker:index-capture:expiry-list");
+      expiries = await getCachedExpiryList(underlying, "worker:index-capture:expiry-list");
       expiry = expiries[0];
     } catch (error) {
       console.warn("Unable to fetch expiry list for underlying; skipping this cycle", { underlyingKey, error });
@@ -298,7 +323,7 @@ async function captureStockOptionChains() {
     };
 
     try {
-      const expiries = await dhan.getExpiryList(underlying, "worker:stock-capture:expiry-list");
+      const expiries = await getCachedExpiryList(underlying, "worker:stock-capture:expiry-list");
       const expiry = expiries[0];
       if (!expiry) {
         console.warn("Skipping weighted F&O stock with no expiry", { symbol: stock.symbol });

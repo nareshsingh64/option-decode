@@ -35,7 +35,15 @@ const INDIA_VIX_UNDERLYING: UnderlyingDefinition = {
 // call volume directly.
 const MARKET_AUX_CACHE_MS = 25_000;
 const MARKET_SNAPSHOT_CACHE_MS = 10_000;
-const MARKET_EXPIRIES_CACHE_MS = 10_000;
+// Expiry lists only change at rollover - once a week for index weeklies,
+// once a month for stocks/MCX commodities - and only overnight, never
+// mid-session. A 10s TTL was effectively no caching at all: the
+// DhanApiRequestLog audit (2026-07-29) showed api:tradable-expiries +
+// worker:index-capture:expiry-list together accounting for ~37% of all
+// Dhan traffic. An hour of staleness is harmless here - the current front
+// expiry stays valid until it actually settles, so the worst case is a
+// brand-new expiry taking up to an hour to appear as selectable.
+const MARKET_EXPIRIES_CACHE_MS = 60 * 60 * 1000;
 const MARKET_PULSE_CACHE_MS = 10_000;
 // enrichZonesWithAvgSellPrice() runs one historical-tick-history DB query
 // per support/resistance zone (typically 4-10 zones), in parallel. Unlike
