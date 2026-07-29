@@ -105,24 +105,49 @@ async function captureOnce() {
       continue;
     }
 
-    const expiries = await dhan.getExpiryList(underlying);
-    const expiry = expiries[0];
+    // This primary current-expiry capture used to be unguarded, unlike
+    // every other step in this function (next-expiry below, extra
+    // expiries for paper trading, stock option chains). One Dhan failure
+    // here (e.g. a 429) would propagate all the way out of captureOnce(),
+    // failing the WHOLE BullMQ job and triggering its full retry (attempts:
+    // 3) - which re-runs captureOnce() from the top, re-fetching every
+    // underlying that had already succeeded this cycle. A single rate-limit
+    // hit on one underlying was turning into up to 3x the Dhan traffic for
+    // the entire cycle, which is what was sustaining a self-reinforcing
+    // 429 pattern in production (2026-07-29, see incident notes). Now a
+    // failure here just skips this one underlying for this one cycle, the
+    // same resilience already used everywhere else in this function.
+    let expiries: string[];
+    let expiry: string | undefined;
+    try {
+      expiries = await dhan.getExpiryList(underlying);
+      expiry = expiries[0];
+    } catch (error) {
+      console.warn("Unable to fetch expiry list for underlying; skipping this cycle", { underlyingKey, error });
+      continue;
+    }
     if (!expiry) {
       console.warn("Skipping underlying with no expiry", { underlyingKey });
       continue;
     }
 
-    const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
-    const snapshotId = await saveOptionChainSnapshot(snapshot);
-    await monitorPaperTrading(snapshot);
-    await publishSnapshotSaved(snapshotId, snapshot);
-    await sendCriticalPushAlerts(snapshot);
-    console.log("Saved Dhan market snapshot", {
-      snapshotId,
-      underlying: snapshot.underlyingSymbol,
-      expiry: snapshot.expiry,
-      ticks: snapshot.ticks.length
-    });
+    let snapshot: OptionChainSnapshot;
+    try {
+      snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
+      const snapshotId = await saveOptionChainSnapshot(snapshot);
+      await monitorPaperTrading(snapshot);
+      await publishSnapshotSaved(snapshotId, snapshot);
+      await sendCriticalPushAlerts(snapshot);
+      console.log("Saved Dhan market snapshot", {
+        snapshotId,
+        underlying: snapshot.underlyingSymbol,
+        expiry: snapshot.expiry,
+        ticks: snapshot.ticks.length
+      });
+    } catch (error) {
+      console.warn("Unable to capture primary expiry for underlying; skipping this cycle", { underlyingKey, expiry, error });
+      continue;
+    }
 
     const capturedExpiries = new Set([expiry]);
 
