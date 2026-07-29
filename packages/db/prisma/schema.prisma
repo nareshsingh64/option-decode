@@ -346,6 +346,35 @@ model OptionContractTick {
   @@index([tickTime])
 }
 
+// Audit trail for every authenticated Dhan API request, across both the
+// worker (index/commodity capture, paper-trading extra expiries, spot-price
+// overrides, the F&O stock capture framework, the Elliott Wave screener's
+// quote capture) and the api server (ticker, live-fallback fetches for
+// uncaptured expiries, margin calculator). Every one of these already funnels
+// through DhanClient's single postDhan() choke point in @option-decode/dhan,
+// which is where this gets written via the onRequest callback - fire-and-
+// forget (never awaited on the request path), so a logging failure or a
+// slow insert can never add latency to, or break, the actual Dhan call.
+// caller identifies which feature/call-site issued the request (e.g.
+// "worker:index-capture:current", "api:ticker") - see the DhanClient call
+// sites for the exact tag list. Built specifically to answer "how much of
+// our Dhan budget is each feature using, and when" before deciding whether
+// to enable the F&O stock capture framework (see FnoStock.indexWeightPercent).
+model DhanApiRequestLog {
+  id          String   @id @default(cuid())
+  requestedAt DateTime @default(now())
+  endpoint    String
+  caller      String
+  statusCode  Int?
+  success     Boolean
+  durationMs  Int
+  errorMessage String? @db.VarChar(500)
+
+  @@index([requestedAt])
+  @@index([caller, requestedAt])
+  @@index([endpoint, requestedAt])
+}
+
 model PressureScore {
   id               String              @id @default(cuid())
   snapshotId       String

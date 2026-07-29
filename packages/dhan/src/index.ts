@@ -1,16 +1,35 @@
 import type { OptionChainSnapshot, OptionContractTick, UnderlyingDefinition, UnderlyingSymbol } from "@option-decode/types";
 
+export interface DhanRequestAuditEvent {
+  endpoint: string;
+  caller: string;
+  statusCode?: number;
+  success: boolean;
+  durationMs: number;
+  errorMessage?: string;
+}
+
 export interface DhanClientOptions {
   baseUrl: string;
   clientId: string;
   accessToken: string;
   requestTimeoutMs?: number;
+  // Fired once per authenticated Dhan request (success or failure), from
+  // the single postDhan() choke point every public method below routes
+  // through. Never awaited on the request path - a slow or failing
+  // onRequest can't add latency to, or break, the actual Dhan call. Kept
+  // as a plain callback (rather than this package depending on
+  // @option-decode/db directly) so this client stays a generic, DB-agnostic
+  // Dhan API wrapper; callers wire this to logDhanApiRequest.
+  onRequest?: (event: DhanRequestAuditEvent) => void;
 }
 
 export interface DhanOptionChainRequest {
   underlying: UnderlyingDefinition;
   expiry: string;
   spotPriceOverride?: number;
+  // Which feature/call-site issued this request - see DhanApiRequestLog.
+  caller: string;
 }
 
 export interface DhanOhlcQuote {
@@ -215,11 +234,15 @@ export function getSupportedUnderlyingKeys(): string[] {
 export class DhanClient {
   constructor(private readonly options: DhanClientOptions) {}
 
-  async getExpiryList(underlying: UnderlyingDefinition): Promise<string[]> {
-    const payload = await this.postDhan<unknown>("/v2/optionchain/expirylist", {
-      UnderlyingScrip: underlying.securityId,
-      UnderlyingSeg: underlying.segment
-    });
+  async getExpiryList(underlying: UnderlyingDefinition, caller: string): Promise<string[]> {
+    const payload = await this.postDhan<unknown>(
+      "/v2/optionchain/expirylist",
+      {
+        UnderlyingScrip: underlying.securityId,
+        UnderlyingSeg: underlying.segment
+      },
+      caller
+    );
 
     if (!Array.isArray(payload) || payload.length === 0) {
       throw new DhanApiError(`No expiries returned for ${underlying.key}`);
@@ -229,11 +252,15 @@ export class DhanClient {
   }
 
   async getOptionChain(request: DhanOptionChainRequest): Promise<OptionChainSnapshot> {
-    const raw = await this.postDhan<DhanOptionChainResponse>("/v2/optionchain", {
-      UnderlyingScrip: request.underlying.securityId,
-      UnderlyingSeg: request.underlying.segment,
-      Expiry: request.expiry
-    });
+    const raw = await this.postDhan<DhanOptionChainResponse>(
+      "/v2/optionchain",
+      {
+        UnderlyingScrip: request.underlying.securityId,
+        UnderlyingSeg: request.underlying.segment,
+        Expiry: request.expiry
+      },
+      request.caller
+    );
 
     const snapshot = normalizeOptionChain(raw, request.underlying, request.expiry);
     if (!request.spotPriceOverride) {
@@ -252,10 +279,14 @@ export class DhanClient {
     };
   }
 
-  async getLastTradedPrice(segment: string, securityId: number): Promise<number | undefined> {
-    const payload = await this.postDhan<DhanLtpResponse>("/v2/marketfeed/ltp", {
-      [segment]: [securityId]
-    });
+  async getLastTradedPrice(segment: string, securityId: number, caller: string): Promise<number | undefined> {
+    const payload = await this.postDhan<DhanLtpResponse>(
+      "/v2/marketfeed/ltp",
+      {
+        [segment]: [securityId]
+      },
+      caller
+    );
     return toNumber(payload[segment]?.[String(securityId)]?.last_price);
   }
 
@@ -278,13 +309,13 @@ export class DhanClient {
     });
   }
 
-  async getLtpQuotes(underlyings: UnderlyingDefinition[]): Promise<Map<string, DhanOhlcQuote>> {
+  async getLtpQuotes(underlyings: UnderlyingDefinition[], caller: string): Promise<Map<string, DhanOhlcQuote>> {
     const grouped = underlyings.reduce<Record<string, number[]>>((groups, underlying) => {
       addQuoteSecurityIds(groups, underlying);
       return groups;
     }, {});
 
-    const payload = await this.postDhan<DhanLtpResponse>("/v2/marketfeed/ltp", grouped);
+    const payload = await this.postDhan<DhanLtpResponse>("/v2/marketfeed/ltp", grouped, caller);
     const quotes = new Map<string, DhanOhlcQuote>();
 
     for (const underlying of underlyings) {
@@ -302,13 +333,13 @@ export class DhanClient {
     return quotes;
   }
 
-  async getOhlcQuotes(underlyings: UnderlyingDefinition[]): Promise<Map<string, DhanOhlcQuote>> {
+  async getOhlcQuotes(underlyings: UnderlyingDefinition[], caller: string): Promise<Map<string, DhanOhlcQuote>> {
     const grouped = underlyings.reduce<Record<string, number[]>>((groups, underlying) => {
       addQuoteSecurityIds(groups, underlying);
       return groups;
     }, {});
 
-    const payload = await this.postDhan<DhanOhlcResponse>("/v2/marketfeed/ohlc", grouped);
+    const payload = await this.postDhan<DhanOhlcResponse>("/v2/marketfeed/ohlc", grouped, caller);
     const quotes = new Map<string, DhanOhlcQuote>();
 
     for (const underlying of underlyings) {
@@ -333,7 +364,7 @@ export class DhanClient {
   // not any specific derivative's. Chunked at Dhan's documented per-request
   // instrument cap (1000); our F&O stock universe is far smaller than that
   // today, so this will normally run as a single request.
-  async getEquityQuotes(equities: Array<{ symbol: string; securityId: number }>): Promise<Map<string, DhanQuoteSnapshot>> {
+  async getEquityQuotes(equities: Array<{ symbol: string; securityId: number }>, caller: string): Promise<Map<string, DhanQuoteSnapshot>> {
     const quotes = new Map<string, DhanQuoteSnapshot>();
     if (!equities.length) {
       return quotes;
@@ -342,9 +373,13 @@ export class DhanClient {
     const EQUITY_QUOTE_CHUNK_SIZE = 1000;
     for (let start = 0; start < equities.length; start += EQUITY_QUOTE_CHUNK_SIZE) {
       const chunk = equities.slice(start, start + EQUITY_QUOTE_CHUNK_SIZE);
-      const payload = await this.postDhan<DhanQuoteResponse>("/v2/marketfeed/quote", {
-        NSE_EQ: chunk.map((equity) => equity.securityId)
-      });
+      const payload = await this.postDhan<DhanQuoteResponse>(
+        "/v2/marketfeed/quote",
+        {
+          NSE_EQ: chunk.map((equity) => equity.securityId)
+        },
+        caller
+      );
       const segmentQuotes = payload.NSE_EQ ?? {};
       for (const equity of chunk) {
         const raw = segmentQuotes[String(equity.securityId)];
@@ -366,24 +401,28 @@ export class DhanClient {
   // strategy passed together). Never used to block or size a paper trade -
   // callers should treat a thrown/failed call as "margin unavailable" and
   // continue, not as a reason to reject the fill.
-  async calculateMultiOrderMargin(legs: DhanMarginLegInput[]): Promise<DhanMultiOrderMarginResult> {
+  async calculateMultiOrderMargin(legs: DhanMarginLegInput[], caller: string): Promise<DhanMultiOrderMarginResult> {
     if (legs.length === 0) {
       throw new DhanApiError("calculateMultiOrderMargin requires at least one leg.");
     }
 
-    const raw = await this.postDhan<Record<string, unknown>>("/v2/margincalculator/multi", {
-      includePosition: false,
-      includeOrders: false,
-      dhanClientId: this.options.clientId,
-      scripts: legs.map((leg) => ({
-        exchangeSegment: leg.exchangeSegment ?? "NSE_FNO",
-        transactionType: leg.transactionType,
-        quantity: leg.quantity,
-        productType: leg.productType ?? "INTRADAY",
-        securityId: leg.securityId,
-        price: leg.price
-      }))
-    });
+    const raw = await this.postDhan<Record<string, unknown>>(
+      "/v2/margincalculator/multi",
+      {
+        includePosition: false,
+        includeOrders: false,
+        dhanClientId: this.options.clientId,
+        scripts: legs.map((leg) => ({
+          exchangeSegment: leg.exchangeSegment ?? "NSE_FNO",
+          transactionType: leg.transactionType,
+          quantity: leg.quantity,
+          productType: leg.productType ?? "INTRADAY",
+          securityId: leg.securityId,
+          price: leg.price
+        }))
+      },
+      caller
+    );
 
     return {
       totalMargin: toNumber(raw.total_margin ?? raw.totalMargin) ?? 0,
@@ -406,41 +445,76 @@ export class DhanClient {
     };
   }
 
-  private async postDhan<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  // caller identifies which feature/call-site issued this request (see
+  // DhanApiRequestLog in packages/db for the full rationale) - every
+  // public method below must pass one through. Timing/outcome is recorded
+  // via onRequest regardless of success or failure, fire-and-forget so
+  // auditing can never affect the actual Dhan call.
+  private async postDhan<T>(path: string, body: Record<string, unknown>, caller: string): Promise<T> {
     if (!this.options.clientId || !this.options.accessToken) {
       throw new DhanApiError("Missing Dhan credentials. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN.");
     }
     assertAccessTokenIsUsable(this.options.accessToken);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.options.requestTimeoutMs ?? 4_000);
-    const response = await fetch(`${this.options.baseUrl}${path}`, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(body),
-      signal: controller.signal
-    }).catch((error: unknown) => {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new DhanApiError(`Dhan request ${path} timed out.`);
-      }
-      throw error;
-    }).finally(() => {
-      clearTimeout(timeout);
-    });
+    const startedAt = Date.now();
+    let statusCode: number | undefined;
 
-    const responseText = await response.text();
-    let decoded: unknown;
     try {
-      decoded = responseText ? JSON.parse(responseText) : {};
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.options.requestTimeoutMs ?? 4_000);
+      const response = await fetch(`${this.options.baseUrl}${path}`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(body),
+        signal: controller.signal
+      }).catch((error: unknown) => {
+        if (error instanceof Error && error.name === "AbortError") {
+          throw new DhanApiError(`Dhan request ${path} timed out.`);
+        }
+        throw error;
+      }).finally(() => {
+        clearTimeout(timeout);
+      });
+
+      statusCode = response.status;
+      const responseText = await response.text();
+      let decoded: unknown;
+      try {
+        decoded = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new DhanApiError(`Dhan request ${path} returned non-JSON HTTP ${response.status}: ${responseText.slice(0, 200)}`);
+      }
+
+      if (!response.ok) {
+        throw new DhanApiError(`Dhan request ${path} failed: HTTP ${response.status} ${JSON.stringify(decoded).slice(0, 500)}`);
+      }
+
+      this.recordRequestAudit({ endpoint: path, caller, statusCode, success: true, durationMs: Date.now() - startedAt });
+      return unwrapDhanPayload(decoded) as T;
+    } catch (error) {
+      this.recordRequestAudit({
+        endpoint: path,
+        caller,
+        statusCode,
+        success: false,
+        durationMs: Date.now() - startedAt,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
+  private recordRequestAudit(event: DhanRequestAuditEvent) {
+    if (!this.options.onRequest) {
+      return;
+    }
+    try {
+      this.options.onRequest(event);
     } catch {
-      throw new DhanApiError(`Dhan request ${path} returned non-JSON HTTP ${response.status}: ${responseText.slice(0, 200)}`);
+      // An audit callback throwing is a bug in the callback, not the Dhan
+      // call that just happened - never let it surface as if the Dhan
+      // request itself failed.
     }
-
-    if (!response.ok) {
-      throw new DhanApiError(`Dhan request ${path} failed: HTTP ${response.status} ${JSON.stringify(decoded).slice(0, 500)}`);
-    }
-
-    return unwrapDhanPayload(decoded) as T;
   }
 }
 

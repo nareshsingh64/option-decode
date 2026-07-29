@@ -116,7 +116,10 @@ export async function startWaveScreener(redisConnection: { url: string; maxRetri
         return;
       }
 
-      const quotes = await dhan.getEquityQuotes(resolvable.map((stock) => ({ symbol: stock.symbol, securityId: stock.securityId })));
+      const quotes = await dhan.getEquityQuotes(
+        resolvable.map((stock) => ({ symbol: stock.symbol, securityId: stock.securityId })),
+        "worker:wave-screener:quote-capture"
+      );
       const now = new Date();
       const points = resolvable
         .map((stock) => {

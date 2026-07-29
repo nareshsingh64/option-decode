@@ -1,6 +1,6 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanOhlcQuote } from "@option-decode/dhan";
@@ -42,7 +42,16 @@ if (pushNotificationsEnabled) {
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
   clientId: config.DHAN_CLIENT_ID,
-  accessToken: config.DHAN_ACCESS_TOKEN
+  accessToken: config.DHAN_ACCESS_TOKEN,
+  // Fire-and-forget audit log of every Dhan request this worker makes -
+  // see DhanApiRequestLog in @option-decode/db. Not awaited, and wrapped
+  // so a DB hiccup here can never surface as if the Dhan call itself
+  // failed.
+  onRequest: (event) => {
+    logDhanApiRequest(event).catch((error) => {
+      console.warn("Failed to write Dhan API request audit log", { error, caller: event.caller });
+    });
+  }
 });
 
 console.log("Option Decode worker starting", {
@@ -120,7 +129,7 @@ async function captureOnce() {
     let expiries: string[];
     let expiry: string | undefined;
     try {
-      expiries = await dhan.getExpiryList(underlying);
+      expiries = await dhan.getExpiryList(underlying, "worker:index-capture:expiry-list");
       expiry = expiries[0];
     } catch (error) {
       console.warn("Unable to fetch expiry list for underlying; skipping this cycle", { underlyingKey, error });
@@ -133,7 +142,7 @@ async function captureOnce() {
 
     let snapshot: OptionChainSnapshot;
     try {
-      snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
+      snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key), caller: "worker:index-capture:current" });
       const snapshotId = await saveOptionChainSnapshot(snapshot);
       await monitorPaperTrading(snapshot);
       await publishSnapshotSaved(snapshotId, snapshot);
@@ -171,7 +180,7 @@ async function captureOnce() {
     const nextExpiry = underlying.segment === "MCX_COMM" ? undefined : expiries[1];
     if (nextExpiry) {
       try {
-        const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: quoteOverrides.get(underlying.key) });
+        const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: quoteOverrides.get(underlying.key), caller: "worker:index-capture:next" });
         const nextSnapshotId = await saveOptionChainSnapshot(nextSnapshot);
         await monitorPaperTrading(nextSnapshot);
         await publishSnapshotSaved(nextSnapshotId, nextSnapshot);
@@ -217,7 +226,7 @@ async function captureExtraExpiriesForPaperTrading(underlying: UnderlyingDefinit
     }
 
     try {
-      const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride });
+      const snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride, caller: "worker:paper-trading:extra-expiry" });
       const snapshotId = await saveOptionChainSnapshot(snapshot);
       await monitorPaperTrading(snapshot);
       console.log("Saved extra Dhan market snapshot for open paper trading activity", {
@@ -289,14 +298,14 @@ async function captureStockOptionChains() {
     };
 
     try {
-      const expiries = await dhan.getExpiryList(underlying);
+      const expiries = await dhan.getExpiryList(underlying, "worker:stock-capture:expiry-list");
       const expiry = expiries[0];
       if (!expiry) {
         console.warn("Skipping weighted F&O stock with no expiry", { symbol: stock.symbol });
         continue;
       }
 
-      const snapshot = await dhan.getOptionChain({ underlying, expiry });
+      const snapshot = await dhan.getOptionChain({ underlying, expiry, caller: "worker:stock-capture" });
       const snapshotId = await saveOptionChainSnapshot(snapshot);
       await monitorPaperTrading(snapshot);
       console.log("Saved Dhan option chain snapshot for weighted F&O stock", {
@@ -472,7 +481,8 @@ async function recordMarginForFilledLegs(filledLegs: FilledPaperLeg[]) {
           securityId: groupLeg.securityId as string,
           price: groupLeg.entryPrice,
           exchangeSegment: getFnoExchangeSegment(groupLeg.underlyingSymbol)
-        }))
+        })),
+        "worker:paper-trading:margin"
       );
 
       await recordPositionMargin(
@@ -556,12 +566,12 @@ async function getSpotPriceOverrides(underlyings: UnderlyingDefinition[]) {
     );
 
   try {
-    return toMap(await dhan.getOhlcQuotes(quoteUnderlyings));
+    return toMap(await dhan.getOhlcQuotes(quoteUnderlyings, "worker:spot-price-override"));
   } catch (firstError) {
     console.warn("Futures quote override fetch failed, retrying once after backoff", { error: firstError instanceof Error ? firstError.message : firstError });
     await sleep(2500);
     try {
-      return toMap(await dhan.getOhlcQuotes(quoteUnderlyings));
+      return toMap(await dhan.getOhlcQuotes(quoteUnderlyings, "worker:spot-price-override"));
     } catch (error) {
       console.warn("Unable to fetch futures quote overrides; option-chain spot prices may use generic underlyings", error);
       return new Map<string, number>();

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
 import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
@@ -136,7 +136,16 @@ interface MarketStreamClient {
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
   clientId: config.DHAN_CLIENT_ID,
-  accessToken: config.DHAN_ACCESS_TOKEN
+  accessToken: config.DHAN_ACCESS_TOKEN,
+  // Fire-and-forget audit log of every Dhan request this api server makes
+  // - see DhanApiRequestLog in @option-decode/db. Not awaited, and wrapped
+  // so a DB hiccup here can never surface as if the Dhan call itself
+  // failed.
+  onRequest: (event) => {
+    logDhanApiRequest(event).catch((error) => {
+      app.log.warn({ error, caller: event.caller }, "Failed to write Dhan API request audit log");
+    });
+  }
 });
 const app = Fastify({
   logger: {
@@ -1064,7 +1073,8 @@ async function tryEstimateOrderMargin(orderId: string, groupId: string | null): 
         securityId: leg.securityId as string,
         price: leg.entryPrice,
         exchangeSegment: getFnoExchangeSegment(leg.underlyingSymbol)
-      }))
+      })),
+      "api:paper-trading:margin"
     );
 
     await recordOrderMargin(
@@ -1454,7 +1464,7 @@ async function getExpiriesOrEmpty(underlyingSymbol: string) {
     }
 
     const underlying = getUnderlyingDefinition(underlyingSymbol);
-    return underlying ? await dhan.getExpiryList(underlying) : [];
+    return underlying ? await dhan.getExpiryList(underlying, "api:expiries-or-empty") : [];
   } catch (error) {
     app.log.warn({ error, underlyingSymbol }, "Unable to list stored expiries");
     return [];
@@ -1481,7 +1491,7 @@ async function getTradableExpiriesOrEmpty(underlyingSymbol: string) {
   }
 
   try {
-    const liveExpiries = await dhan.getExpiryList(underlying);
+    const liveExpiries = await dhan.getExpiryList(underlying, "api:tradable-expiries");
     if (liveExpiries.length) {
       return liveExpiries;
     }
@@ -1549,7 +1559,7 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
 
       const liveExpiry = expiry ?? storedSnapshot.expiry;
       try {
-        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: liveExpiry, spotPriceOverride });
+        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: liveExpiry, spotPriceOverride, caller: "api:live-refresh-stale" });
         persistLiveSnapshotInBackground(liveSnapshot, underlyingSymbol, liveExpiry);
         return liveSnapshot;
       } catch (liveError) {
@@ -1560,9 +1570,9 @@ async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string
     }
 
     if (underlying) {
-      const selectedExpiry = expiry ?? (await dhan.getExpiryList(underlying))[0];
+      const selectedExpiry = expiry ?? (await dhan.getExpiryList(underlying, "api:live-fetch-uncaptured:expiry-list"))[0];
       if (selectedExpiry) {
-        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: selectedExpiry, spotPriceOverride });
+        const liveSnapshot = await dhan.getOptionChain({ underlying, expiry: selectedExpiry, spotPriceOverride, caller: "api:live-fetch-uncaptured" });
         persistLiveSnapshotInBackground(liveSnapshot, underlyingSymbol, selectedExpiry);
         return liveSnapshot;
       }
@@ -1694,12 +1704,12 @@ async function getFreshMarketAuxData(symbols: string[]) {
     // every single refresh, regardless of how infrequently refreshes
     // themselves happened. Run them sequentially with a >1s gap instead.
     const ltpResult = await dhan
-      .getLtpQuotes(quoteUnderlyings)
+      .getLtpQuotes(quoteUnderlyings, "api:ticker:ltp")
       .then((value) => ({ status: "fulfilled" as const, value }))
       .catch((reason) => ({ status: "rejected" as const, reason }));
     await sleep(1100);
     const ohlcResult = await dhan
-      .getOhlcQuotes(quoteUnderlyings)
+      .getOhlcQuotes(quoteUnderlyings, "api:ticker:ohlc")
       .then((value) => ({ status: "fulfilled" as const, value }))
       .catch((reason) => ({ status: "rejected" as const, reason }));
     const ltpQuotes = ltpResult.status === "fulfilled" ? ltpResult.value : new Map<string, { lastPrice?: number }>();

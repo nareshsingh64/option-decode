@@ -20,6 +20,9 @@ export type { AuthUserDto } from "./auth-repository.js";
 export { buildDemoSnapshot } from "./demo-snapshot.js";
 export { getStoredFnoLotSize, parseDhanFnoLotSizePage, syncFnoLotSizesFromDhan } from "./lot-size-repository.js";
 
+export { getDhanApiRequestHourlyCounts, getDhanApiRequestSummary, logDhanApiRequest } from "./dhan-audit-repository.js";
+export type { DhanApiRequestLogEntry, DhanApiRequestSummaryRow } from "./dhan-audit-repository.js";
+
 export { getOptionChainTrackedStocks, listActiveFnoStocks, setFnoStockIndexWeight, syncFnoStockUniverse } from "./fno-stock-repository.js";
 export type { FnoStockSummary, FnoStockSyncResult, WeightedFnoStock } from "./fno-stock-repository.js";
 export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getSpotPriceHistory, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
