@@ -7,14 +7,15 @@ Wants=mysql.service redis-server.service
 Type=simple
 User=option-decode
 Group=option-decode
-# NOTE: points at /opt/option-decode-native, the isolated pre-cutover
-# testing base - deliberately NOT /opt/option-decode (the live Docker
-# checkout). At cutover (step 9), install a copy of this unit with every
-# /opt/option-decode-native path below changed to /opt/option-decode.
+# CUTOVER: production ports. Kept the app's home at /opt/option-decode-native
+# rather than renaming to /opt/option-decode at cutover time as originally
+# planned - /opt/option-decode remains the git checkout used to source
+# releases (see native-deploy.sh's SOURCE_REPO), and renaming under time
+# pressure right before market open added risk for no functional benefit.
 WorkingDirectory=/opt/option-decode-native/current
 EnvironmentFile=/opt/option-decode-native/current/.env.production
 Environment=NODE_ENV=production
-Environment=API_PORT=4001
+Environment=API_PORT=4000
 Environment=REDIS_URL=redis://127.0.0.1:6379/0
 
 # Matches the api container's startup command in docker-compose.prod.yml
