@@ -66,7 +66,22 @@ else
   command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11.8.0
   pnpm install --frozen-lockfile
   pnpm --filter @option-decode/db db:generate
-  pnpm --filter @option-decode/web build
+
+  # NEXT_PUBLIC_API_URL is inlined into the client-side JS bundle at build
+  # time by Next.js - it is NOT read at runtime. The Dockerfile always
+  # passed this as a build ARG (NEXT_PUBLIC_API_URL: ${APP_PUBLIC_URL} in
+  # docker-compose.prod.yml); missing it here silently left every
+  # client-side fetch() call (login included) falling back to its
+  # hardcoded "http://localhost:4000" default, which resolves to the
+  # BROWSER's own machine, not the server - surfaced in production as a
+  # "Load failed" error on login. Source the same value from the shared
+  # env file that the Docker build always used.
+  APP_URL=$(grep '^APP_PUBLIC_URL=' "$SHARED/.env.production" | cut -d= -f2-)
+  if [ -z "$APP_URL" ]; then
+    echo "ERROR: APP_PUBLIC_URL not found in $SHARED/.env.production - refusing to build without it" >&2
+    exit 1
+  fi
+  NEXT_PUBLIC_API_URL="$APP_URL" pnpm --filter @option-decode/web build
 
   ln -sf "$SHARED/.env.production" "$RELEASE_DIR/.env.production"
   chown -R option-decode:option-decode "$RELEASE_DIR"
