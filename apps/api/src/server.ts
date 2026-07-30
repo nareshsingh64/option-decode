@@ -11,7 +11,7 @@ import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingP
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
-import { isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
+import { isExpiryInPast, isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 import { getLiveTicks } from "./live-tick-cache.js";
 import { registerSimRoutes } from "./sim-routes.js";
@@ -1584,6 +1584,18 @@ function persistLiveSnapshotInBackground(snapshot: OptionChainSnapshot, underlyi
 }
 
 async function getLatestSnapshotOrDemo(underlyingSymbol: string, expiry?: string, spotPriceOverride?: number) {
+  // A client-supplied expiry that's already in the past (e.g. a browser tab
+  // left open for weeks, still polling with a long-expired date) can only
+  // ever fail against the live Dhan option-chain endpoint ("Invalid Expiry
+  // Date") - treat it the same as no expiry at all instead of wasting a
+  // live API call chasing a dead contract every request. Observed in
+  // production: one such stale expiry generated 500+ failed Dhan calls in
+  // a single day (see api:live-fetch-uncaptured in DhanApiRequestLog).
+  if (expiry && isExpiryInPast(expiry)) {
+    app.log.warn({ underlyingSymbol, requestedExpiry: expiry }, "Ignoring client-supplied expiry that is already in the past");
+    expiry = undefined;
+  }
+
   try {
     const underlying = getUnderlyingDefinition(underlyingSymbol);
     const storedSnapshot = await getLatestOptionChainSnapshot(underlyingSymbol, expiry);
