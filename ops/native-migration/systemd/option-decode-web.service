@@ -15,9 +15,15 @@ WorkingDirectory=/opt/option-decode-native/current
 EnvironmentFile=/opt/option-decode-native/current/.env.production
 Environment=NODE_ENV=production
 Environment=API_URL=http://127.0.0.1:4001
-Environment=PORT=3001
 
-ExecStart=/usr/bin/pnpm --filter @option-decode/web start
+# apps/web/package.json's "start" script hardcodes `next start -p 3000`,
+# so a PORT/WEB_PORT env var alone is silently ignored (confirmed - it
+# bound to 3000 despite Environment=PORT=3001 here). Bypass the npm
+# script and invoke next directly to actually control the port. (No real
+# conflict with Docker's web container either way - it only `expose`s
+# 3000 internally and is never published to the host - but keeping the
+# alt port for testing-convention consistency with api/worker.)
+ExecStart=/usr/bin/pnpm --filter @option-decode/web exec next start -p 3001
 
 StandardOutput=append:/opt/option-decode-native/logs/web/web.log
 StandardError=append:/opt/option-decode-native/logs/web/web.log
