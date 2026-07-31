@@ -11,6 +11,30 @@ function dateOnly(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+// Prisma's native query engine (loaded in-process, not a separate binary)
+// caches a compiled prepared statement per distinct SQL shape it sees, and
+// createMany()'s generated SQL has a placeholder count proportional to row
+// count - so calling it with a different row count every time (as we do
+// here, since strike counts per snapshot vary by underlying/expiry/day)
+// creates a new, permanently-cached statement on every call. Confirmed in
+// production (2026-07-31): this was the root cause of the worker process's
+// RSS growing to 6-7GB within minutes on a fresh restart while
+// process.memoryUsage() reported under 200MB - the growth was a single
+// unbounded native malloc arena (visible via `pmap -x`, invisible to
+// Node's own memory APIs) driven by exactly this cache. Chunking to a
+// fixed batch size bounds the number of distinct row-count shapes this
+// call site can ever produce to TICK_INSERT_CHUNK_SIZE, capping the cache
+// instead of letting it grow with every differently-sized snapshot.
+const TICK_INSERT_CHUNK_SIZE = 50;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 // Filtering OptionChainSnapshot via a nested `expiry: { expiryLabel }`
 // relation (instead of expiryId directly) prevented MySQL from using the
 // [underlyingSymbol, expiryId, snapshotTime] composite index that exists
@@ -442,9 +466,11 @@ export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, cli
       }
     });
 
-    await tx.optionContractTick.createMany({
-      data: tickRows.map((row) => ({ ...row, snapshotId: createdSnapshot.id }))
-    });
+    for (const chunk of chunkArray(tickRows, TICK_INSERT_CHUNK_SIZE)) {
+      await tx.optionContractTick.createMany({
+        data: chunk.map((row) => ({ ...row, snapshotId: createdSnapshot.id }))
+      });
+    }
 
     await tx.pressureScore.create({
       data: {

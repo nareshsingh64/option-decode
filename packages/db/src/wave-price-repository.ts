@@ -20,22 +20,42 @@ export interface WavePricePointInput {
 
 const MAX_WAVE_PRICE_HISTORY_ROWS = 3_000;
 
+// See the matching comment on TICK_INSERT_CHUNK_SIZE in market-repository.ts -
+// this call site has the same "row count varies every call" shape (the
+// number of stocks that returned a valid quote this cycle fluctuates), and
+// was one of the two call sites confirmed to be driving the worker's
+// unbounded native (non-V8) memory growth via Prisma's per-shape prepared
+// statement cache. Chunking bounds the cache to a fixed number of shapes.
+const WAVE_PRICE_INSERT_CHUNK_SIZE = 50;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export async function recordWavePricePoints(points: WavePricePointInput[], client: PrismaClient = prisma): Promise<number> {
   if (!points.length) {
     return 0;
   }
 
-  const result = await client.wavePricePoint.createMany({
-    data: points.map((point) => ({
-      underlyingSymbol: point.underlyingSymbol,
-      time: point.time,
-      price: point.price,
-      volume: point.volume !== undefined && Number.isFinite(point.volume) ? BigInt(Math.round(point.volume)) : null
-    })),
-    skipDuplicates: true
-  });
+  let totalCount = 0;
+  for (const chunk of chunkArray(points, WAVE_PRICE_INSERT_CHUNK_SIZE)) {
+    const result = await client.wavePricePoint.createMany({
+      data: chunk.map((point) => ({
+        underlyingSymbol: point.underlyingSymbol,
+        time: point.time,
+        price: point.price,
+        volume: point.volume !== undefined && Number.isFinite(point.volume) ? BigInt(Math.round(point.volume)) : null
+      })),
+      skipDuplicates: true
+    });
+    totalCount += result.count;
+  }
 
-  return result.count;
+  return totalCount;
 }
 
 export async function getWavePriceHistory(underlyingSymbol: string, sinceMs: number, limit = 1000, client: DbClient = prisma): Promise<SpotPricePoint[]> {
