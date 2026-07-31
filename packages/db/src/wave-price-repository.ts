@@ -4,8 +4,8 @@
 // getSpotPriceHistory (market-repository.ts) instead; this repository is
 // only ever written to by the wave-stock-quote-capture worker job.
 
+import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
-import type { Prisma } from "@prisma/client";
 import type { SpotPricePoint } from "@option-decode/types";
 import { prisma } from "./index.js";
 
@@ -25,15 +25,43 @@ const MAX_WAVE_PRICE_HISTORY_ROWS = 3_000;
 // number of stocks that returned a valid quote this cycle fluctuates), and
 // was one of the two call sites confirmed to be driving the worker's
 // unbounded native (non-V8) memory growth via Prisma's per-shape prepared
-// statement cache. Chunking bounds the cache to a fixed number of shapes.
+// statement cache.
+//
+// A first attempt just chunked via Array.slice, which does not actually
+// bound the shape count (see the longer explanation in
+// market-repository.ts) - verified in production, growth slowed but did
+// not stop. insertInFixedShapes guarantees every createMany call has
+// exactly WAVE_PRICE_INSERT_CHUNK_SIZE rows, with the remainder written
+// via individual single-row create() calls instead of a variably-sized
+// createMany - bounding this call site to exactly 2 SQL shapes forever.
 const WAVE_PRICE_INSERT_CHUNK_SIZE = 50;
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
+async function insertInFixedShapes<T>(
+  rows: T[],
+  chunkSize: number,
+  createMany: (batch: T[]) => Promise<{ count: number }>,
+  createOne: (row: T) => Promise<unknown>
+): Promise<number> {
+  let count = 0;
+  let i = 0;
+  for (; i + chunkSize <= rows.length; i += chunkSize) {
+    const result = await createMany(rows.slice(i, i + chunkSize));
+    count += result.count;
   }
-  return chunks;
+  for (; i < rows.length; i += 1) {
+    try {
+      await createOne(rows[i]);
+      count += 1;
+    } catch (error) {
+      // Individual create() has no skipDuplicates option - replicate the
+      // batched createMany's skip-on-duplicate behavior by swallowing
+      // only the unique-constraint violation (P2002), same as before.
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+        throw error;
+      }
+    }
+  }
+  return count;
 }
 
 export async function recordWavePricePoints(points: WavePricePointInput[], client: PrismaClient = prisma): Promise<number> {
@@ -41,21 +69,19 @@ export async function recordWavePricePoints(points: WavePricePointInput[], clien
     return 0;
   }
 
-  let totalCount = 0;
-  for (const chunk of chunkArray(points, WAVE_PRICE_INSERT_CHUNK_SIZE)) {
-    const result = await client.wavePricePoint.createMany({
-      data: chunk.map((point) => ({
-        underlyingSymbol: point.underlyingSymbol,
-        time: point.time,
-        price: point.price,
-        volume: point.volume !== undefined && Number.isFinite(point.volume) ? BigInt(Math.round(point.volume)) : null
-      })),
-      skipDuplicates: true
-    });
-    totalCount += result.count;
-  }
+  const rows = points.map((point) => ({
+    underlyingSymbol: point.underlyingSymbol,
+    time: point.time,
+    price: point.price,
+    volume: point.volume !== undefined && Number.isFinite(point.volume) ? BigInt(Math.round(point.volume)) : null
+  }));
 
-  return totalCount;
+  return insertInFixedShapes(
+    rows,
+    WAVE_PRICE_INSERT_CHUNK_SIZE,
+    (batch) => client.wavePricePoint.createMany({ data: batch, skipDuplicates: true }),
+    (row) => client.wavePricePoint.create({ data: row })
+  );
 }
 
 export async function getWavePriceHistory(underlyingSymbol: string, sinceMs: number, limit = 1000, client: DbClient = prisma): Promise<SpotPricePoint[]> {
