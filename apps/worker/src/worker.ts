@@ -40,6 +40,30 @@ if (pushNotificationsEnabled) {
   webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY as string, config.VAPID_PRIVATE_KEY as string);
 }
 
+const MEMORY_LOG_INTERVAL_MS = 2 * 60 * 1000;
+
+// Temporary diagnostic instrumentation (2026-07-31) - RSS was observed
+// growing from ~3GB to ~6.9GB within under an hour on a freshly-booted,
+// otherwise-idle-at-boot instance, refilling swap even on the newly-resized
+// (8GB) host. Logging the Node/V8 memory breakdown on an interval lets us
+// tell apart a genuine JS object leak (heapUsed climbing) from off-heap
+// growth (arrayBuffers/external climbing - a likely candidate given
+// DhanLiveFeedClient parses raw WebSocket ArrayBuffers directly in
+// handleBinaryMessage) without needing a full heap snapshot, which would be
+// slow and disruptive to capture/move off a live production box mid-trading
+// day. Remove once the root cause is confirmed and fixed.
+setInterval(() => {
+  const mem = process.memoryUsage();
+  const toMb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+  console.log("Worker memory usage", {
+    rssMb: toMb(mem.rss),
+    heapUsedMb: toMb(mem.heapUsed),
+    heapTotalMb: toMb(mem.heapTotal),
+    externalMb: toMb(mem.external),
+    arrayBuffersMb: toMb(mem.arrayBuffers)
+  });
+}, MEMORY_LOG_INTERVAL_MS).unref();
+
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
   clientId: config.DHAN_CLIENT_ID,
