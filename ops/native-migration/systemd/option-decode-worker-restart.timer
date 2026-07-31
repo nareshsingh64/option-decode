@@ -1,0 +1,16 @@
+[Unit]
+Description=Periodically restart option-decode-worker to bound Prisma native memory growth
+
+[Timer]
+# 45 minutes was picked conservatively: the fastest growth observed in
+# production testing (2026-07-31) reached ~5.6GB RSS within just 16
+# minutes of a fresh restart on the 7.6GB host, and it was still climbing
+# at that point (not yet confirmed to plateau). Revisit/lengthen this
+# once a few restart cycles show a stable, predictable ceiling - see the
+# comment in option-decode-worker-restart.service for full context.
+OnUnitActiveSec=45min
+OnBootSec=45min
+Unit=option-decode-worker-restart.service
+
+[Install]
+WantedBy=timers.target
