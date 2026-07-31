@@ -2,14 +2,22 @@
 Description=Periodically restart option-decode-worker to bound Prisma native memory growth
 
 [Timer]
-# 45 minutes was picked conservatively: the fastest growth observed in
-# production testing (2026-07-31) reached ~5.6GB RSS within just 16
-# minutes of a fresh restart on the 7.6GB host, and it was still climbing
-# at that point (not yet confirmed to plateau). Revisit/lengthen this
-# once a few restart cycles show a stable, predictable ceiling - see the
-# comment in option-decode-worker-restart.service for full context.
-OnUnitActiveSec=45min
-OnBootSec=45min
+# Shortened from 45min to 15min on 2026-07-31 when the instance was rolled
+# back from m7g.large (7.6GB RAM) to t4g.medium (~3.7GB RAM) - same vCPU
+# count (2) on both, so the leak's growth RATE should be similar, but
+# t4g.medium's much lower ceiling means that rate reaches a dangerous
+# level far sooner. An earlier resource audit on this same instance type
+# (before today's resize) already showed swap actively engaged with the
+# worker alone at ~3.07GB RSS out of 3.7GB total. The fastest growth
+# observed on the bigger box reached ~5.6GB within 16 minutes; scaled down
+# proportionally to t4g.medium's much lower danger threshold, that points
+# to well under 15 minutes - this value is a conservative starting point,
+# not a measurement taken on this instance type. Watch the first few
+# cycles via `systemctl status option-decode-worker` and shorten further
+# if RSS is still climbing uncomfortably close to the ceiling by the time
+# each restart fires; lengthen once a stable, safe margin is confirmed.
+OnUnitActiveSec=15min
+OnBootSec=15min
 Unit=option-decode-worker-restart.service
 
 [Install]
