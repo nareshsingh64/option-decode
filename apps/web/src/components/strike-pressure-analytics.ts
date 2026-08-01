@@ -1,3 +1,4 @@
+import type { PcrContext } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 
 export type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
@@ -173,27 +174,49 @@ export function buildZoneRows(overview: MarketOverview) {
 
 export type ZoneRow = ReturnType<typeof buildZoneRows>[number];
 
+// Bias/Conviction/Setup Quality/Readiness themselves come straight from the
+// server's `overview.marketBias` (@option-decode/analytics#calculateMarketBias
+// - the SAME values already feeding the Trade Recommendations above this
+// panel). This function used to recompute all four with its own, entirely
+// different formula, so the KPI chips and the recommendations underneath
+// them could - and on every live snapshot checked, did - disagree about
+// what the market was actually doing. It now only adds presentation-only
+// text/tone decoration on top of the server-provided verdict.
+function pcrContextDetail(pcrContext: PcrContext | undefined, pcr: number | undefined): string {
+  if (pcr === undefined) {
+    return "PCR unavailable";
+  }
+  switch (pcrContext) {
+    case "strong-put-support":
+      return "Strong put support";
+    case "mild-put-support":
+      return "Mild put support";
+    case "strong-call-resistance":
+      return "Strong call resistance";
+    case "mild-call-resistance":
+      return "Mild call resistance";
+    default:
+      return "Balanced PCR";
+  }
+}
+
 export function buildPressureSummary(overview: MarketOverview) {
-  const pressureGap = overview.pressure.bullishPressure - overview.pressure.bearishPressure;
-  const pressureGapAbs = Math.abs(pressureGap);
+  const marketBias = overview.marketBias;
   const support = overview.pressure.supportZones[0];
   const resistance = overview.pressure.resistanceZones[0];
-  const supportDistance = support ? Math.abs(overview.snapshot.spotPrice - support.strikePrice) : undefined;
-  const resistanceDistance = resistance ? Math.abs(resistance.strikePrice - overview.snapshot.spotPrice) : undefined;
-  const bias = pressureGap >= 6 ? "Bullish" : pressureGap <= -6 ? "Bearish" : "Balanced";
+  const supportDistance = marketBias?.supportDistance ?? (support ? Math.abs(overview.snapshot.spotPrice - support.strikePrice) : undefined);
+  const resistanceDistance = marketBias?.resistanceDistance ?? (resistance ? Math.abs(resistance.strikePrice - overview.snapshot.spotPrice) : undefined);
+  const bias = marketBias?.bias ?? "Balanced";
   const pcr = overview.pressure.pcr;
   const pcrTone = pcr === undefined ? "blue" : pcr >= 1.05 ? "green" : pcr <= 0.95 ? "red" : "blue";
-  const pcrAligned = (bias === "Bullish" && pcr !== undefined && pcr >= 1.05) || (bias === "Bearish" && pcr !== undefined && pcr <= 0.95);
   const maxPainStrike = overview.pressure.maxPain ?? calculateMaxPainStrike(overview);
   const maxPainDistance = maxPainStrike === undefined ? undefined : maxPainStrike - overview.snapshot.spotPrice;
-  const currentActivityScore = calculateCurrentActivityScore(overview);
-  const convictionScore = Math.min(100, Math.round(pressureGapAbs * 3 + currentActivityScore));
-  const conviction = convictionScore >= 70 ? "High" : convictionScore >= 45 ? "Medium" : "Low";
-  const convictionTone = conviction === "High" ? "green" : conviction === "Medium" ? "blue" : "red";
-  const setupQuality = Math.min(100, Math.round(pressureGapAbs * 4 + (pcrAligned ? 18 : 0) + (convictionScore * 0.45) + getLevelProximityScore(supportDistance, resistanceDistance)));
-  const setupQualityGrade = setupQuality >= 80 ? "A+" : setupQuality >= 70 ? "A" : setupQuality >= 55 ? "B" : setupQuality >= 40 ? "C" : "Wait";
-  const setupQualityTone = setupQuality >= 70 ? "green" : setupQuality >= 40 ? "blue" : "red";
-  const readiness = setupQuality >= 70 && convictionScore >= 45 && pressureGapAbs >= 6 ? "Actionable" : setupQuality >= 45 || pressureGapAbs >= 4 ? "Watch" : "Wait";
+  const conviction = marketBias?.conviction ?? "Neutral";
+  const convictionTone = conviction === "High" ? "green" : conviction === "Moderate" ? "blue" : conviction === "Low" ? "red" : "blue";
+  const setupQuality = marketBias?.setupQuality ?? "No Edge";
+  const setupScore = marketBias?.setupScore ?? 0;
+  const setupQualityTone = setupQuality === "A+ Setup" || setupQuality === "A Setup" ? "green" : setupQuality === "No Edge" ? "red" : "blue";
+  const readiness = marketBias?.readiness ?? "Wait";
   const strongestSupport = support?.score ?? 0;
   const strongestResistance = resistance?.score ?? 0;
   const strongestLevelText =
@@ -205,20 +228,18 @@ export function buildPressureSummary(overview: MarketOverview) {
 
   return {
     bias,
-    biasDetail: `${pressureGapAbs} pt pressure spread`,
+    biasDetail: `${marketBias?.absGap ?? 0} pt pressure spread`,
     readiness,
-    readinessDetail: readiness === "Actionable" ? `Quality ${setupQuality}% with confirmed pressure` : readiness === "Watch" ? `Quality ${setupQuality}% but needs follow-through` : `Quality ${setupQuality}% / no clean edge`,
+    readinessDetail: readiness === "Actionable" ? `${setupQuality}, confirmed pressure` : readiness === "Watch" ? `${setupQuality}, needs follow-through` : `${setupQuality} - no clean edge`,
     pcrText: pcr?.toFixed(2) ?? "--",
-    pcrDetail: pcr === undefined ? "PCR unavailable" : pcrAligned ? "PCR confirms bias" : pcr >= 1.05 ? "Put support heavy" : pcr <= 0.95 ? "Call pressure heavy" : "Balanced PCR",
+    pcrDetail: pcrContextDetail(marketBias?.pcrContext, pcr),
     pcrTone: pcrTone as "blue" | "green" | "red",
     maxPainText: maxPainStrike === undefined ? "--" : formatStrike(maxPainStrike),
     maxPainDistanceText: formatMaxPainDistance(maxPainDistance),
     conviction,
-    convictionScore,
-    convictionDetail: currentActivityScore >= 35 ? "active tape" : currentActivityScore >= 18 ? "moderate tape" : "thin tape",
     convictionTone: convictionTone as "blue" | "green" | "red",
-    setupQualityText: `${setupQualityGrade} / ${setupQuality}%`,
-    setupQualityDetail: pcrAligned ? "PCR and pressure aligned" : bias === "Balanced" ? "Waiting for direction" : "Pressure needs PCR support",
+    setupQualityText: setupQuality,
+    setupQualityDetail: `Setup score ${setupScore}/6`,
     setupQualityTone: setupQualityTone as "blue" | "green" | "red",
     nearestSupportText: support ? formatStrike(support.strikePrice) : "--",
     nearestResistanceText: resistance ? formatStrike(resistance.strikePrice) : "--",
@@ -300,34 +321,6 @@ function calculateMaxPainStrike(overview: MarketOverview) {
   }
 
   return bestStrike;
-}
-
-function calculateCurrentActivityScore(overview: MarketOverview) {
-  const totalOiLots = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
-  if (totalOiLots <= 0) {
-    return 0;
-  }
-  const totalChangeLots = overview.snapshot.ticks.reduce((sum, tick) => sum + Math.abs(toLots(tick.changeInOpenInterest, tick)), 0);
-  const totalVolumeLots = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.volume, tick), 0);
-  const activityRatio = (totalChangeLots + totalVolumeLots * 0.25) / totalOiLots;
-  return Math.min(55, Math.round(activityRatio * 100));
-}
-
-function getLevelProximityScore(supportDistance?: number, resistanceDistance?: number) {
-  const nearestDistance = Math.min(supportDistance ?? Number.POSITIVE_INFINITY, resistanceDistance ?? Number.POSITIVE_INFINITY);
-  if (!Number.isFinite(nearestDistance)) {
-    return 0;
-  }
-  if (nearestDistance <= 25) {
-    return 14;
-  }
-  if (nearestDistance <= 75) {
-    return 10;
-  }
-  if (nearestDistance <= 150) {
-    return 6;
-  }
-  return 2;
 }
 
 function formatMaxPainDistance(distance?: number) {

@@ -3,7 +3,7 @@
 import { Clock3, Pause, SkipBack, SkipForward } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { MarketPulse, StrikeMovementRow } from "@option-decode/types";
+import type { MarketBiasSummary, MarketPulse, StrikeMovementRow } from "@option-decode/types";
 import { AccountPanel } from "./account-panel";
 import { AdminPanel } from "./admin-panel";
 import { AlertCenter } from "./alert-center";
@@ -178,6 +178,15 @@ export interface MarketOverview {
   strikeMovement: StrikeMovementRow[];
   recommendations: Recommendation[];
   marketPulse?: MarketPulse | null;
+  // Bias/Conviction/Setup Quality/Readiness - computed server-side by
+  // @option-decode/analytics#calculateMarketBias, the SAME values already
+  // feeding into `recommendations` above. This used to be computed but
+  // never sent, so the client silently recomputed its own version with
+  // different math (see buildPressureSummary in strike-pressure-
+  // analytics.ts) and the two disagreed on every live snapshot. This is
+  // now the one and only source of truth for those cards - the client
+  // must not recompute it.
+  marketBias?: MarketBiasSummary;
 }
 
 export interface Recommendation {
@@ -1674,7 +1683,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         <KpiChip label="PCR" value={overview.pressure.pcr?.toFixed(2) ?? "--"} />
         <KpiChip label="Max Pain" value={pressureSummary.maxPainText} />
         <KpiChip label="Readiness" value={pressureSummary.readiness} tone={pressureSummary.readiness === "Actionable" ? "emerald" : pressureSummary.readiness === "Watch" ? "blue" : "default"} />
-        <KpiChip label="Setup" value={pressureSummary.setupQualityText} tone={pressureSummary.setupQualityText.startsWith("A") ? "emerald" : pressureSummary.setupQualityText.startsWith("Wait") ? "red" : "blue"} />
+        <KpiChip label="Setup" value={pressureSummary.setupQualityText} tone={pressureSummary.setupQualityText.startsWith("A") ? "emerald" : pressureSummary.setupQualityText === "No Edge" ? "red" : "blue"} />
         <span className="ml-auto text-xs text-terminal-muted">Updated {snapshotAge} IST</span>
       </section>
 

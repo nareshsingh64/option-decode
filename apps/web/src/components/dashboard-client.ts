@@ -455,7 +455,7 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
   if (!response.ok) {
     throw new Error(`Replay snapshot failed with HTTP ${response.status}`);
   }
-  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot" | "recommendations" | "marketPulse">;
+  const payload = (await response.json()) as Pick<MarketOverview, "alerts" | "pressure" | "snapshot" | "recommendations" | "marketPulse" | "marketBias">;
   return {
     ...baseOverview,
     selectedUnderlying: payload.snapshot.underlyingSymbol,
@@ -464,7 +464,11 @@ export async function fetchReplaySnapshot(snapshotId: string, baseOverview: Mark
     pressure: payload.pressure,
     alerts: payload.alerts,
     recommendations: payload.recommendations,
-    marketPulse: payload.marketPulse
+    marketPulse: payload.marketPulse,
+    // Without this, a replayed snapshot's Bias/Conviction/Setup Quality
+    // cards silently kept showing the LIVE overview's marketBias (from
+    // baseOverview above) instead of the replayed moment's own verdict.
+    marketBias: payload.marketBias
   };
 }
 

@@ -71,7 +71,7 @@ export function DashboardMainPanel({
           <SignalCell label="Seller Safety" value={tradeInterpretation.sellerText} detail={tradeInterpretation.sellerScore !== 0 ? `Score ${formatSignedLarge(tradeInterpretation.sellerScore, numberFormatMode)}` : "Neutral across ATM strikes"} tone={tradeInterpretation.sellerScore >= 8 ? "green" : tradeInterpretation.sellerScore <= -8 ? "red" : "blue"} />
           <MarketPulseCell pulse={overview.marketPulse} />
         </div>
-        {pressureSummary.setupQualityText && !pressureSummary.setupQualityText.startsWith("Wait") && (
+        {pressureSummary.setupQualityText && pressureSummary.setupQualityText !== "No Edge" && (
           <div className="mt-2 rounded border border-terminal-blue/40 bg-terminal-blue/10 px-3 py-1.5 text-xs text-terminal-blue">
             <span className="font-semibold">Setup: </span>{pressureSummary.setupQualityDetail}
           </div>

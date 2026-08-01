@@ -536,6 +536,14 @@ app.get<{
     // strike-pressure-analytics.ts on the client for the presentation-only
     // decoration applied on top of these rows.
     strikeMovement,
+    // Was computed above (and already fed into calculateTradeRecommendations
+    // below) but never actually sent - the client silently recomputed its
+    // own Conviction/Setup Quality/Readiness with different math instead,
+    // so the number on screen and the number gating the recommendations
+    // underneath it disagreed (confirmed live: the client's "Conviction:
+    // High" band fired ~91x more often than this server value's). Sending
+    // it makes this the one and only source of truth for those three cards.
+    marketBias,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation, atmStraddle)
   };
 });
@@ -950,6 +958,7 @@ app.get<{
     atmStraddle,
     alerts: generateMarketAlerts(snapshot, pressure, Number.isFinite(replayAsOf.getTime()) ? replayAsOf : new Date(), alertThreshold ?? undefined),
     strikeMovement,
+    marketBias,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation, atmStraddle)
   };
 });
