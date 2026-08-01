@@ -35,6 +35,15 @@ interface HorizonProfile {
 
 const THEORETICAL_POP = 85;
 
+// Liquidity floor for the EXECUTION strike a recommendation actually names
+// (not for the WCI/DRC/DRCR universe itself, which needs the full delta
+// band to read aggregate flow correctly). Without this, closestToTargetDelta
+// could and did name a strike with zero open interest and zero volume next
+// to a stamped "~85% POP" - confirmed live on BANKNIFTY, reproduced at three
+// consecutive snapshots. Matches Sim's own MIN_OPEN_INTEREST liquidity gate
+// (packages/db/src/sim-repository.ts) for consistency across the app.
+const MIN_RECOMMENDATION_OPEN_INTEREST = 500;
+
 export const STRIKE_MATRIX_HORIZONS: Record<TradingHorizon, HorizonProfile> = {
   intraday: {
     deltaMin: 0.15,
@@ -157,7 +166,7 @@ function closestToTargetDelta(rows: StrikeMatrixRow[], optionType: "CE" | "PE", 
   let best: StrikeMatrixRow | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const row of rows) {
-    if (row.optionType !== optionType) {
+    if (row.optionType !== optionType || row.openInterest < MIN_RECOMMENDATION_OPEN_INTEREST || row.volume <= 0) {
       continue;
     }
     const distance = Math.abs(Math.abs(row.delta) - targetDelta);

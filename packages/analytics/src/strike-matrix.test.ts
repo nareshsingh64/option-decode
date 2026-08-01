@@ -152,10 +152,10 @@ test("recommendation picks execution strikes closest to the matrix cell's target
   // Neutral intraday → short strangle at ±0.15
   const result = calculateStrikeMatrix(
     snapshot([
-      tick({ optionType: "CE", strikePrice: 25200, delta: 0.22, volume: 1000, changeInOpenInterest: 500 }),
-      tick({ optionType: "CE", strikePrice: 25300, delta: 0.16, volume: 1000, changeInOpenInterest: 500 }),
-      tick({ optionType: "PE", strikePrice: 24800, delta: -0.24, volume: 1000, changeInOpenInterest: 500 }),
-      tick({ optionType: "PE", strikePrice: 24700, delta: -0.15, volume: 1000, changeInOpenInterest: 500 })
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.22, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.16, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 }),
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.24, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 }),
+      tick({ optionType: "PE", strikePrice: 24700, delta: -0.15, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
     ]),
     "intraday"
   );
@@ -166,11 +166,39 @@ test("recommendation picks execution strikes closest to the matrix cell's target
   assert.equal(result.recommendation?.theoreticalPop, 85);
 });
 
+test("a zero-liquidity strike closest to target delta is skipped in favor of a liquid one further away", () => {
+  // Reproduces the exact live shape (BANKNIFTY): the strike nearest target
+  // delta has zero OI and zero volume - it must never be recommended, even
+  // though it's the mathematically closest match.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25150, delta: 0.18, volume: 0, changeInOpenInterest: 0, openInterest: 0 }), // exact target delta, illiquid
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.22, volume: 1000, changeInOpenInterest: 200, openInterest: 5000 }), // further from target, liquid, still inside the delta band
+      tick({ optionType: "PE", strikePrice: 24700, delta: -0.18, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.bias, "Bullish");
+  assert.equal(result.recommendation?.putStrike, 24700);
+});
+
+test("a Neutral (both-sides) structure withholds the whole recommendation when one required side has no liquid strike", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24700, delta: -0.15, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.15, volume: 0, changeInOpenInterest: 500, openInterest: 0 }) // only CE strike in the universe, illiquid
+    ]),
+    "intraday"
+  );
+  assert.equal(result.bias, "Neutral"); // Neutral intraday writes both sides
+  assert.equal(result.recommendation, undefined, "no execution strike exists for the call side, so the recommendation must not fire at all rather than naming an illiquid strike");
+});
+
 test("bullish structures only populate the put side", () => {
   const result = calculateStrikeMatrix(
     snapshot([
-      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000 }),
-      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500 })
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
     ]),
     "intraday"
   );
