@@ -6,12 +6,16 @@
 //                                       retail churn) at a strike
 //   DRC(i)  = OIC(i) × Delta(i)       — signed directional risk being added
 //                                       or removed at a strike
-//   DRCR    = Σ|DRC| puts / Σ|DRC| calls — net market bias of writer flow
+//   DRCR    = avg|DRC| puts / avg|DRC| calls, opening OI only — net market
+//                                       bias of writer flow
 //
 // The three horizon profiles (delta band, WCI threshold, target delta,
 // decision matrix, mandatory risk rule) mirror the Unified Analyst's
 // Decision Matrix exactly; changing a number here changes what the Strike
-// Matrix tab recommends, so keep them in sync with the doc.
+// Matrix tab recommends, so keep them in sync with the doc. DRCR is the one
+// deliberate exception: the doc's literal Σ|DRC| formula (a raw sum over
+// ALL activity, opening or closing) demonstrably misread live data - see
+// classifyDrcr's call site below for the specifics and live evidence.
 
 import type {
   OptionChainSnapshot,
@@ -259,16 +263,41 @@ export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: Tr
   const universe = allRows.filter((row) => Math.abs(row.delta) >= profile.deltaMin && Math.abs(row.delta) <= profile.deltaMax);
 
   let putDrcTotal = 0;
+  let putDrcCount = 0;
   let callDrcTotal = 0;
+  let callDrcCount = 0;
   for (const row of universe) {
+    // Only OI that's genuinely OPENING counts as writer conviction being
+    // built - a strike with OI closing (covering/unwinding) contributes
+    // nothing here, however large its |DRC| magnitude, since that's
+    // positions being unwound, not a wall being built. Confirmed live
+    // (BANKNIFTY monthly, three consecutive snapshots): DRCR read 1.52-1.55
+    // "Bullish" while the put side's net OI change was -2,880 (positions
+    // closing) - the inverse of what DRCR is meant to measure. This
+    // deliberately deviates from the reference doc's literal Σ|DRC|
+    // formula (confirmed with the user) because that formula can't tell
+    // writing from unwinding apart at all.
+    if (row.oiChange <= 0) {
+      continue;
+    }
     if (row.optionType === "PE") {
       putDrcTotal += Math.abs(row.drc);
+      putDrcCount += 1;
     } else {
       callDrcTotal += Math.abs(row.drc);
+      callDrcCount += 1;
     }
   }
 
-  const drcr = callDrcTotal > 0 ? putDrcTotal / callDrcTotal : undefined;
+  // Averaged per qualifying strike, not the raw sum - a side with
+  // structurally more in-band strikes shouldn't win the ratio purely by
+  // strike count. Confirmed live: NIFTY's put skew means 3-4 PE strikes
+  // typically qualify in-band against 2 CE strikes, independent of any
+  // real flow difference - DRCR never once read "Bearish" for NIFTY
+  // across 160 sampled snapshots under the un-normalized sum.
+  const putDrcAverage = putDrcCount > 0 ? putDrcTotal / putDrcCount : 0;
+  const callDrcAverage = callDrcCount > 0 ? callDrcTotal / callDrcCount : 0;
+  const drcr = callDrcAverage > 0 ? putDrcAverage / callDrcAverage : undefined;
   const bias = classifyDrcr(drcr);
   const effectiveWciThreshold = relativeWciThreshold(allRows, horizon);
   const callWall = findWall(universe, "CE", effectiveWciThreshold);

@@ -93,6 +93,47 @@ test("DRCR bias bands: neutral, bearish, transitional gap, and zero-call guard",
   assert.equal(zeroCall.recommendation, undefined);
 });
 
+test("DRCR excludes unwinding OI - a strike closing positions doesn't count as writer conviction being built", () => {
+  // Reproduces the live shape (BANKNIFTY monthly): a put strike's OI is
+  // net NEGATIVE (positions closing/covering) while a call strike's OI is
+  // opening. The old Σ|DRC| formula counted the put's magnitude anyway
+  // and read "Bullish"; it must now read as if that side had no
+  // qualifying activity at all.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: -2880 }), // closing, not building
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.putDrcTotal, 0, "a closing put strike should contribute nothing to putDrcTotal");
+  assert.equal(result.drcr, 0, "put side has no qualifying (opening) activity at all, so the ratio reads as no put support");
+  assert.equal(result.bias, "Bearish");
+});
+
+test("DRCR is normalized per qualifying strike, not a raw sum, so put skew alone can't rule out Bearish", () => {
+  // Reproduces the live shape (NIFTY): more PE strikes structurally
+  // qualify in-band than CE strikes, independent of any real flow
+  // difference. Three PE strikes with modest opening OI vs one CE strike
+  // with much larger opening OI - the raw sum would still read Bullish
+  // (3 x 200 = 600 puts vs 1 x 100 calls), but per-strike, the call side
+  // is clearly the stronger signal (100 avg vs 66.7 avg).
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24700, delta: -0.16, volume: 1000, changeInOpenInterest: 200 }),
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 200 }),
+      tick({ optionType: "PE", strikePrice: 24900, delta: -0.2, volume: 1000, changeInOpenInterest: 200 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500 })
+    ]),
+    "intraday"
+  );
+  // put avg |DRC| = (200*0.16 + 200*0.18 + 200*0.2) / 3 = (32+36+40)/3 = 36
+  // call avg |DRC| = 500*0.2 / 1 = 100
+  // drcr = 36/100 = 0.36 -> Bearish, not Bullish as the raw-sum version would read
+  assert.equal(result.drcr, 0.36);
+  assert.equal(result.bias, "Bearish");
+});
+
 test("walls pick highest |WCI| per side and apply the horizon threshold to signed WCI", () => {
   // Chain-wide baseline = (400+100+300)/3000 = 0.2667; intraday threshold =
   // 0.2667 × 1.3 ≈ 0.347. Only the 0.4 WCI strike clears it.
