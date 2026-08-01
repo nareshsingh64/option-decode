@@ -2,6 +2,7 @@ import { calculatePressureScore } from "@option-decode/analytics";
 import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, SpotPricePoint } from "@option-decode/types";
 import type { OptionType, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
+import { insertInFixedShapes } from "./insert-in-fixed-shapes.js";
 import { prisma } from "./index.js";
 import { getStoredFnoLotSize } from "./lot-size-repository.js";
 
@@ -21,37 +22,9 @@ function dateOnly(value: string): Date {
 // RSS growing to 6-7GB within minutes on a fresh restart while
 // process.memoryUsage() reported under 200MB - the growth was a single
 // unbounded native malloc arena (visible via `pmap -x`, invisible to
-// Node's own memory APIs) driven by exactly this cache.
-//
-// A first attempt just chunked into groups of TICK_INSERT_CHUNK_SIZE via
-// Array.slice - that does NOT bound the shape count on its own: any call
-// whose total row count is below TICK_INSERT_CHUNK_SIZE (common - not
-// every snapshot has 50+ strikes) still produces a single createMany with
-// whatever row count that call happens to have, and even for larger
-// calls the trailing remainder chunk is still variably sized. Verified in
-// production: RSS growth slowed (~5-6x) but did not stop. The actual fix
-// has to guarantee every createMany call has a CONSTANT row count -
-// insertInFixedShapes below does that by only ever calling createMany
-// with exactly TICK_INSERT_CHUNK_SIZE rows (one fixed shape) and handling
-// the remainder via individual single-row create() calls (a second,
-// separately-fixed shape). That bounds this call site to exactly 2
-// distinct SQL shapes forever, regardless of how tick counts vary.
+// Node's own memory APIs) driven by exactly this cache. See
+// insertInFixedShapes (insert-in-fixed-shapes.ts) for how this is bounded.
 const TICK_INSERT_CHUNK_SIZE = 50;
-
-async function insertInFixedShapes<T>(
-  rows: T[],
-  chunkSize: number,
-  createMany: (batch: T[]) => Promise<unknown>,
-  createOne: (row: T) => Promise<unknown>
-): Promise<void> {
-  let i = 0;
-  for (; i + chunkSize <= rows.length; i += chunkSize) {
-    await createMany(rows.slice(i, i + chunkSize));
-  }
-  for (; i < rows.length; i += 1) {
-    await createOne(rows[i]);
-  }
-}
 
 // Filtering OptionChainSnapshot via a nested `expiry: { expiryLabel }`
 // relation (instead of expiryId directly) prevented MySQL from using the
