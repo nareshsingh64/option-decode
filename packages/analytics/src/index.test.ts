@@ -264,16 +264,18 @@ test("calculateStrikeMovement matches a hand-computed worked example exactly", (
   assert.equal(atmRow.netScorePercent, 66);
   assert.equal(atmRow.bias, "Up / support");
 
-  // trendScore per strike = strikeTrend(pe) - strikeTrend(ce), built from
-  // sessionOiChange/sessionPriceChangePercent (since today's open), not
-  // the previous-day changeInOpenInterest/lastPriceChangePercent above:
-  //   strikeTrend(pe) = 600 + (-1)*2 = 598, strikeTrend(ce) = 50 + 0.5*2 = 51
-  //   trendScore = 547 for every strike, which exceeds the fixed
-  // STRIKE_TREND_THRESHOLD, so a uniform chain-wide PE-writing move across
-  // the whole ATM zone is correctly flagged as building everywhere — this
-  // used to be misclassified as "Flat" when the threshold was the median of
-  // this same window (a uniform move raised its own bar right along with it).
-  assert.equal(atmRow.trendScore, 547);
+  // trendScore per strike = strikeTrend(pe) - strikeTrend(ce). Each leg's
+  // strikeTrend is now a WRITING/LONG_BUILDUP-weighted percentage of
+  // session-open OI (session-open OI = openInterest - sessionOiChange),
+  // not a raw lot count - see calculateStrikeTrend's doc comment:
+  //   PE: session-open OI = 4000-600 = 3400, oiChangePercent = 600/3400*100
+  //       ≈ 17.647%; price fell (-1%) while OI rose -> WRITING -> *1.5 ≈ 26.471
+  //   CE: session-open OI = 1000-50 = 950, oiChangePercent = 50/950*100
+  //       ≈ 5.263%; price AND OI both rose -> LONG_BUILDUP -> *0.6 ≈ 3.158
+  //   trendScore ≈ 26.471 - 3.158 ≈ 23.31, which exceeds the fixed
+  // STRIKE_TREND_THRESHOLD (5), so a uniform chain-wide PE-writing move
+  // across the whole ATM zone is correctly flagged as building everywhere.
+  assert.equal(atmRow.trendScore, 23.31);
   assert.equal(atmRow.trendDirection, 1);
   assert.equal(atmRow.trend, "Increasing support");
 });
@@ -282,13 +284,43 @@ test("calculateStrikeMovement still calls small, noise-level moves Flat", () => 
   const strikes = [24800, 24900, 25000, 25100, 25200];
   const ticks: OptionContractTick[] = [];
   for (const strike of strikes) {
-    // trendScore = strikeTrend(pe) - strikeTrend(ce) = (2 + 0) - (0 + 0) = 2, well under STRIKE_TREND_THRESHOLD.
-    ticks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 2 }));
-    ticks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 0 }));
+    // PE: session-open OI = 1000-2 = 998, oiChangePercent ≈ 0.2%, no price
+    // data -> LONG_UNWINDING/no-direction branch -> *0.5 ≈ 0.1.
+    // CE: sessionOiChange 0 -> oiChangePercent 0 -> strikeTrend 0.
+    // trendScore ≈ 0.1, well under STRIKE_TREND_THRESHOLD (5).
+    ticks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 2, sessionOiChange: 2 }));
+    ticks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1000, changeInOpenInterest: 0, sessionOiChange: 0 }));
   }
   const snap = snapshot(ticks, 25000, 25000);
   const rows = calculateStrikeMovement(snap);
   assert.ok(rows.every((row) => row.trend === "Flat" && row.trendDirection === 0));
+});
+
+test("CE writer activity (WRITING) pushes the resistance reading harder than equally-sized CE buyer activity (LONG_BUILDUP)", () => {
+  // Reproduces the live shape the audit flagged: a CE leg with OI up AND
+  // price up is LONG_BUILDUP (buyers confidently adding, per
+  // classifyOptionActivity) - a bullish buyer signal, not writers
+  // defending a ceiling, and should push "Increasing resistance" less hard
+  // than the same OI growth WOULD if price had fallen instead (WRITING -
+  // writers actually building the ceiling).
+  const strikes = [24800, 24900, 25000, 25100, 25200];
+  const writingTicks: OptionContractTick[] = [];
+  const buildupTicks: OptionContractTick[] = [];
+  for (const strike of strikes) {
+    writingTicks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 1000, sessionOiChange: 0 }));
+    buildupTicks.push(tick({ optionType: "PE", strikePrice: strike, openInterest: 1000, sessionOiChange: 0 }));
+    // Same 10%-of-session-open-OI CE growth both times, opposite price direction.
+    writingTicks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1100, sessionOiChange: 100, sessionPriceChangePercent: -5 })); // WRITING
+    buildupTicks.push(tick({ optionType: "CE", strikePrice: strike, openInterest: 1100, sessionOiChange: 100, sessionPriceChangePercent: 5 })); // LONG_BUILDUP
+  }
+  const writingAtm = calculateStrikeMovement(snapshot(writingTicks, 25000, 25000)).find((row) => row.isAtm)!;
+  const buildupAtm = calculateStrikeMovement(snapshot(buildupTicks, 25000, 25000)).find((row) => row.isAtm)!;
+
+  assert.ok(
+    writingAtm.trendScore < buildupAtm.trendScore,
+    "writer-driven CE growth should read as a stronger (more negative) resistance signal than equally-sized buyer-driven growth"
+  );
+  assert.equal(writingAtm.trend, "Increasing resistance");
 });
 
 test("calculateStrikeMovement mirrors correctly for a CE-dominated (bearish/resistance) chain", () => {

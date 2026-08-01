@@ -386,11 +386,43 @@ function getSellerSafetyScore(tick?: OptionContractTick): number {
 // nothing to report yet), and won't flicker on short-term noise. See
 // OptionContractTick's doc comments in @option-decode/types for the full
 // distinction between the field pairs.
+// Naively summing a raw session OI-change count with a price-change
+// percentage broke two ways at once, confirmed live. (1) Scale: the OI
+// term runs from the tens to hundreds of thousands (NIFTY) while the price
+// term maxes out around +/-200 (a +/-100% move * 2) - live NIFTY ATM
+// showed an OI term of 73,003 against a price term of -65.1, so price
+// never once moved the outcome. (2) Sign: adding the two blindly ignores
+// which quadrant of OI-change x price-change a strike is actually in - a
+// CE leg with OI up AND price up (LONG_BUILDUP: buyers confidently adding,
+// per classifyOptionActivity below) got summed as if its rising price
+// meant "resistance building," when rising CE price with rising OI is a
+// bullish buyer signal, not writers defending a ceiling. Reproduced live:
+// a CE leg correctly classified LONG_BUILDUP by classifyOptionActivity was
+// simultaneously labelled "Increasing resistance" here.
+//
+// Fixed by mirroring pressureValue's own WRITING > LONG_BUILDUP >
+// SHORT_COVERING > LONG_UNWINDING weighting (writer-driven OI growth is a
+// stronger, more structural trend signal than buyer-driven OI growth) -
+// applied to the session (since-open) window per this function's
+// existing doc comment above, and expressed as a PERCENTAGE of session-
+// open OI rather than a raw lot count, so the result is comparable across
+// underlyings whose typical OI scale differs by orders of magnitude
+// (confirmed live: NIFTY's typical |trend| ran roughly 10x BANKNIFTY's at
+// the same instant even after this fix, down from ~100x on the raw-count
+// version - the two aren't fully equalized, since real turnover really
+// does differ per underlying, but no longer differ by a scale that makes
+// one underlying's threshold meaningless for another's).
 function calculateStrikeTrend(tick?: OptionContractTick): number {
   if (!tick) return 0;
-  const oiTrend = toLots(tick.sessionOiChange, tick);
-  const ltpTrend = (tick.sessionPriceChangePercent ?? 0) * 2;
-  return Math.round(oiTrend + ltpTrend);
+  const sessionOiChange = toLots(tick.sessionOiChange, tick);
+  const sessionOpenOi = toLots(tick.openInterest, tick) - sessionOiChange;
+  const oiChangePercent = sessionOpenOi > 0 ? (sessionOiChange / sessionOpenOi) * 100 : 0;
+  const priceChangePercent = tick.sessionPriceChangePercent ?? 0;
+
+  if (oiChangePercent > 0 && priceChangePercent < 0) return oiChangePercent * 1.5; // WRITING
+  if (oiChangePercent < 0 && priceChangePercent > 0) return oiChangePercent * 1.2; // SHORT_COVERING
+  if (oiChangePercent > 0 && priceChangePercent > 0) return oiChangePercent * 0.6; // LONG_BUILDUP
+  return oiChangePercent * 0.5; // LONG_UNWINDING / no clear direction
 }
 
 /**
@@ -450,29 +482,18 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
   };
 }
 
-// Minimum |trendScore| (OI-change-in-lots + 2x LTP-change-%) required before
-// a strike is called "building" rather than "Flat". This used to be (and
-// still is, in the client-side strike-pressure-analytics.ts version of this
-// same logic) the median trend strength of the same ATM +/-4 window being
-// classified, which means a uniform move across every nearby strike (the
-// clearest possible "building" signal) raises the bar right along with it
-// and gets silently reclassified as Flat — the detector can only see a
-// strike that stands out from its neighbors, never a level where the whole
-// zone moves together. This fixed value is a reasonable starting heuristic,
-// not a backtested number — revisit it once the backtest engine can
-// calibrate it against real historical accuracy instead of a guess.
-//
-// trendScore is now built from sessionOiChange/sessionPriceChangePercent
-// (since today's market open) rather than the old day-level
-// changeInOpenInterest/lastPriceChangePercent (vs previous close) - see
-// calculateStrikeTrend's doc comment. Magnitude-wise this sits between
-// the two rejected in-between attempts (a single ~30s poll, and a 5min
-// window) and the original day-level version: small right after market
-// open, growing toward day-level scale as the session progresses. This
-// number is a guess at a reasonable middle ground, not a calibrated one -
-// watch it against real intraday behavior across a full session and
-// adjust if it's too sticky early in the day (lower it) or too noisy
-// later in the day (raise it).
+// Minimum |trendScore| (now a weighted percentage of session-open OI, see
+// calculateStrikeTrend) required before a strike is called "building"
+// rather than "Flat". The previous fixed value of 5 was tuned for the
+// unnormalized raw-lot-count version of trendScore and became unreachable
+// once that switched to session-level fields early in a session's life -
+// confirmed live, 0 of 9 sampled rows across NIFTY/SENSEX/BANKNIFTY ever
+// read "Flat" at medians of 21,512/5,586/297. Recalibrated against live
+// percentages instead (2026-07-31, ATM +/-4 window, all three indices):
+// p10 ran 0-3.9%, p25 ran 1.0-41%, depending on the underlying's own
+// typical session churn. 5% sits just above the low end of that p10-p25
+// band for all three, so "Flat" is reachable without being the default
+// outcome for any of them.
 const STRIKE_TREND_THRESHOLD = 5;
 
 /**
@@ -502,7 +523,7 @@ export function calculateStrikeMovement(snapshot: OptionChainSnapshot): StrikeMo
       const combinedScore = peScore + ceScore;
       const netScore = peScore - ceScore;
       const netScorePercent = combinedScore >= 10 ? Math.round((netScore / combinedScore) * 100) : 0;
-      const trendScore = calculateStrikeTrend(pe) - calculateStrikeTrend(ce);
+      const trendScore = Math.round((calculateStrikeTrend(pe) - calculateStrikeTrend(ce)) * 100) / 100;
       const trendDirection: -1 | 0 | 1 = Math.abs(trendScore) >= STRIKE_TREND_THRESHOLD ? (Math.sign(trendScore) as -1 | 0 | 1) : 0;
 
       return {
