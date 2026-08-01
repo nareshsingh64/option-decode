@@ -611,7 +611,15 @@ export function calculateMarketBias(snapshot: OptionChainSnapshot, pressure: Pre
   let setupScore = 0;
   if (absGap >= 8) setupScore += 2;
   else if (absGap >= 4) setupScore += 1;
-  if (pcr !== undefined && (pcr >= 1.1 || pcr <= 0.9)) setupScore += 1;
+  // PCR only counts as confirmation when its direction actually agrees
+  // with the pressure-based bias - previously any "extreme" PCR (>=1.1 or
+  // <=0.9) added a point regardless of which way it pointed, so a PCR
+  // reading that contradicted bias still counted as confirming it.
+  // Confirmed live: a full-session NIFTY sample bucketed by PCR showed a
+  // non-monotonic relationship with pressure gap (PCR 1.6-1.7 produced a
+  // LOWER average gap than 1.2-1.3), and the dashboard could show "Bias:
+  // Balanced" while a critical PCR alert flashed the opposite direction.
+  if ((pcr !== undefined && pcr >= 1.1 && bias === "Bullish") || (pcr !== undefined && pcr <= 0.9 && bias === "Bearish")) setupScore += 1;
   if (nearMaxPain) setupScore += 1;
   if (supportDistance !== undefined && supportDistance <= 150) setupScore += 1;
   if (resistanceDistance !== undefined && resistanceDistance <= 150) setupScore += 1;

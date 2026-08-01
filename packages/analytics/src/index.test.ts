@@ -408,6 +408,30 @@ test("calculateMarketBias: near-even pressure yields a Balanced/Wait/Neutral rea
   assert.equal(bias.setupQuality, "No Edge");
 });
 
+test("calculateMarketBias: PCR only adds to setupScore when its direction agrees with bias", () => {
+  // Reproduces the live shape: a full-session NIFTY sample bucketed by
+  // PCR showed a non-monotonic relationship with pressure gap, so an
+  // "extreme" PCR pointing the OPPOSITE way from the pressure-based bias
+  // must not still count as confirmation.
+  const snap = snapshot([], 25000, 25000);
+  const bullishPressure: PressureScore = {
+    bullishPressure: 60,
+    bearishPressure: 40,
+    supportZones: [],
+    resistanceZones: [],
+    pcr: 1.3, // strong put support - agrees with a Bullish bias
+    maxPain: undefined
+  };
+  const agreeing = calculateMarketBias(snap, bullishPressure);
+  assert.equal(agreeing.bias, "Bullish");
+  assert.equal(agreeing.setupScore, 3, "absGap 20 >= 8 (+2) plus PCR agreeing with Bullish (+1)");
+
+  const disagreeingPcr: PressureScore = { ...bullishPressure, pcr: 0.7 }; // strong call resistance - disagrees with the Bullish bias above
+  const disagreeing = calculateMarketBias(snap, disagreeingPcr);
+  assert.equal(disagreeing.bias, "Bullish");
+  assert.equal(disagreeing.setupScore, agreeing.setupScore - 1, "a PCR reading that contradicts bias must not add the confirmation point");
+});
+
 function pulsePoint(minutesFromBase: number, spotPrice: number, bullishPressure: number, bearishPressure: number, pcr?: number): MarketPulsePoint {
   const base = Date.parse("2026-07-01T09:15:00.000Z");
   return {
