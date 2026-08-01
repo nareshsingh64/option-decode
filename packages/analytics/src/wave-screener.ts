@@ -136,14 +136,23 @@ export function evaluateWaveScreener(analysis: ElliottWaveAnalysis, rsi: number 
   }
 
   if (analysis.currentStage === "Wave 3 Initiation") {
-    const strongVolume = rvol !== undefined && rvol > WAVE3_RVOL_THRESHOLD;
+    // Indices/commodities never produce an RVOL reading at all (no volume
+    // data - see calculateRvol's doc comment), so requiring rvol > threshold
+    // outright made WAVE3_IMPULSE structurally unreachable for every index
+    // underlying, no matter how strong the actual breakout - confirmed on
+    // live data (2026-08-01): BANKNIFTY sat in a valid, non-invalidated
+    // "Wave 3 Initiation" and still couldn't alert. Treating a missing
+    // reading as non-blocking (same "undefined doesn't block" convention
+    // already used for Wave 2's decliningVolume above) means indices screen
+    // on momentum (RSI) alone, same asymmetry already accepted there.
+    const strongVolume = rvol === undefined || rvol > WAVE3_RVOL_THRESHOLD;
     const momentumConfirmed = rsi !== undefined && (bullish ? rsi > WAVE3_RSI_BULLISH_THRESHOLD : rsi < WAVE3_RSI_BEARISH_THRESHOLD);
     if (strongVolume && momentumConfirmed) {
       return {
         alertType: "WAVE3_IMPULSE",
         stage: analysis.currentStage,
         direction: analysis.direction,
-        message: `${analysis.underlyingSymbol}: Wave 3 breakout confirmed - RVOL ${rvol!.toFixed(2)}x with RSI ${rsi!.toFixed(0)}, signaling an explosive ${bullish ? "upside" : "downside"} extension.`,
+        message: `${analysis.underlyingSymbol}: Wave 3 breakout confirmed - ${rvol !== undefined ? `RVOL ${rvol.toFixed(2)}x with ` : ""}RSI ${rsi!.toFixed(0)}, signaling an explosive ${bullish ? "upside" : "downside"} extension.`,
         triggeredPrice: analysis.lastPrice,
         rvol,
         rsi
