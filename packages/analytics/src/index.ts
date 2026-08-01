@@ -89,6 +89,18 @@ function calculateMaxPain(ticks: OptionContractTick[]): number | undefined {
     return undefined;
   }
 
+  // A chain with zero total open interest (e.g. a stale feed for an
+  // illiquid underlying) scores every candidate strike's "pain" as exactly
+  // 0 - without this guard, the loop's running minimum (starting at
+  // +Infinity) never actually improves on the first candidate, so the
+  // lowest strike in the chain silently comes back as if it were a real
+  // max-pain reading. Confirmed live: SILVER/COPPER published a "max pain"
+  // 14-17% below spot, repeatedly, with 0 open interest behind it.
+  const totalOpenInterest = ticks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
+  if (totalOpenInterest <= 0) {
+    return undefined;
+  }
+
   let bestStrike = strikes[0];
   let lowestPain = Number.POSITIVE_INFINITY;
   for (const candidate of strikes) {

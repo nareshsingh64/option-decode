@@ -275,6 +275,16 @@ function calculateMaxPainStrike(overview: MarketOverview) {
     return undefined;
   }
 
+  // Same zero-OI guard as calculateMaxPain in @option-decode/analytics -
+  // this is the client-side fallback used only when the server's own
+  // maxPain comes back undefined, so it must not silently reintroduce the
+  // same bug (a zero-OI chain scoring every strike's "pain" as 0, and the
+  // lowest strike winning by default).
+  const totalOpenInterest = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
+  if (totalOpenInterest <= 0) {
+    return undefined;
+  }
+
   let bestStrike = strikes[0];
   let lowestPain = Number.POSITIVE_INFINITY;
   for (const candidate of strikes) {

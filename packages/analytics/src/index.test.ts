@@ -59,6 +59,26 @@ test("calculatePressureScore.maxPain picks the strike that minimizes total optio
   assert.equal(calculatePressureScore(snap).maxPain, 200);
 });
 
+test("calculatePressureScore.maxPain is undefined (not the lowest strike) when the chain has zero total open interest", () => {
+  // Reproduces the exact live failure: SILVER/COPPER repeatedly published
+  // a "max pain" 14-17% below spot with 0 open interest behind it, because
+  // every candidate strike scored exactly 0 "pain" and the loop's running
+  // minimum (starting at +Infinity) never improved past the first
+  // (lowest) candidate.
+  const snap = snapshot(
+    [
+      tick({ optionType: "PE", strikePrice: 180000, openInterest: 0 }),
+      tick({ optionType: "CE", strikePrice: 217000, openInterest: 0 }),
+      tick({ optionType: "PE", strikePrice: 217000, openInterest: 0 }),
+      tick({ optionType: "CE", strikePrice: 355000, openInterest: 0 })
+    ],
+    217826,
+    217000
+  );
+
+  assert.equal(calculatePressureScore(snap).maxPain, undefined);
+});
+
 test("calculatePressureScore: heavy PE writing skews bullish and PCR > 1", () => {
   const snap = snapshot(
     [
