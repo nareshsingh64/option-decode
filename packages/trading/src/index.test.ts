@@ -349,3 +349,90 @@ test("calculateTradeRecommendations biases seller-safety strikes beyond a suppli
   assert.equal(ce.strike, 25300, "25150 sits inside the 25200 expected-move edge, so the boundary should push selection to 25300");
   assert.equal(pe.strike, 24700, "24850 sits inside the 24800 expected-move edge, so the boundary should push selection to 24700");
 });
+
+test("near-support and near-resistance never ship together - a directional bias picks the matching side", () => {
+  // Reproduces the exact live shape (NIFTY): spot sits within 80pts of
+  // BOTH a support and a resistance zone at once, and both proximity
+  // conditions fire independently with no cross-exclusivity.
+  const ticks = [
+    tick({ optionType: "CE", strikePrice: 24000, lastPrice: 100, delta: 0.55 }),
+    tick({ optionType: "PE", strikePrice: 24000, lastPrice: 40 }),
+    tick({ optionType: "CE", strikePrice: 24140, lastPrice: 30 }),
+    tick({ optionType: "PE", strikePrice: 24140, lastPrice: 90, delta: -0.45 })
+  ];
+  const pressure: PressureScore = {
+    bullishPressure: 60,
+    bearishPressure: 40,
+    supportZones: [{ strikePrice: 24000, score: 100, reason: "PE support pressure" }],
+    resistanceZones: [{ strikePrice: 24140, score: 80, reason: "CE resistance pressure" }],
+    pcr: 1.2,
+    maxPain: undefined
+  };
+
+  const recs = calculateTradeRecommendations(snapshot(ticks, 24075, 24000), pressure, bullishMarketBias(), [strikeMovementRow({ netScore: 5 })], noInterpretation);
+  assert.ok(recs.some((rec) => rec.id === "near-support"), "Bullish bias should keep the near-support (buy CE) recommendation");
+  assert.equal(
+    recs.find((rec) => rec.id === "near-resistance"),
+    undefined,
+    "Bullish bias should drop the contradictory near-resistance (buy PE) recommendation"
+  );
+});
+
+test("near-support and near-resistance are both dropped when the market bias itself is Balanced", () => {
+  const ticks = [
+    tick({ optionType: "CE", strikePrice: 24000, lastPrice: 100, delta: 0.55 }),
+    tick({ optionType: "PE", strikePrice: 24000, lastPrice: 40 }),
+    tick({ optionType: "CE", strikePrice: 24140, lastPrice: 30 }),
+    tick({ optionType: "PE", strikePrice: 24140, lastPrice: 90, delta: -0.45 })
+  ];
+  const pressure: PressureScore = {
+    bullishPressure: 51,
+    bearishPressure: 49,
+    supportZones: [{ strikePrice: 24000, score: 100, reason: "PE support pressure" }],
+    resistanceZones: [{ strikePrice: 24140, score: 80, reason: "CE resistance pressure" }],
+    pcr: 1.0,
+    maxPain: undefined
+  };
+
+  const recs = calculateTradeRecommendations(
+    snapshot(ticks, 24075, 24000),
+    pressure,
+    bullishMarketBias({ bias: "Balanced" }),
+    [strikeMovementRow({ netScore: 0 })],
+    noInterpretation
+  );
+  assert.equal(recs.find((rec) => rec.id === "near-support"), undefined, "neither side is better justified with no directional bias");
+  assert.equal(recs.find((rec) => rec.id === "near-resistance"), undefined, "neither side is better justified with no directional bias");
+});
+
+test("buyer-momentum and seller-safety never ship together - a directional bias favors buying, no bias favors selling", () => {
+  const ticks = [
+    tick({ optionType: "PE", strikePrice: 24800, delta: 0.08, lastPrice: 20 }),
+    tick({ optionType: "CE", strikePrice: 25200, delta: 0.08, lastPrice: 18 })
+  ];
+  const snap = snapshot(ticks, 25000, 25000);
+  const interpretation: TradeInterpretation = { buyerScore: 15, sellerScore: 15 };
+
+  const directional = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], interpretation);
+  assert.ok(directional.some((rec) => rec.id === "buyer-momentum"), "a directional bias should keep buyer-momentum");
+  assert.equal(
+    directional.find((rec) => rec.id === "seller-safety"),
+    undefined,
+    "a directional bias should drop the contradictory seller-safety recommendation"
+  );
+
+  const balancedPressure: PressureScore = { bullishPressure: 50, bearishPressure: 50, supportZones: [], resistanceZones: [], pcr: 1.0, maxPain: undefined };
+  const balanced = calculateTradeRecommendations(
+    snap,
+    balancedPressure,
+    bullishMarketBias({ bias: "Balanced" }),
+    [strikeMovementRow({ netScore: 0 })],
+    interpretation
+  );
+  assert.ok(balanced.some((rec) => rec.id === "seller-safety"), "no directional bias should keep seller-safety");
+  assert.equal(
+    balanced.find((rec) => rec.id === "buyer-momentum"),
+    undefined,
+    "no directional bias should drop the contradictory buyer-momentum recommendation"
+  );
+});

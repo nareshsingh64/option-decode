@@ -1,5 +1,6 @@
 import type {
   AtmStraddleExpectedMove,
+  MarketBias,
   MarketBiasSummary,
   OptionChainSnapshot,
   OptionType,
@@ -526,10 +527,59 @@ export function calculateTradeRecommendations(
     });
   }
 
-  return recs
+  return resolveContradictoryRecommendations(recs, marketBias.bias)
     .sort((a, b) => {
       const order: Record<Recommendation["priority"], number> = { high: 0, medium: 1, low: 2 };
       return order[a.priority] !== order[b.priority] ? order[a.priority] - order[b.priority] : b.confidence - a.confidence;
     })
     .slice(0, 5);
+}
+
+// Each block above is gated independently, so directly contradictory
+// advice could ship in the same payload - confirmed live, NIFTY returned
+// "buy CE at 24,350" (bullish-bias/near-support) and "buy PE near 24,400"
+// (near-resistance) together with spot pinned directly between the two
+// strikes; BANKNIFTY and SENSEX both returned "buyer momentum favours
+// buying options" and "safe environment for option sellers" in the same
+// response. Two independent axes get resolved here: buy-CE vs buy-PE, and
+// buy-options vs sell-options. Each defers to the market's own bias
+// (already computed once, upstream, as marketBias) rather than an
+// arbitrary tiebreak - a real directional bias picks its side; with no
+// bias, the directional pair is dropped entirely (neither a bounce nor a
+// rejection trade is better justified when spot sits between both a
+// nearby support and a nearby resistance), and the options-stance pair
+// favors selling, matching the balanced-market recommendation's own
+// stated logic ("avoid directional long option trades until bias
+// develops").
+const DIRECTIONAL_STANCE: Partial<Record<string, "bullish" | "bearish">> = {
+  "bullish-bias": "bullish",
+  "bearish-bias": "bearish",
+  "near-support": "bullish",
+  "near-resistance": "bearish"
+};
+const OPTIONS_STANCE: Partial<Record<string, "buy" | "sell">> = {
+  "buyer-momentum": "buy",
+  "seller-safety": "sell"
+};
+
+function resolveContradictoryRecommendations(recs: Recommendation[], bias: MarketBias): Recommendation[] {
+  const hasBullish = recs.some((rec) => DIRECTIONAL_STANCE[rec.id] === "bullish");
+  const hasBearish = recs.some((rec) => DIRECTIONAL_STANCE[rec.id] === "bearish");
+  const hasBuy = recs.some((rec) => OPTIONS_STANCE[rec.id] === "buy");
+  const hasSell = recs.some((rec) => OPTIONS_STANCE[rec.id] === "sell");
+
+  return recs.filter((rec) => {
+    const directional = DIRECTIONAL_STANCE[rec.id];
+    if (directional && hasBullish && hasBearish) {
+      if (bias === "Bullish") return directional === "bullish";
+      if (bias === "Bearish") return directional === "bearish";
+      return false;
+    }
+    const optionsStance = OPTIONS_STANCE[rec.id];
+    if (optionsStance && hasBuy && hasSell) {
+      const favorBuy = bias === "Bullish" || bias === "Bearish";
+      return favorBuy ? optionsStance === "buy" : optionsStance === "sell";
+    }
+    return true;
+  });
 }
