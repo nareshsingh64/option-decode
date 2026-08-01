@@ -1,10 +1,33 @@
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
 };
 
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
+// Driver adapter (not Prisma's native/Rust query engine) - see the
+// generator comment in prisma/schema.prisma for why. Confirmed in
+// production (2026-08-01): worker RSS climbed from ~250MB to 5-6GB within
+// 30-45 minutes while heapUsed/external/arrayBuffers all stayed flat at
+// ~60MB/5MB/0.2MB - memory invisible to every Node-level memory API, only
+// explicable by something native. The `mariadb` driver used here is pure
+// JS; DATABASE_URL is parsed into discrete fields rather than passed as a
+// connection string because the mariadb package only accepts its own
+// mariadb:// URL scheme, not mysql://.
+function toMariaDbPoolConfig(databaseUrl: string) {
+  const url = new URL(databaseUrl);
+  return {
+    host: url.hostname,
+    port: url.port ? Number(url.port) : undefined,
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: url.pathname.replace(/^\//, "")
+  };
+}
+
+const adapter = new PrismaMariaDb(toMariaDbPoolConfig(process.env.DATABASE_URL as string));
+
+export const prisma = globalForPrisma.prisma ?? new PrismaClient({ adapter });
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;

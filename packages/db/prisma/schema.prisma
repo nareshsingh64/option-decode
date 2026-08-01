@@ -1,5 +1,12 @@
+// engineType = "client" generates a WASM query compiler instead of the
+// native Rust query engine (libquery_engine-*.node) - see index.ts's
+// PrismaClient construction for why: the native engine was confirmed (via
+// production RSS/heap/external/arrayBuffers logs) to hold multiple GB of
+// memory completely invisible to Node's own memory APIs, on a process
+// that otherwise sits under 100MB of V8 heap.
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  engineType = "client"
 }
 
 datasource db {
