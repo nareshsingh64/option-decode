@@ -689,6 +689,44 @@ export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedE
   }));
 }
 
+// Feeds the Strike Matrix monthly horizon's IV Rank gate - deliberately
+// tracks the underlying's ATM CALL implied volatility day-over-day
+// (packages/analytics/src/strike-matrix.ts#evaluateMonthlyRiskRule), not
+// tied to one specific expiry, since IV Rank is conventionally a read on
+// the underlying's volatility regime and a monthly contract itself only
+// lives ~30 days - there's no sensible "same expiry N days ago" for a
+// 20+ day lookback. CALL-only because PE-side impliedVolatility is
+// currently unreliable in production (reads 0 on live ticks where the CE
+// leg at the same strike/instant has a real value - a separate,
+// unrelated data-pipeline bug).
+export async function getAtmCallIvHistory(underlyingSymbol: string, days: number, client: DbClient = prisma): Promise<number[]> {
+  const tradingDates = await client.optionChainSnapshot.findMany({
+    where: { underlyingSymbol },
+    distinct: ["tradingDate"],
+    select: { tradingDate: true },
+    orderBy: { tradingDate: "desc" },
+    take: days
+  });
+
+  const history: number[] = [];
+  for (const { tradingDate } of tradingDates) {
+    const snapshot = await client.optionChainSnapshot.findFirst({
+      where: { underlyingSymbol, tradingDate },
+      orderBy: { snapshotTime: "desc" },
+      include: { ticks: { where: { optionType: "CE" } } }
+    });
+    if (!snapshot) {
+      continue;
+    }
+    const atmStrike = snapshot.atmStrike.toNumber();
+    const atmTick = snapshot.ticks.find((tick) => tick.strikePrice.toNumber() === atmStrike);
+    if (atmTick?.impliedVolatility) {
+      history.push(atmTick.impliedVolatility.toNumber());
+    }
+  }
+  return history.reverse();
+}
+
 export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?: string, limit = 60, client: DbClient = prisma) {
   const rows = await client.pressureScore.findMany({
     where: {

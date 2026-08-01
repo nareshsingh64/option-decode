@@ -22,7 +22,9 @@ import type {
   OptionContractTick,
   StrikeMatrixAnalysis,
   StrikeMatrixBias,
+  StrikeMatrixInstitutionalUnwinding,
   StrikeMatrixRecommendation,
+  StrikeMatrixRiskRuleStatus,
   StrikeMatrixRow,
   StrikeMatrixWall,
   TradingHorizon
@@ -119,6 +121,7 @@ function buildRow(tick: OptionContractTick): StrikeMatrixRow | null {
     optionType: tick.optionType,
     strikePrice: tick.strikePrice,
     lastPrice: tick.lastPrice,
+    lastPriceChange: tick.lastPriceChange,
     delta: tick.delta,
     volume,
     oiChange,
@@ -246,7 +249,143 @@ function closestToTargetDelta(rows: StrikeMatrixRow[], optionType: "CE" | "PE", 
   return best;
 }
 
-export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: TradingHorizon): StrikeMatrixAnalysis {
+// --- Mandatory risk rules ---------------------------------------------
+// Each horizon's own rule (below) was previously footnote text only,
+// never evaluated - confirmed live, none of the four (2x-delta stop,
+// weekend-decay window, IV Rank gate, Institutional Unwinding) were ever
+// checked against real data. Every rule here defaults to "can't be
+// evaluated" (satisfied: undefined) rather than silently passing when the
+// data needed to check it isn't available - an unevaluated rule must never
+// look identical to a cleared one.
+
+function evaluateIntradayRiskRule(): StrikeMatrixRiskRuleStatus {
+  // The 2x-delta hard stop compares a short strike's CURRENT |delta|
+  // against its |delta| AT ENTRY - which only exists once a position has
+  // actually been placed. Strike Matrix is a pre-trade screen with no
+  // entry to compare against, so there is nothing for this function to
+  // evaluate here - but the rule itself is not unenforced: Sim's exit-rule
+  // engine already auto-closes any open position whose |delta| doubles
+  // from its entry delta (DELTA_2X_INTRADAY, packages/db/src/sim-
+  // repository.ts), confirmed working in production. This status exists
+  // so the UI can say so explicitly instead of implying the rule is
+  // unchecked.
+  return {
+    satisfied: undefined,
+    detail: "Applies after entry, not pre-trade - Sim auto-closes any open position whose |delta| doubles from its entry delta."
+  };
+}
+
+// "Friday afternoon" starts 12:00 IST; "Monday morning" ends 11:00 IST the
+// following Monday. Neither cutoff is independently documented anywhere in
+// this repo - chosen as a reasonable starting boundary for "deploy weekly
+// positions to capture weekend theta, not mid-week," not a backtested
+// number. Revisit if real usage shows it's too tight or too loose.
+const WEEKEND_DECAY_FRIDAY_START_HOUR_IST = 12;
+const WEEKEND_DECAY_MONDAY_END_HOUR_IST = 11;
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+function isWeekendDecayWindow(now: Date): boolean {
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  const day = ist.getUTCDay(); // 0=Sun ... 5=Fri, 6=Sat
+  const hour = ist.getUTCHours();
+  if (day === 6 || day === 0) return true; // all weekend
+  if (day === 5) return hour >= WEEKEND_DECAY_FRIDAY_START_HOUR_IST;
+  if (day === 1) return hour < WEEKEND_DECAY_MONDAY_END_HOUR_IST;
+  return false;
+}
+
+function evaluateWeeklyRiskRule(now: Date): StrikeMatrixRiskRuleStatus {
+  const inWindow = isWeekendDecayWindow(now);
+  return {
+    satisfied: inWindow,
+    detail: inWindow
+      ? "Within the Friday-afternoon-to-Monday-morning window - safe to deploy for weekend theta."
+      : "Outside the weekend-decay window (Fri 12:00 IST - Mon 11:00 IST) - a fresh weekly position now carries uncompensated gap risk."
+  };
+}
+
+// IV Rank needs a real distribution of prior trading days' ATM IV to rank
+// today's reading against - a percentile computed from fewer than ~20 days
+// is mostly noise. This floor is deliberately conservative given this
+// deployment currently has under 20 days of snapshot history at all
+// (confirmed live, 2026-07-31) - the rule will genuinely start evaluating
+// once enough days accumulate, rather than faking a rank from what's there.
+const MIN_IV_RANK_HISTORY_DAYS = 20;
+const IV_RANK_MINIMUM_PERCENT = 30;
+
+function calculateIvRank(currentIv: number, history: number[]): number {
+  const below = history.filter((iv) => iv <= currentIv).length;
+  return (below / history.length) * 100;
+}
+
+function evaluateMonthlyRiskRule(snapshot: OptionChainSnapshot, ivHistory: number[] | undefined): StrikeMatrixRiskRuleStatus {
+  // ATM CALL IV specifically - PE-side impliedVolatility is currently
+  // unreliable in production (confirmed live: reads 0 on every recent PE
+  // tick sampled while the CE tick at the same strike/instant has a real
+  // value - flagged separately as its own data-pipeline bug, not
+  // something this rule should paper over).
+  const atmCall = snapshot.ticks.find((tick) => tick.optionType === "CE" && tick.strikePrice === snapshot.atmStrike);
+  const currentIv = atmCall?.impliedVolatility;
+  if (currentIv === undefined || !ivHistory || ivHistory.length < MIN_IV_RANK_HISTORY_DAYS) {
+    return {
+      satisfied: undefined,
+      detail: `Not enough IV history to compute a rank yet (need ${MIN_IV_RANK_HISTORY_DAYS}+ trading days) - treat as unconfirmed, not cleared.`
+    };
+  }
+  const rank = calculateIvRank(currentIv, ivHistory);
+  const satisfied = rank >= IV_RANK_MINIMUM_PERCENT;
+  return {
+    satisfied,
+    detail: satisfied
+      ? `IV Rank ${rank.toFixed(0)}% clears the ${IV_RANK_MINIMUM_PERCENT}% floor - premium compensates the vega risk.`
+      : `IV Rank ${rank.toFixed(0)}% is below the ${IV_RANK_MINIMUM_PERCENT}% floor - the premium collected won't compensate the vega risk.`
+  };
+}
+
+// Institutional Unwinding: call WRITERS covering (buying back short
+// calls) in the ATM/near-OTM band - the exit signal for a short-call-
+// oriented structure. Needs a wider delta band than any horizon's own
+// tradable universe (0.35-0.65 vs every horizon's <=0.25 cap), since
+// covering typically starts near the money, not in the far wings this
+// engine otherwise trades - confirmed live, BANKNIFTY had 5 calls with
+// negative OI change in this exact band, none inside any horizon's own
+// universe. Requires the SHORT_COVERING signature specifically (OI
+// falling AND price rising) rather than any OI decrease, since OI falling
+// with price ALSO falling is LONG_UNWINDING (buyers giving up), not
+// writers covering.
+const INSTITUTIONAL_UNWINDING_DELTA_MIN = 0.35;
+const INSTITUTIONAL_UNWINDING_DELTA_MAX = 0.65;
+
+function detectInstitutionalUnwinding(allRows: StrikeMatrixRow[]): StrikeMatrixInstitutionalUnwinding | undefined {
+  const candidates = allRows.filter(
+    (row) =>
+      row.optionType === "CE" &&
+      Math.abs(row.delta) >= INSTITUTIONAL_UNWINDING_DELTA_MIN &&
+      Math.abs(row.delta) <= INSTITUTIONAL_UNWINDING_DELTA_MAX &&
+      row.oiChange < 0 &&
+      (row.lastPriceChange ?? 0) > 0
+  );
+  if (!candidates.length) {
+    return undefined;
+  }
+  let best = candidates[0];
+  for (const row of candidates) {
+    if (Math.abs(row.oiChange) > Math.abs(best.oiChange)) {
+      best = row;
+    }
+  }
+  return { strikePrice: best.strikePrice, delta: best.delta, oiChange: best.oiChange };
+}
+
+export function calculateStrikeMatrix(
+  snapshot: OptionChainSnapshot,
+  horizon: TradingHorizon,
+  now: Date = new Date(),
+  // Prior trading days' ATM CALL implied volatility, oldest-to-newest -
+  // supplied by the caller (this package has no DB access of its own).
+  // Only consulted for the monthly horizon's IV Rank gate.
+  ivHistory?: number[]
+): StrikeMatrixAnalysis {
   const profile = STRIKE_MATRIX_HORIZONS[horizon];
 
   // Every strike with usable volume/OI-change, chain-wide - not yet
@@ -324,6 +463,10 @@ export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: Tr
     }
   }
 
+  const riskRuleStatus: StrikeMatrixRiskRuleStatus =
+    horizon === "intraday" ? evaluateIntradayRiskRule() : horizon === "weekly" ? evaluateWeeklyRiskRule(now) : evaluateMonthlyRiskRule(snapshot, ivHistory);
+  const institutionalUnwinding = detectInstitutionalUnwinding(allRows);
+
   return {
     horizon,
     deltaMin: profile.deltaMin,
@@ -341,6 +484,8 @@ export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: Tr
     callWall,
     putWall,
     recommendation,
-    riskRule: profile.riskRule
+    riskRule: profile.riskRule,
+    riskRuleStatus,
+    institutionalUnwinding
   };
 }

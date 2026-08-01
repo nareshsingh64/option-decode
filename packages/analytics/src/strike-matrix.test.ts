@@ -291,3 +291,63 @@ test("horizon profiles match the decision-matrix doc", () => {
   assert.equal(STRIKE_MATRIX_HORIZONS.monthly.deltaMin, 0.08);
   assert.equal(STRIKE_MATRIX_HORIZONS.monthly.deltaMax, 0.15);
 });
+
+test("intraday's 2x-delta rule reports unevaluated (pre-trade), not silently passing", () => {
+  const result = calculateStrikeMatrix(snapshot([tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 100 })]), "intraday");
+  assert.equal(result.riskRuleStatus.satisfied, undefined);
+  assert.match(result.riskRuleStatus.detail, /Sim auto-closes/);
+});
+
+test("weekly's weekend-decay window reads satisfied on a Friday afternoon and unsatisfied mid-week", () => {
+  const snap = snapshot([tick({ optionType: "CE", strikePrice: 25200, delta: 0.15, volume: 1000, changeInOpenInterest: 100 })]);
+  // 2026-07-31 is a Friday; 14:00 IST = 08:30 UTC.
+  const fridayAfternoon = calculateStrikeMatrix(snap, "weekly", new Date("2026-07-31T08:30:00.000Z"));
+  assert.equal(fridayAfternoon.riskRuleStatus.satisfied, true);
+
+  // 2026-07-29 is a Wednesday; 11:00 IST = 05:30 UTC.
+  const wednesday = calculateStrikeMatrix(snap, "weekly", new Date("2026-07-29T05:30:00.000Z"));
+  assert.equal(wednesday.riskRuleStatus.satisfied, false);
+});
+
+test("monthly's IV Rank gate reports unevaluated without enough history, then computes a real rank once there is enough", () => {
+  const snap = snapshot([tick({ optionType: "CE", strikePrice: 25000, delta: 0.1, volume: 1000, changeInOpenInterest: 100, impliedVolatility: 18 })]);
+
+  const noHistory = calculateStrikeMatrix(snap, "monthly", new Date(), []);
+  assert.equal(noHistory.riskRuleStatus.satisfied, undefined);
+  assert.match(noHistory.riskRuleStatus.detail, /Not enough IV history/);
+
+  // 20 days of history, all below today's 18 -> IV Rank 100%, clears the 30% floor.
+  const history = new Array(20).fill(10);
+  const withHistory = calculateStrikeMatrix(snap, "monthly", new Date(), history);
+  assert.equal(withHistory.riskRuleStatus.satisfied, true);
+  assert.match(withHistory.riskRuleStatus.detail, /IV Rank 100%/);
+
+  // Today's IV (18) sits below all 20 history days (all 25) -> IV Rank 0%, fails the floor.
+  const highHistory = new Array(20).fill(25);
+  const belowFloor = calculateStrikeMatrix(snap, "monthly", new Date(), highHistory);
+  assert.equal(belowFloor.riskRuleStatus.satisfied, false);
+  assert.match(belowFloor.riskRuleStatus.detail, /IV Rank 0%/);
+});
+
+test("Institutional Unwinding fires on a call short-covering signature in the ATM/near-OTM band, outside any horizon's own universe", () => {
+  // Reproduces the live shape (BANKNIFTY): a call at |delta| 0.5 (well
+  // outside every horizon's <=0.25 cap) shows OI falling while price
+  // rises - writers covering their short calls.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25000, delta: 0.5, volume: 1000, changeInOpenInterest: -300, lastPriceChange: 5 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 100 }) // inside the intraday universe, irrelevant here
+    ]),
+    "intraday"
+  );
+  assert.ok(result.universe.every((row) => row.strikePrice !== 25000), "the covering strike sits outside intraday's own delta band");
+  assert.deepEqual(result.institutionalUnwinding, { strikePrice: 25000, delta: 0.5, oiChange: -300 });
+});
+
+test("Institutional Unwinding does not fire on long-unwinding (OI and price both falling)", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([tick({ optionType: "CE", strikePrice: 25000, delta: 0.5, volume: 1000, changeInOpenInterest: -300, lastPriceChange: -5 })]),
+    "intraday"
+  );
+  assert.equal(result.institutionalUnwinding, undefined);
+});

@@ -260,7 +260,27 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                       : "No execution strike inside the delta band on the required side(s) — widen data coverage or wait for the chain to fill."}
                   </p>
                 )}
-                <p className="mt-3 border-t border-terminal-line/70 pt-2 text-xs text-terminal-amber">Risk rule — {analysis.riskRule}</p>
+                <div className="mt-3 border-t border-terminal-line/70 pt-2 text-xs">
+                  <p className="text-terminal-amber">Risk rule — {analysis.riskRule}</p>
+                  <p
+                    className={`mt-1 ${
+                      analysis.riskRuleStatus.satisfied === true
+                        ? "text-terminal-emerald"
+                        : analysis.riskRuleStatus.satisfied === false
+                          ? "text-terminal-red"
+                          : "text-terminal-muted"
+                    }`}
+                  >
+                    {analysis.riskRuleStatus.satisfied === true ? "Cleared — " : analysis.riskRuleStatus.satisfied === false ? "Not cleared — " : "Unevaluated — "}
+                    {analysis.riskRuleStatus.detail}
+                  </p>
+                </div>
+                {analysis.institutionalUnwinding ? (
+                  <p className="mt-2 border-t border-terminal-line/70 pt-2 text-xs text-terminal-red">
+                    Institutional Unwinding — CE {formatStrike(analysis.institutionalUnwinding.strikePrice)} is covering (OI {analysis.institutionalUnwinding.oiChange.toFixed(0)}, Δ{" "}
+                    {analysis.institutionalUnwinding.delta.toFixed(2)}). If you&apos;re short this or a nearby call, treat this as an exit/roll signal.
+                  </p>
+                ) : null}
               </article>
             </div>
 

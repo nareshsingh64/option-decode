@@ -330,6 +330,10 @@ export interface StrikeMatrixRow {
   // undefined only if the tick genuinely has no last-traded price yet
   // (e.g. a strike that hasn't traded this session).
   lastPrice?: number;
+  // Day-level LTP change vs previous close - used only to tell writing
+  // (price falling) apart from covering (price rising) when OI is falling,
+  // for the Institutional Unwinding trigger.
+  lastPriceChange?: number;
   delta: number;
   volume: number;
   oiChange: number;
@@ -362,6 +366,22 @@ export interface StrikeMatrixRecommendation {
   note: string;
 }
 
+export interface StrikeMatrixRiskRuleStatus {
+  // undefined when the rule genuinely can't be evaluated from data on hand
+  // (e.g. IV Rank without enough trading-day history, or the 2x-delta stop
+  // before any position exists to compare against) - never defaulted to
+  // true/false, since a silent default would misrepresent an unevaluated
+  // rule as a checked one.
+  satisfied: boolean | undefined;
+  detail: string;
+}
+
+export interface StrikeMatrixInstitutionalUnwinding {
+  strikePrice: number;
+  delta: number;
+  oiChange: number;
+}
+
 export interface StrikeMatrixAnalysis {
   horizon: TradingHorizon;
   deltaMin: number;
@@ -379,6 +399,13 @@ export interface StrikeMatrixAnalysis {
   putWall?: StrikeMatrixWall;
   recommendation?: StrikeMatrixRecommendation;
   riskRule: string;
+  riskRuleStatus: StrikeMatrixRiskRuleStatus;
+  // Institutional call-writer covering in the ATM/near-OTM band (|delta|
+  // 0.35-0.65) - wider than any horizon's own tradable universe, since
+  // covering typically starts near the money, not in the far wings this
+  // engine otherwise trades. Cross-cutting: evaluated the same way
+  // regardless of which horizon is selected, unlike the other three rules.
+  institutionalUnwinding?: StrikeMatrixInstitutionalUnwinding;
 }
 
 // --- Elliott Wave Engine ---

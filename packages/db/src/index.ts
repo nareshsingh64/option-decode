@@ -48,7 +48,7 @@ export type { DhanApiRequestLogEntry, DhanApiRequestSummaryRow } from "./dhan-au
 
 export { getOptionChainTrackedStocks, listActiveFnoStocks, setFnoStockIndexWeight, syncFnoStockUniverse } from "./fno-stock-repository.js";
 export type { FnoStockSummary, FnoStockSyncResult, WeightedFnoStock } from "./fno-stock-repository.js";
-export { calculateOiWeightedAverageSellPrices, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getSpotPriceHistory, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
+export { calculateOiWeightedAverageSellPrices, getAtmCallIvHistory, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getSpotPriceHistory, listPcrTrend, listRecentPressureHistory, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, pruneMarketDataBefore, saveOptionChainSnapshot } from "./market-repository.js";
 
 export { getWavePriceHistory, recordWavePricePoints } from "./wave-price-repository.js";
 export type { WavePricePointInput } from "./wave-price-repository.js";

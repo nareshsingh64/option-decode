@@ -7,7 +7,7 @@ import { z } from "zod";
 import { calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAtmCallIvHistory, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
@@ -72,6 +72,11 @@ const OI_WEIGHTED_ZONES_CACHE_MS = MARKET_SNAPSHOT_CACHE_MS;
 // trend line, short enough to still describe "right now" rather than the
 // whole session.
 const MARKET_PULSE_WINDOW_MS = 5 * 60 * 1000;
+// Matches MIN_IV_RANK_HISTORY_DAYS in @option-decode/analytics's Strike
+// Matrix engine - fetches a bit more than the minimum the rule needs so a
+// day or two of missing/incomplete history doesn't tip it back into
+// "insufficient data."
+const IV_RANK_LOOKBACK_DAYS = 25;
 const WATCHLIST_SYMBOLS_CACHE_MS = 30_000;
 const LIVE_SNAPSHOT_STALE_MS = 90_000;
 // Matches MARKET_AUX_CACHE_MS's reasoning: pushing every 1s only reflects
@@ -611,6 +616,10 @@ app.get<{
     snapshot = await getCachedLatestSnapshotOrDemo(requestedUnderlying, requestedExpiry);
   }
 
+  // Only fetched for monthly - the only horizon whose risk rule consults
+  // it - to avoid the extra history lookup on every intraday/weekly poll.
+  const ivHistory = horizon === "monthly" ? await getAtmCallIvHistory(snapshot.underlyingSymbol, IV_RANK_LOOKBACK_DAYS) : undefined;
+
   return {
     underlying: snapshot.underlyingSymbol,
     expiry: snapshot.expiry,
@@ -618,7 +627,7 @@ app.get<{
     snapshotTime: snapshot.snapshotTime,
     spotPrice: snapshot.spotPrice,
     atmStrike: snapshot.atmStrike,
-    analysis: calculateStrikeMatrix(snapshot, horizon)
+    analysis: calculateStrikeMatrix(snapshot, horizon, new Date(), ivHistory)
   };
 });
 
