@@ -170,14 +170,15 @@ function recommendationForStage(stage: WaveStage, direction: WaveDirection): Ell
   }
 }
 
-function fibLevel(label: string, actualPercent: number | undefined, targetLow: number, targetHigh: number, hardCap: number, description: string): WaveFibonacciLevel {
+function fibLevel(label: string, actualPercent: number | undefined, targetLow: number, targetHigh: number, hardCap: number, description: string, provisional = false): WaveFibonacciLevel {
   return {
     label,
     actualPercent,
     targetLow,
     targetHigh,
     withinTarget: actualPercent !== undefined && actualPercent <= hardCap,
-    description
+    description,
+    ...(provisional ? { provisional: true } : {})
   };
 }
 
@@ -279,6 +280,23 @@ export function calculateElliottWave(underlyingSymbol: string, points: SpotPrice
     const len1 = Math.abs(w1.price - start.price);
     const actual = len1 > 0 ? (Math.abs(w1.price - w2.price) / len1) * 100 : undefined;
     fibonacciLevels.push(fibLevel("Wave 2 Retracement", actual, 50, 61.8, 81.2, "Ideally 50%-61.8% of Wave 1; above 81.2% flags a high failure probability."));
+  } else if (start && w1 && currentStage === "Wave 2 Turning") {
+    // Wave 2 is the CURRENTLY forming (provisional) leg here - w2 is never
+    // in `confirmed`/`byLabel` while currentStage is "Wave 2 Turning", by
+    // construction (that's exactly the leg the window's last, unconfirmed
+    // entry represents). Without this branch, "Wave 2 Retracement" could
+    // only ever appear once the count has already moved on to Wave 3 -
+    // making the Wave 2 Reversal screener's Fibonacci-zone check
+    // unreachable at the one moment it's meant to fire. Reads the
+    // provisional leg's running extreme (labeledWindow's last pivot) for a
+    // live, still-moving retracement reading instead of waiting for
+    // confirmation.
+    const provisionalW2 = labeledWindow[labeledWindow.length - 1];
+    const len1 = Math.abs(w1.price - start.price);
+    const actual = len1 > 0 ? (Math.abs(w1.price - provisionalW2.price) / len1) * 100 : undefined;
+    fibonacciLevels.push(
+      fibLevel("Wave 2 Retracement", actual, 50, 61.8, 81.2, "Ideally 50%-61.8% of Wave 1; above 81.2% flags a high failure probability. Provisional - Wave 2 has not confirmed/reversed yet.", true)
+    );
   }
   if (start && w1 && w2 && w3) {
     const len1 = Math.abs(w1.price - start.price);

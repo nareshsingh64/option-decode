@@ -183,7 +183,10 @@ export function ElliottWavePanel({ underlying, formatStrike, formatTime }: Ellio
                 <div className="mt-3 grid gap-1.5 border-t border-terminal-line/70 pt-2">
                   {analysis.fibonacciLevels.map((level) => (
                     <div key={level.label} className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-                      <span className="font-semibold text-terminal-text">{level.label}</span>
+                      <span className="font-semibold text-terminal-text">
+                        {level.label}
+                        {level.provisional ? <span className="ml-1 font-normal text-terminal-muted">(live)</span> : null}
+                      </span>
                       <span className={level.withinTarget ? "text-terminal-emerald" : "text-terminal-amber"}>
                         {level.actualPercent === undefined ? "--" : `${level.actualPercent.toFixed(1)}%`} (target {level.targetLow}%–{level.targetHigh}%)
                       </span>

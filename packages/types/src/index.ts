@@ -433,6 +433,11 @@ export interface WaveFibonacciLevel {
   targetHigh: number;
   withinTarget: boolean;
   description: string;
+  // True when actualPercent is read off the leg's current, still-forming
+  // extreme rather than its confirmed/reversed end point - it will keep
+  // moving until the leg actually reverses. Only ever set on the "Wave 2
+  // Retracement" level while currentStage is "Wave 2 Turning".
+  provisional?: boolean;
 }
 
 export interface ElliottWaveStrategyRecommendation {
