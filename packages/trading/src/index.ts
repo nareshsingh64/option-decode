@@ -78,20 +78,39 @@ function roundToTick(value: number, tickSize = 0.05): number {
   return Number((Math.round(value / tickSize) * tickSize).toFixed(2));
 }
 
-// The distance between adjacent listed strikes - used as the "one level
-// against you" distance for sizing a stop-loss. Falls back to 50 (the
-// common NIFTY strike gap) if the chain doesn't have enough strikes to
-// measure it, which should only happen with malformed/incomplete snapshot
-// data.
-function getStrikeInterval(ticks: { strikePrice: number }[]): number {
+// The distance between listed strikes NEAR the strike actually being
+// traded - used as the "one level against you" distance for sizing a
+// stop-loss. Real chains widen their spacing in the far wings (e.g. live
+// BANKNIFTY: 100-point gaps near the money, 500-point gaps in the deep
+// wings) - scanning from the lowest strike upward used to return the FIRST
+// positive gap it found, which on such a chain is the far-wing spacing, not
+// the near-ATM one. Confirmed live: that inflated a shipped BANKNIFTY
+// stop-loss to 2.66x its intended distance. Falls back to 50 (the common
+// NIFTY strike gap) only when the chain doesn't have enough strikes to
+// measure any interval at all, which should only happen with malformed/
+// incomplete snapshot data.
+function getStrikeInterval(ticks: { strikePrice: number }[], referenceStrike: number): number {
   const strikes = [...new Set(ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
-  for (let i = 1; i < strikes.length; i += 1) {
-    const diff = strikes[i] - strikes[i - 1];
-    if (diff > 0) {
-      return diff;
+  if (strikes.length < 2) {
+    return 50;
+  }
+
+  let closestIndex = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < strikes.length; i += 1) {
+    const distance = Math.abs(strikes[i] - referenceStrike);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = i;
     }
   }
-  return 50;
+
+  const gaps = [
+    closestIndex > 0 ? strikes[closestIndex] - strikes[closestIndex - 1] : undefined,
+    closestIndex < strikes.length - 1 ? strikes[closestIndex + 1] - strikes[closestIndex] : undefined
+  ].filter((gap): gap is number => gap !== undefined && gap > 0);
+
+  return gaps.length ? Math.min(...gaps) : 50;
 }
 
 /**
@@ -121,7 +140,7 @@ function buildTradeSetup(snapshot: OptionChainSnapshot, optionType: OptionType, 
   const rawDelta = tick.delta ?? modelDelta;
   const delta = Math.abs(Number.isFinite(rawDelta) ? rawDelta : DEFAULT_DELTA_FALLBACK) || DEFAULT_DELTA_FALLBACK;
 
-  const strikeInterval = getStrikeInterval(snapshot.ticks);
+  const strikeInterval = getStrikeInterval(snapshot.ticks, strikePrice);
   const rawStopDistance = delta * strikeInterval;
   const stopDistance = Math.min(entryPrice * STOP_LOSS_MAX_PERCENT, Math.max(entryPrice * STOP_LOSS_MIN_PERCENT, rawStopDistance));
 

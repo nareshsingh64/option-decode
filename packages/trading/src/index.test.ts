@@ -134,6 +134,30 @@ test("trade setup stop distance is clamped to at least 10% of premium when delta
   assert.equal(setup.target, 120);
 });
 
+test("stop-loss sizing uses the strike spacing near the traded strike, not the far-wing spacing", () => {
+  // Reproduces the exact live BANKNIFTY shape: tight spacing near the
+  // money (50 here, matching chainTicks), but a much wider gap out in the
+  // wing (1000 here, vs live BANKNIFTY's 500 wing gap against a 100
+  // near-ATM gap). The traded strike (supportStrike, 24000) is right next
+  // to the tight cluster - scanning from the bottom of the chain for the
+  // first positive gap would hit the wide 23000->24000 gap first and
+  // inflate the stop-loss distance well past what "one level against you"
+  // near this specific strike actually means.
+  const ticks = [...chainTicks, tick({ optionType: "CE", strikePrice: 23000, lastPrice: 200 }), tick({ optionType: "PE", strikePrice: 23000, lastPrice: 5 })];
+
+  const recs = calculateTradeRecommendations(snapshot(ticks, 24010, supportStrike), bullishPressure, bullishMarketBias(), [strikeMovementRow({ netScore: 5 })], noInterpretation);
+
+  const setup = recs.find((candidate) => candidate.id === "bullish-bias")!.tradeSetup!;
+  // Same result as the near-ATM-only chain above (50-point interval) -
+  // adding a far, wide-spaced strike must not change the stop/target
+  // computed for a strike nowhere near it. Before the fix this would have
+  // used the 1000-point wing gap instead: delta 0.5 * 1000 = 500, clamped
+  // to the 30% ceiling (30) instead of the correct 25, giving stopLoss 70
+  // / target 160.
+  assert.equal(setup.stopLoss, 75);
+  assert.equal(setup.target, 150);
+});
+
 test("trade setup stop distance is clamped to at most 30% of premium when delta is very high", () => {
   const ticks = chainTicks.map((candidate) => (candidate.optionType === "CE" && candidate.strikePrice === supportStrike ? { ...candidate, delta: 0.95 } : candidate));
 
