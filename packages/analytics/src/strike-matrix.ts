@@ -162,6 +162,70 @@ function findWall(rows: StrikeMatrixRow[], optionType: "CE" | "PE", wciThreshold
   };
 }
 
+// WCI's typical magnitude varies enormously by how much day-volume a
+// contract attracts relative to its OI change - not by how much genuine
+// institutional conviction is behind a given strike. A front-week index
+// contract can see far more day-trading volume relative to its OI change
+// than a back-week/monthly contract, structurally pinning every strike's
+// WCI lower - confirmed live against real NIFTY production data (same
+// underlying, same instants, 2026-07-31): the front-week chain's
+// aggregate turnover ratio (see chainWciBaseline below) ran 0.03-0.13
+// across the day while the back-week chain's ran a tight 0.11-0.14 at the
+// SAME moments, purely a function of which expiry was picked, not any
+// real difference in writer conviction.
+//
+// A per-strike median (either within the narrow tradable delta band, or
+// across the full chain) was tried first and rejected: the narrow band
+// only has 3-10 strikes at any single instant, far too few for a stable
+// median, and the full chain's median is dragged up by illiquid far
+// strikes whose tiny volume denominators inflate their WCI - confirmed
+// live, the full-chain median (0.05) sat well above the near-ATM wall
+// itself (0.008) on the very snapshot the bug was reported on, so it
+// would have changed nothing. Instead, chainWciBaseline sums raw OI
+// change and volume across every strike with any volume before dividing
+// once - a ratio of two large pooled sums is far less noisy per-instant
+// than a median of many small per-strike ratios (confirmed live: the
+// aggregate ratio moved smoothly across 30 sampled snapshots per expiry,
+// vs. per-strike medians that swung wildly instant to instant).
+//
+// Each horizon keeps its own multiplier above that live baseline -
+// preserving the doc's intent that weekly/monthly positions need more
+// conviction to justify overnight/weekend gap risk - rather than one
+// fixed number calibrated for whichever regime the horizon was originally
+// tuned against. Calibrated against 30 sampled snapshots per expiry
+// (2026-07-31, NIFTY front-week 2026-08-04 vs back-week 2026-08-11):
+// intraday's pass rate rose from 10/30 (33%, the old fixed 0.10) to
+// 19/30 (63%) while weekly/monthly's stayed comparable (20/30 old vs
+// 17/30 new) - meaningfully more reachable on a front-week chain without
+// making either horizon's bar trivial.
+const WCI_BASELINE_MULTIPLIER: Record<TradingHorizon, number> = {
+  intraday: 1.3,
+  weekly: 1.75,
+  monthly: 1.75
+};
+
+function chainWciBaseline(rows: StrikeMatrixRow[]): number | undefined {
+  let sumAbsOiChange = 0;
+  let sumVolume = 0;
+  for (const row of rows) {
+    if (row.volume > 0) {
+      sumAbsOiChange += Math.abs(row.oiChange);
+      sumVolume += row.volume;
+    }
+  }
+  return sumVolume > 0 ? sumAbsOiChange / sumVolume : undefined;
+}
+
+function relativeWciThreshold(allRows: StrikeMatrixRow[], horizon: TradingHorizon): number {
+  const baseline = chainWciBaseline(allRows);
+  // No usable volume anywhere on the chain (e.g. a stale/empty snapshot) -
+  // fall back to the horizon's static legacy threshold rather than 0.
+  if (baseline === undefined) {
+    return STRIKE_MATRIX_HORIZONS[horizon].wciThreshold;
+  }
+  return baseline * WCI_BASELINE_MULTIPLIER[horizon];
+}
+
 function closestToTargetDelta(rows: StrikeMatrixRow[], optionType: "CE" | "PE", targetDelta: number): StrikeMatrixRow | undefined {
   let best: StrikeMatrixRow | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -181,13 +245,18 @@ function closestToTargetDelta(rows: StrikeMatrixRow[], optionType: "CE" | "PE", 
 export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: TradingHorizon): StrikeMatrixAnalysis {
   const profile = STRIKE_MATRIX_HORIZONS[horizon];
 
+  // Every strike with usable volume/OI-change, chain-wide - not yet
+  // narrowed to the horizon's delta band. chainWciBaseline needs the full
+  // chain (hundreds of strikes) to read this contract's overall turnover
+  // regime; the in-band universe alone is too few strikes for a stable
+  // read (confirmed live, often just 2-7 rows).
+  const allRows = snapshot.ticks.map(buildRow).filter((row): row is StrikeMatrixRow => row !== null);
+
   // Active universe S: every strike whose |delta| sits inside the horizon
   // band. Ticks without a delta can't participate in any of the three
   // metrics, so they're excluded rather than defaulted to 0 (a fake 0 delta
   // would silently zero its DRC and skew DRCR).
-  const universe = snapshot.ticks
-    .map(buildRow)
-    .filter((row): row is StrikeMatrixRow => row !== null && Math.abs(row.delta) >= profile.deltaMin && Math.abs(row.delta) <= profile.deltaMax);
+  const universe = allRows.filter((row) => Math.abs(row.delta) >= profile.deltaMin && Math.abs(row.delta) <= profile.deltaMax);
 
   let putDrcTotal = 0;
   let callDrcTotal = 0;
@@ -201,8 +270,9 @@ export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: Tr
 
   const drcr = callDrcTotal > 0 ? putDrcTotal / callDrcTotal : undefined;
   const bias = classifyDrcr(drcr);
-  const callWall = findWall(universe, "CE", profile.wciThreshold);
-  const putWall = findWall(universe, "PE", profile.wciThreshold);
+  const effectiveWciThreshold = relativeWciThreshold(allRows, horizon);
+  const callWall = findWall(universe, "CE", effectiveWciThreshold);
+  const putWall = findWall(universe, "PE", effectiveWciThreshold);
 
   let recommendation: StrikeMatrixRecommendation | undefined;
   if (bias !== "Transitional") {
@@ -229,7 +299,10 @@ export function calculateStrikeMatrix(snapshot: OptionChainSnapshot, horizon: Tr
     horizon,
     deltaMin: profile.deltaMin,
     deltaMax: profile.deltaMax,
-    wciThreshold: profile.wciThreshold,
+    // The bar actually applied above (may be lower than the horizon's base
+    // threshold on a high-turnover contract - see relativeWciThreshold) so
+    // the UI never shows a number that doesn't match what was checked.
+    wciThreshold: effectiveWciThreshold,
     targetDelta: profile.targetDelta,
     universe,
     putDrcTotal,

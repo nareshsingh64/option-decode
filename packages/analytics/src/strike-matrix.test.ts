@@ -94,16 +94,18 @@ test("DRCR bias bands: neutral, bearish, transitional gap, and zero-call guard",
 });
 
 test("walls pick highest |WCI| per side and apply the horizon threshold to signed WCI", () => {
+  // Chain-wide baseline = (400+100+300)/3000 = 0.2667; intraday threshold =
+  // 0.2667 × 1.3 ≈ 0.347. Only the 0.4 WCI strike clears it.
   const result = calculateStrikeMatrix(
     snapshot([
-      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 150 }), // WCI 0.15
-      tick({ optionType: "CE", strikePrice: 25300, delta: 0.16, volume: 1000, changeInOpenInterest: 80 }), // WCI 0.08
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 400 }), // WCI 0.4
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.16, volume: 1000, changeInOpenInterest: 100 }), // WCI 0.1
       tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: -300 }) // WCI -0.30 (unwinding)
     ]),
     "intraday"
   );
   assert.equal(result.callWall?.strikePrice, 25200);
-  assert.equal(result.callWall?.meetsThreshold, true); // 0.15 > 0.10
+  assert.equal(result.callWall?.meetsThreshold, true);
   assert.equal(result.putWall?.strikePrice, 24800); // highest |WCI|
   assert.equal(result.putWall?.meetsThreshold, false); // negative WCI never qualifies
 });
@@ -113,11 +115,15 @@ test("a qualifying wall is never masked by a larger-magnitude unwinding strike o
   // negative (unwinding) strike has bigger |WCI| than a genuinely
   // qualifying strike elsewhere on the same side. The qualifying one must
   // win - previously the unwinding strike won on magnitude alone and the
-  // real wall was never surfaced anywhere in the response.
+  // real wall was never surfaced anywhere in the response. A high-volume
+  // background strike (outside the intraday delta band, so excluded from
+  // the universe) keeps the chain-wide baseline realistic: baseline =
+  // (1000+800+2000)/53000 ≈ 0.0717, threshold ≈ 0.0717 × 1.3 ≈ 0.093.
   const result = calculateStrikeMatrix(
     snapshot([
-      tick({ optionType: "CE", strikePrice: 25100, delta: 0.2, volume: 1000, changeInOpenInterest: -527 }), // WCI -0.527, unwinding, larger |WCI|
-      tick({ optionType: "CE", strikePrice: 25200, delta: 0.18, volume: 1000, changeInOpenInterest: 323 }) // WCI 0.323, qualifies (> 0.10)
+      tick({ optionType: "CE", strikePrice: 25100, delta: 0.2, volume: 1000, changeInOpenInterest: -1000 }), // WCI -1.0, unwinding, larger |WCI|
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.18, volume: 2000, changeInOpenInterest: 800 }), // WCI 0.4, qualifies
+      tick({ optionType: "CE", strikePrice: 26500, delta: 0.5, volume: 50000, changeInOpenInterest: 2000 }) // background, outside band
     ]),
     "intraday"
   );
@@ -137,15 +143,36 @@ test("with no qualifying strike on a side, the highest-|WCI| strike still surfac
   assert.equal(result.callWall?.meetsThreshold, false);
 });
 
-test("weekly horizon uses the stricter 0.20 WCI threshold", () => {
-  const result = calculateStrikeMatrix(
-    snapshot([
-      tick({ optionType: "CE", strikePrice: 25200, delta: 0.15, volume: 1000, changeInOpenInterest: 150 }) // WCI 0.15
-    ]),
-    "weekly"
-  );
-  assert.equal(result.wciThreshold, 0.2);
-  assert.equal(result.callWall?.meetsThreshold, false);
+test("weekly horizon applies a stricter WCI multiplier than intraday against the same chain", () => {
+  // Both horizons derive their threshold from the same chain-wide
+  // baseline (150/1000 = 0.15) but weekly demands a bigger multiple above
+  // it (1.75x vs intraday's 1.3x) - reflecting the doc's higher
+  // conviction bar for overnight/weekend gap risk.
+  const chain = snapshot([tick({ optionType: "CE", strikePrice: 25200, delta: 0.15, volume: 1000, changeInOpenInterest: 150 })]);
+  const intradayResult = calculateStrikeMatrix(chain, "intraday");
+  const weeklyResult = calculateStrikeMatrix(chain, "weekly");
+  assert.equal(intradayResult.wciThreshold, 0.15 * 1.3);
+  assert.equal(weeklyResult.wciThreshold, 0.15 * 1.75);
+  assert.ok(weeklyResult.wciThreshold > intradayResult.wciThreshold);
+});
+
+test("the WCI threshold scales with a chain's own aggregate turnover, not one fixed absolute number", () => {
+  // Reproduces the live front-week vs back-week regime gap (NIFTY,
+  // production, 2026-07-31): a front-week contract's day-volume runs far
+  // ahead of its OI change, structurally pinning every strike's WCI lower
+  // than a back-week contract's at the same instant - confirmed live,
+  // front-week's chain-wide ratio ran 0.03-0.13 through the day vs
+  // back-week's tight 0.11-0.14 at the same moments. The threshold must
+  // track that regime rather than judging both against one fixed bar.
+  const highTurnoverChain = snapshot([
+    tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 100000, changeInOpenInterest: 5000 }) // WCI 0.05
+  ]);
+  const lowTurnoverChain = snapshot([
+    tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 10000, changeInOpenInterest: 5000 }) // WCI 0.5
+  ]);
+  const highTurnoverResult = calculateStrikeMatrix(highTurnoverChain, "intraday");
+  const lowTurnoverResult = calculateStrikeMatrix(lowTurnoverChain, "intraday");
+  assert.ok(highTurnoverResult.wciThreshold < lowTurnoverResult.wciThreshold);
 });
 
 test("recommendation picks execution strikes closest to the matrix cell's target delta", () => {
