@@ -118,24 +118,34 @@ function buildRow(tick: OptionContractTick): StrikeMatrixRow | null {
 }
 
 function findWall(rows: StrikeMatrixRow[], optionType: "CE" | "PE", wciThreshold: number): StrikeMatrixWall | undefined {
-  let best: StrikeMatrixRow | undefined;
-  for (const row of rows) {
-    if (row.optionType !== optionType || row.wci === undefined) {
-      continue;
-    }
-    if (!best || Math.abs(row.wci) > Math.abs(best.wci ?? 0)) {
+  const candidates = rows.filter((row): row is StrikeMatrixRow & { wci: number } => row.optionType === optionType && row.wci !== undefined);
+  if (!candidates.length) {
+    return undefined;
+  }
+
+  // Prefer a strike that actually clears the conviction bar over one with a
+  // larger raw magnitude that doesn't - previously the single highest-|WCI|
+  // strike won outright regardless of sign, so a strongly negative
+  // (unwinding) strike could bury a genuinely qualifying wall elsewhere on
+  // the same side (confirmed live, BANKNIFTY: a reported -0.527 WCI wall
+  // masked a real +0.323 WCI wall on 6.6x the volume, 500 points away).
+  // Threshold itself uses the raw (signed) WCI: negative WCI means
+  // positions are being unwound, which is never institutional backing.
+  const qualifying = candidates.filter((row) => row.wci > wciThreshold);
+  const pool = qualifying.length ? qualifying : candidates;
+
+  let best = pool[0];
+  for (const row of pool) {
+    const better = qualifying.length ? row.wci > best.wci : Math.abs(row.wci) > Math.abs(best.wci);
+    if (better) {
       best = row;
     }
   }
-  if (!best || best.wci === undefined) {
-    return undefined;
-  }
+
   return {
     optionType,
     strikePrice: best.strikePrice,
     wci: best.wci,
-    // Threshold uses the raw (signed) WCI: negative WCI means positions are
-    // being unwound, which is never institutional backing for a new short.
     meetsThreshold: best.wci > wciThreshold,
     delta: best.delta,
     oiChange: best.oiChange,

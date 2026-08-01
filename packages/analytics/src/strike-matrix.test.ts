@@ -108,6 +108,35 @@ test("walls pick highest |WCI| per side and apply the horizon threshold to signe
   assert.equal(result.putWall?.meetsThreshold, false); // negative WCI never qualifies
 });
 
+test("a qualifying wall is never masked by a larger-magnitude unwinding strike on the same side", () => {
+  // Reproduces the exact live shape (BANKNIFTY, 2026-07-31): a strongly
+  // negative (unwinding) strike has bigger |WCI| than a genuinely
+  // qualifying strike elsewhere on the same side. The qualifying one must
+  // win - previously the unwinding strike won on magnitude alone and the
+  // real wall was never surfaced anywhere in the response.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25100, delta: 0.2, volume: 1000, changeInOpenInterest: -527 }), // WCI -0.527, unwinding, larger |WCI|
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.18, volume: 1000, changeInOpenInterest: 323 }) // WCI 0.323, qualifies (> 0.10)
+    ]),
+    "intraday"
+  );
+  assert.equal(result.callWall?.strikePrice, 25200);
+  assert.equal(result.callWall?.meetsThreshold, true);
+});
+
+test("with no qualifying strike on a side, the highest-|WCI| strike still surfaces for display", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25100, delta: 0.2, volume: 1000, changeInOpenInterest: -300 }), // WCI -0.30
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.18, volume: 1000, changeInOpenInterest: 50 }) // WCI 0.05, doesn't qualify either
+    ]),
+    "intraday"
+  );
+  assert.equal(result.callWall?.strikePrice, 25100); // highest |WCI| among non-qualifiers
+  assert.equal(result.callWall?.meetsThreshold, false);
+});
+
 test("weekly horizon uses the stricter 0.20 WCI threshold", () => {
   const result = calculateStrikeMatrix(
     snapshot([

@@ -557,9 +557,13 @@ export async function placeSimTrade(input: SimTradeInput, user: AuthUserDto, cli
 
   // Signal-originated trades must clear the WCI conviction threshold for
   // their horizon (manual trades are not gated - the trader is the signal).
+  // Signed, not Math.abs: a negative WCI means the wall is unwinding, not
+  // building - that's never institutional backing for a new short,
+  // regardless of magnitude (confirmed live: ~15-20% of BANKNIFTY signals
+  // were stamped "institutional" on writers covering before this fix).
   if (input.signalRef && input.entryWci != null) {
     const wciThreshold = input.horizon === "INTRADAY" ? WCI_THRESHOLD_INTRADAY : WCI_THRESHOLD_POSITIONAL;
-    if (Math.abs(input.entryWci) <= wciThreshold) {
+    if (input.entryWci <= wciThreshold) {
       throw new SimOrderRejectedError(`Signal WCI ${input.entryWci.toFixed(2)} is below the ${input.horizon.toLowerCase()} conviction threshold (${wciThreshold}); the wall lacks institutional backing.`);
     }
   }

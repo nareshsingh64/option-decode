@@ -51,7 +51,11 @@ function buildSimDraft(underlying: string, expiry: string, horizon: TradingHoriz
     return null;
   }
   const strategyType: SimTicketDraft["strategyType"] = hasPut && hasCall ? "IRON_CONDOR" : hasPut ? "BULL_PUT_SPREAD" : "BEAR_CALL_SPREAD";
-  const wallWcis = [analysis.callWall?.wci, analysis.putWall?.wci].filter((value): value is number => value !== undefined).map((value) => Math.abs(value));
+  // Only a wall that actually clears the conviction bar (meetsThreshold)
+  // counts as institutional backing - a strongly negative (unwinding) WCI
+  // used to win here via Math.abs() and get stamped onto the trade as
+  // conviction, which is the literal opposite of what a negative WCI means.
+  const wallWcis = [analysis.callWall, analysis.putWall].filter((wall): wall is NonNullable<typeof wall> => wall?.meetsThreshold === true).map((wall) => wall.wci);
   return {
     underlyingSymbol: underlying,
     expiry,
@@ -221,7 +225,11 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                       // horizon's WCI threshold the wall lacks institutional
                       // backing, so the trade can only be placed as a manual
                       // practice trade (no signal attribution, no scorecard).
-                      const hasConviction = draft.wci !== null && Math.abs(draft.wci) > analysis.wciThreshold;
+                      // draft.wci is now only ever populated from a wall that
+                      // already cleared the signed threshold (see
+                      // buildSimDraft above), so this is a defensive re-check,
+                      // not the primary gate - and must stay signed to match.
+                      const hasConviction = draft.wci !== null && draft.wci > analysis.wciThreshold;
                       const buttonDraft = hasConviction ? draft : { ...draft, signalRef: "", wci: null, drcr: null, note: `${draft.note} (low conviction - WCI ${draft.wci?.toFixed(2) ?? "--"} below ${analysis.wciThreshold})` };
                       return (
                         <div className="mt-1 grid gap-1">
