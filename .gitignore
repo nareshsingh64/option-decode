@@ -7,5 +7,6 @@ dist
 .env.production
 coverage
 *.log
+*.tsbuildinfo
 nginx/certs/*.crt
 nginx/certs/*.key
