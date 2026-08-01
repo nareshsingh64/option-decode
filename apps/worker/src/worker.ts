@@ -1,6 +1,6 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, listActiveFnoStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, getUserAlertThreshold, listActiveFnoStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
 import { DhanClient, DhanLiveFeedClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment, DhanLiveFeedInstrument, DhanOhlcQuote } from "@option-decode/dhan";
@@ -34,7 +34,23 @@ const redisPublisher = new Redis(config.REDIS_URL, {
   lazyConnect: true
 });
 const pushNotificationsEnabled = Boolean(config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY);
-const pushAlertLastSentAt = new Map<string, number>();
+// Cooldown state lives in Redis (via redisPublisher, already connected
+// below), not an in-process Map - the worker restarts every 15 minutes (see
+// MEMORY_LOG_INTERVAL_MS/the memory-leak mitigation timer), the same
+// cadence as PUSH_ALERT_COOLDOWN_MS itself, so an in-process Map reset the
+// cooldown on roughly the schedule it was meant to enforce, confirmed live.
+function pushCooldownKey(userId: string, alertId: string): string {
+  return `push-alert-cooldown:${userId}:${alertId}`;
+}
+// gammaRisk always wins the push slot when multiple critical alerts fire
+// at once - it's the single highest-stakes warning the app sends (expiry-
+// day pin risk) and previously lost every tie to whichever alert type
+// (bearish/bullish pressure, then PCR) happened to sort earlier in
+// generateMarketAlerts' fixed return order.
+const PUSH_ALERT_PRIORITY: Record<string, number> = { gammaRisk: 0 };
+function pushAlertPriority(alert: MarketAlert): number {
+  return PUSH_ALERT_PRIORITY[alert.metric] ?? 1;
+}
 
 if (pushNotificationsEnabled) {
   webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY as string, config.VAPID_PRIVATE_KEY as string);
@@ -465,48 +481,68 @@ async function sendCriticalPushAlerts(snapshot: OptionChainSnapshot) {
     return;
   }
 
-  const pressure = calculatePressureScore(snapshot);
-  const criticalAlert = generateMarketAlerts(snapshot, pressure).find((alert) => alert.severity === "critical");
-  if (!criticalAlert) {
-    return;
-  }
-  const cooldownKey = criticalAlert.id;
-  const now = Date.now();
-  const lastSentAt = pushAlertLastSentAt.get(cooldownKey) ?? 0;
-  if (now - lastSentAt < PUSH_ALERT_COOLDOWN_MS) {
-    return;
-  }
-
   const subscriptions = await listActivePushSubscriptions();
   if (!subscriptions.length) {
     return;
   }
+  await ensureRedisPublisherConnected();
 
-  const payload = JSON.stringify(toPushPayload(snapshot, criticalAlert));
+  const pressure = calculatePressureScore(snapshot);
+  const userIds = [...new Set(subscriptions.map((subscription) => subscription.userId))];
+  // Each user's own configured alert thresholds (Alert Center settings)
+  // decide what even counts as "critical" for them - previously this call
+  // always used the hardcoded defaults, so pushes ignored per-user
+  // thresholds while the in-app Alert Center honoured them.
+  const thresholdsByUserId = new Map(
+    await Promise.all(userIds.map(async (userId) => [userId, (await getUserAlertThreshold(userId, snapshot.underlyingSymbol)) ?? undefined] as const))
+  );
+
+  const alertByUserId = new Map<string, MarketAlert>();
+  for (const userId of userIds) {
+    const best = generateMarketAlerts(snapshot, pressure, new Date(), thresholdsByUserId.get(userId))
+      .filter((alert) => alert.severity === "critical")
+      .sort((a, b) => pushAlertPriority(a) - pushAlertPriority(b))[0];
+    if (best) {
+      alertByUserId.set(userId, best);
+    }
+  }
+  if (!alertByUserId.size) {
+    return;
+  }
+
   const results = await Promise.allSettled(
-    subscriptions.map(async (subscription) => {
-      try {
-        await webpush.sendNotification({
-          endpoint: subscription.endpoint,
-          keys: subscription.keys
-        }, payload);
-      } catch (error) {
-        if (isExpiredPushSubscription(error)) {
-          await disablePushSubscriptionByEndpoint(subscription.endpoint);
+    subscriptions
+      .filter((subscription) => alertByUserId.has(subscription.userId))
+      .map(async (subscription) => {
+        const alert = alertByUserId.get(subscription.userId) as MarketAlert;
+        const cooldownKey = pushCooldownKey(subscription.userId, alert.id);
+        const acquired = await redisPublisher.set(cooldownKey, "1", "PX", PUSH_ALERT_COOLDOWN_MS, "NX");
+        if (acquired !== "OK") {
+          return;
         }
-        throw error;
-      }
-    })
+        try {
+          await webpush.sendNotification({
+            endpoint: subscription.endpoint,
+            keys: subscription.keys
+          }, JSON.stringify(toPushPayload(snapshot, alert)));
+        } catch (error) {
+          // Nothing was actually delivered - release the cooldown so a
+          // later cycle can retry rather than silently going quiet for 15
+          // minutes over a transient send failure.
+          await redisPublisher.del(cooldownKey);
+          if (isExpiredPushSubscription(error)) {
+            await disablePushSubscriptionByEndpoint(subscription.endpoint);
+          }
+          throw error;
+        }
+      })
   );
   const failed = results.filter((result) => result.status === "rejected").length;
-  if (failed < subscriptions.length) {
-    pushAlertLastSentAt.set(cooldownKey, now);
-  }
   if (failed) {
     console.warn("Some push notifications failed", {
       underlying: snapshot.underlyingSymbol,
       failed,
-      total: subscriptions.length
+      total: results.length
     });
   }
 }
@@ -619,11 +655,15 @@ async function recordMarginForFilledLegs(filledLegs: FilledPaperLeg[]) {
   }
 }
 
+async function ensureRedisPublisherConnected() {
+  if (redisPublisher.status === "wait") {
+    await redisPublisher.connect();
+  }
+}
+
 async function publishSnapshotSaved(snapshotId: string, snapshot: { underlyingSymbol: string; expiry: string; snapshotTime: string }) {
   try {
-    if (redisPublisher.status === "wait") {
-      await redisPublisher.connect();
-    }
+    await ensureRedisPublisherConnected();
 
     await redisPublisher.publish(MARKET_SNAPSHOT_SAVED_CHANNEL, JSON.stringify({
       snapshotId,
