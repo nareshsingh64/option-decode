@@ -295,6 +295,60 @@ async function buildPaperOrderCreateData(input: PaperOrderLegInput, userId: stri
   };
 }
 
+// Lightweight sizing guardrail. Unlike Sim's account/BPE model, this tab
+// has no capital ledger at all - a user could place an unlimited number of
+// positions at unlimited size across any expiry with zero constraint,
+// confirmed live (153 real orders, 141 positions on file with no check
+// anywhere). marginRequired/marginBreakdown already exist on every order
+// and position, but are computed AFTER placement via an async, best-effort
+// Dhan margin-calculator call that's deliberately allowed to fail without
+// blocking the order (see tryEstimateOrderMargin in apps/api/src/
+// server.ts) - not something available synchronously to gate on. Instead
+// of adding a synchronous Dhan dependency to the placement path, this
+// bounds total notional exposure and position count using data already on
+// hand (lots, lot size, requested price) against fixed ceilings. Not a
+// real capital balance - just enough to stop "unlimited" from being
+// literal.
+const MAX_LOTS_PER_ORDER = 50;
+const MAX_OPEN_POSITIONS = 20;
+// Rough retail paper-trading notional assumption, not tied to any real
+// account - a ceiling on how much premium this practice book can carry
+// open at once, summed across every existing position/pending order plus
+// whatever this new ticket adds.
+const MAX_NOTIONAL_EXPOSURE = 2_000_000;
+
+// Checked before every order/leg is created. Returns null when within
+// capacity, or a user-facing rejection reason otherwise.
+export async function validatePaperOrderCapacity(legs: PaperOrderLegInput[], user: AuthUserDto, client: PrismaClient = prisma): Promise<string | null> {
+  for (const leg of legs) {
+    if (leg.lots > MAX_LOTS_PER_ORDER) {
+      return `Order size ${leg.lots} lots exceeds the ${MAX_LOTS_PER_ORDER}-lot paper-trading cap.`;
+    }
+  }
+
+  const [openPositions, pendingOrders, newLegQuantities] = await Promise.all([
+    client.paperPosition.findMany({ where: { userId: user.id, status: "OPEN" }, select: { quantity: true, entryPrice: true } }),
+    client.paperOrder.findMany({ where: { userId: user.id, status: "PENDING" }, select: { quantity: true, requestedPrice: true } }),
+    Promise.all(legs.map(async (leg) => (await getPaperLotSize(leg.underlyingSymbol, leg.expiry, client)) * leg.lots))
+  ]);
+
+  const openPositionCount = openPositions.length + pendingOrders.length;
+  if (openPositionCount + legs.length > MAX_OPEN_POSITIONS) {
+    return `This would bring open/pending positions to ${openPositionCount + legs.length}, exceeding the ${MAX_OPEN_POSITIONS}-position paper-trading cap.`;
+  }
+
+  const existingNotional =
+    openPositions.reduce((sum, position) => sum + position.quantity * position.entryPrice.toNumber(), 0) +
+    pendingOrders.reduce((sum, order) => sum + order.quantity * order.requestedPrice.toNumber(), 0);
+  const newNotional = legs.reduce((sum, leg, index) => sum + newLegQuantities[index] * leg.requestedPrice, 0);
+  const totalNotional = existingNotional + newNotional;
+  if (totalNotional > MAX_NOTIONAL_EXPOSURE) {
+    return `This would bring total open notional to ~₹${Math.round(totalNotional).toLocaleString("en-IN")}, exceeding the ₹${MAX_NOTIONAL_EXPOSURE.toLocaleString("en-IN")} paper-trading cap.`;
+  }
+
+  return null;
+}
+
 // Returns the created order id alongside the refreshed summary so the API
 // layer can compute a placement-time margin estimate for exactly this order
 // without guessing which row in the summary is the one just created.
