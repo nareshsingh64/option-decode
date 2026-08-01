@@ -144,6 +144,9 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -176,6 +179,9 @@ importers:
       prisma:
         specifier: ^6.0.1
         version: 6.19.3(typescript@5.9.3)
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -196,6 +202,9 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -208,6 +217,9 @@ importers:
 
   packages/utils:
     devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

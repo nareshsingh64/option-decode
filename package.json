@@ -8,6 +8,7 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
+    "test": "turbo test",
     "format": "prettier --write .",
     "db:generate": "pnpm --filter @option-decode/db db:generate",
     "db:migrate": "pnpm --filter @option-decode/db db:migrate"
