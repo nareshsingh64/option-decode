@@ -79,6 +79,28 @@ test("calculatePressureScore.maxPain is undefined (not the lowest strike) when t
   assert.equal(calculatePressureScore(snap).maxPain, undefined);
 });
 
+test("support/resistance zones are OI-dominant, not volume-dominant, even when volume runs far ahead of OI", () => {
+  // Reproduces the exact live shape (SENSEX/NIFTY): a strike with large
+  // resting OI and modest turnover (a real wall) versus a strike with
+  // small OI but huge day volume (a busy but not-actually-defended
+  // strike, ~55x its own OI here - live NIFTY ran ~16x). Before the fix,
+  // volume's flat 0.5x weighting with no cap let the busy strike's score
+  // swamp the real wall's; live, this meant the displayed "Nearest
+  // Resistance/Support" was consistently a most-traded strike, not the
+  // strike actually holding the open interest.
+  const snap = snapshot(
+    [
+      tick({ optionType: "PE", strikePrice: 24000, openInterest: 90000, volume: 100 }), // real wall: high OI, low turnover
+      tick({ optionType: "PE", strikePrice: 24350, openInterest: 9000, volume: 500000 }) // busy but thin: low OI, huge turnover
+    ],
+    24366,
+    24350
+  );
+
+  const support = calculatePressureScore(snap).supportZones[0];
+  assert.equal(support?.strikePrice, 24000, "the real OI wall must outrank the merely-busy strike");
+});
+
 test("calculatePressureScore: heavy PE writing skews bullish and PCR > 1", () => {
   const snap = snapshot(
     [

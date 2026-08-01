@@ -19,7 +19,7 @@ function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
   const oi = toLots(tick.openInterest, tick);
   const oiChange = toLots(tick.changeInOpenInterest, tick);
   const volume = toLots(tick.volume, tick);
-  const volumeContribution = weightedVolumeContribution(volume, averageVolume);
+  const volumeContribution = weightedVolumeContribution(volume, oi, averageVolume);
   const ltpChange = tick.lastPriceChange ?? 0;
 
   if (oiChange > 0 && ltpChange < 0) {
@@ -131,9 +131,21 @@ function averageLotsVolume(ticks: OptionContractTick[]): number {
   return ticks.reduce((sum, tick) => sum + toLots(tick.volume, tick), 0) / ticks.length;
 }
 
-function weightedVolumeContribution(volume: number, averageVolume: number): number {
+// Volume is a CONFIRMING signal for whether a strike's open interest is
+// being actively defended right now - it is not itself a competing measure
+// of the wall's size. Open interest is what actually anchors a support/
+// resistance level; day volume commonly runs 15-16x the day's OI on a real
+// chain (confirmed live on NIFTY/SENSEX), and without a cap relative to
+// this strike's own OI, the volume term swamped OI outright - the "OI and
+// pressure" zone list the docs promise was actually an 87-90% volume-driven
+// most-traded-strike list. Capping volume's raw contribution at 1x this
+// strike's own OI (so at most a 50% boost after the 0.5 weight below, or
+// 75% during a genuine surge) keeps OI the dominant term regardless of how
+// far volume runs ahead of OI on a given day or contract.
+function weightedVolumeContribution(volume: number, oi: number, averageVolume: number): number {
   const surgeMultiplier = averageVolume > 0 && volume > averageVolume * 2 ? 1.5 : 1;
-  return volume * 0.5 * surgeMultiplier;
+  const cappedVolume = oi > 0 ? Math.min(volume, oi) : Math.min(volume, 1);
+  return cappedVolume * 0.5 * surgeMultiplier;
 }
 
 export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date(), thresholds?: AlertThresholdConfig): MarketAlert[] {
