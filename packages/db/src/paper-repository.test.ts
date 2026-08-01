@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { PrismaClient } from "@prisma/client";
 import type { AuthUserDto } from "./auth-repository.ts";
 import type { PaperOrderLegInput } from "./paper-repository.ts";
-import { validatePaperOrderCapacity } from "./paper-repository.ts";
+import { applyFillSlippage, validatePaperOrderCapacity } from "./paper-repository.ts";
 
 const user: AuthUserDto = {
   id: "user-1",
@@ -71,4 +71,16 @@ test("validatePaperOrderCapacity counts pending orders toward both the position 
   const pendingOrders = Array.from({ length: 20 }, () => ({ quantity: 65, entryPrice: decimal(10), requestedPrice: decimal(10) }));
   const message = await validatePaperOrderCapacity([leg()], user, mockClient([], pendingOrders));
   assert.match(message ?? "", /21, exceeding the 20-position/);
+});
+
+test("applyFillSlippage moves a BUY fill above the requested price and a SELL fill below it", () => {
+  assert.ok(applyFillSlippage("BUY", 100) > 100, "a BUY should fill worse (higher) than requested, not exactly at it");
+  assert.ok(applyFillSlippage("SELL", 100) < 100, "a SELL should fill worse (lower) than requested, not exactly at it");
+});
+
+test("applyFillSlippage is always against the trader, never in their favor", () => {
+  for (const price of [10, 50, 100, 500, 2000]) {
+    assert.ok(applyFillSlippage("BUY", price) > price);
+    assert.ok(applyFillSlippage("SELL", price) < price);
+  }
 });

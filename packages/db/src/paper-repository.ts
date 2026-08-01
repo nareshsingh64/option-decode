@@ -696,7 +696,7 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
         return null;
       }
 
-      const filledPrice = normalizeTradablePrice(order.requestedPrice.toNumber());
+      const filledPrice = normalizeTradablePrice(applyFillSlippage(order.action, order.requestedPrice.toNumber()));
       const trailDistance = normalizeTradablePrice(order.trailDistance?.toNumber() ?? Math.abs(filledPrice - order.stopLoss.toNumber()));
       const stopLoss = order.trailingStop ? getTrailingStopLoss(order.action, filledPrice, trailDistance) : normalizeTradablePrice(order.stopLoss.toNumber());
       const targetPrice = normalizeTradablePrice(order.targetPrice.toNumber());
@@ -1387,6 +1387,25 @@ function realUserTradeWhere(): Prisma.PaperTradeWhereInput {
 
 function shouldFillPaperOrder(action: string, entryPrice: number, latestPrice: number) {
   return action === "BUY" ? latestPrice <= entryPrice : latestPrice >= entryPrice;
+}
+
+// A limit order filled at exactly its requested price the instant the
+// market crossed it - no spread, no size-dependent slippage, no partial
+// fills - in direct contrast to Sim's chi/spread-driven fill model in the
+// same app (packages/db/src/sim-repository.ts). A trader mainly using
+// this simpler tab (it's the default "Paper Trading" nav item) was being
+// taught systematically better execution than they'll ever actually get.
+// This is a fixed-percentage approximation, not Sim's full bid-ask-driven
+// chi model - this tab's fill loop only ever fetches lastPrice, not
+// bid/ask, and porting the full model would mean fetching and reasoning
+// about spread data this simpler order lifecycle doesn't otherwise use.
+// Applied against the trader in both directions: a BUY fills slightly
+// above its requested price, a SELL slightly below.
+const PAPER_FILL_SLIPPAGE_PERCENT = 0.5;
+
+export function applyFillSlippage(action: string, requestedPrice: number): number {
+  const factor = action === "BUY" ? 1 + PAPER_FILL_SLIPPAGE_PERCENT / 100 : 1 - PAPER_FILL_SLIPPAGE_PERCENT / 100;
+  return requestedPrice * factor;
 }
 
 function normalizeTradablePrice(value: number, tickSize = 0.05) {
