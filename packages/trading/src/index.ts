@@ -32,6 +32,17 @@ export function createPaperOrder(request: PaperOrderRequest, now = new Date()): 
   };
 }
 
+// Minimum |buyerScore|/|sellerScore| (see calculateTradeInterpretation in
+// @option-decode/analytics) before "buyer momentum"/"seller safety" fires.
+// Replaces an old fixed value of 12, tuned for a raw-lot-count scale that's
+// since been normalized to a percentage-of-OI basis - recalibrated against
+// live poll-to-poll deltas (2026-07-31, ATM +/-4 window): medians ran ~500
+// (NIFTY), ~430 (BANKNIFTY), ~210 (SENSEX), with the smallest underlying's
+// own 25th percentile around 12-20. 150 sits comfortably inside that
+// spread for all three, so the gate is reachable without firing on every
+// poll regardless of real momentum.
+const MOMENTUM_ACTIVATION_THRESHOLD = 150;
+
 const CONVICTION_SCORE: Record<MarketBiasSummary["conviction"], number> = {
   High: 70,
   Moderate: 45,
@@ -460,27 +471,37 @@ export function calculateTradeRecommendations(
   }
 
   // 4. BUYER vs SELLER
-  if (tradeInterpretation.buyerScore >= 12) {
+  // buyerScore/sellerScore are net directional sums, not naturally-positive
+  // magnitudes (see getBuyerMomentumScore/getSellerSafetyScore in
+  // @option-decode/analytics: CE activity is positive and PE activity is
+  // negative for buyerScore; PE positive, CE negative for sellerScore). A
+  // bare >= gate meant a large NEGATIVE score - genuine PE-buying momentum,
+  // or genuine CE-writing safety - could never trigger these
+  // recommendations at all, confirmed live on real BANKNIFTY/SENSEX
+  // snapshots. Math.abs() on both restores the other half of each range.
+  if (Math.abs(tradeInterpretation.buyerScore) >= MOMENTUM_ACTIVATION_THRESHOLD) {
+    const buyerSide = tradeInterpretation.buyerScore > 0 ? "CE" : "PE";
     recs.push({
       id: "buyer-momentum",
       category: "strategy",
       priority: "medium",
       title: "Option buyers have momentum",
-      explanation: `Buyer momentum score is +${tradeInterpretation.buyerScore.toFixed(0)} across ATM strikes. Long buildup is outpacing writing near ATM.`,
+      explanation: `Buyer momentum score is ${tradeInterpretation.buyerScore.toFixed(0)} across ATM strikes (${buyerSide}-side long buildup outpacing writing near ATM).`,
       action: `Favour buying options over selling. ${marketBias.bias === "Bullish" ? "CE buying is the higher-probability trade." : marketBias.bias === "Bearish" ? "PE buying is the higher-probability trade." : "Wait for directional bias before buying."}`,
       confidence: 68
     });
   }
 
-  if (tradeInterpretation.sellerScore >= 12) {
+  if (Math.abs(tradeInterpretation.sellerScore) >= MOMENTUM_ACTIVATION_THRESHOLD) {
     const sellSetups = buildSellerLegs();
     const legsText = sellSetups.map((setup) => `${setup.strike} ${setup.optionType} @ ~${setup.entryPrice} (SL ${setup.stopLoss})`).join(" + ");
+    const sellerSide = tradeInterpretation.sellerScore > 0 ? "PE" : "CE";
     recs.push({
       id: "seller-safety",
       category: "strategy",
       priority: "medium",
       title: "Safe environment for option sellers",
-      explanation: `Seller safety score is +${tradeInterpretation.sellerScore.toFixed(0)} across ATM strikes. Writing dominates near ATM — sellers are well-positioned.`,
+      explanation: `Seller safety score is ${tradeInterpretation.sellerScore.toFixed(0)} across ATM strikes (${sellerSide}-side writing dominates near ATM) — sellers are well-positioned.`,
       action: sellSetups.length
         ? `Option selling strategies have better edge now. ${sellerTimeframe} delta-band setup: ${legsText}. ${support && resistance ? `OI range: ${strike(support.strikePrice)} PE to ${strike(resistance.strikePrice)} CE.` : ""}`
         : `Option selling strategies have better edge now. Consider short straddle, strangle, or credit spreads near ATM. ${support && resistance ? `Range: ${strike(support.strikePrice)} PE to ${strike(resistance.strikePrice)} CE.` : ""}`,

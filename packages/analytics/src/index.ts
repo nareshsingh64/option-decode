@@ -345,9 +345,21 @@ export function classifyOptionActivity(tick?: OptionContractTick): OptionActivit
   return "NEUTRAL";
 }
 
+// OI-change and volume were raw lot counts, which run orders of magnitude
+// apart purely by which underlying you're looking at - confirmed live,
+// NIFTY's aggregated buyer/seller scores ran into the hundreds of
+// thousands to millions while BANKNIFTY's ran in the thousands at the
+// same instant, both compared against the same fixed activation
+// threshold. Expressing both as a percentage of the strike's own open
+// interest (matching the normalization already applied to WCI and Score
+// Trend elsewhere in this file) makes the weight comparable across
+// underlyings; price is already a percentage and needs no change.
 function optionActivityWeight(tick?: OptionContractTick): number {
   if (!tick) return 0;
-  return Math.round(Math.abs(toLots(tick.changeInOpenInterest, tick)) + Math.abs(toLots(tick.volume, tick)) * 0.05 + Math.abs(tick.lastPriceChangePercent ?? 0) * 2);
+  const oi = toLots(tick.openInterest, tick);
+  const oiChangePercent = oi > 0 ? (Math.abs(toLots(tick.changeInOpenInterest, tick)) / oi) * 100 : 0;
+  const volumePercent = oi > 0 ? (Math.abs(toLots(tick.volume, tick)) / oi) * 100 : 0;
+  return oiChangePercent + volumePercent * 0.05 + Math.abs(tick.lastPriceChangePercent ?? 0) * 2;
 }
 
 function getBuyerMomentumScore(tick?: OptionContractTick): number {
@@ -356,8 +368,8 @@ function getBuyerMomentumScore(tick?: OptionContractTick): number {
   if (!tick || !weight) return 0;
   const direction = tick.optionType === "CE" ? 1 : -1;
   if (activity === "LONG_BUILDUP") return direction * weight;
-  if (activity === "SHORT_COVERING") return direction * Math.round(weight * 0.5);
-  if (activity === "WRITING") return -direction * Math.round(weight * 0.6);
+  if (activity === "SHORT_COVERING") return direction * weight * 0.5;
+  if (activity === "WRITING") return -direction * weight * 0.6;
   return 0;
 }
 
@@ -368,7 +380,7 @@ function getSellerSafetyScore(tick?: OptionContractTick): number {
   const supportDirection = tick.optionType === "PE" ? 1 : -1;
   if (activity === "WRITING") return supportDirection * weight;
   if (activity === "SHORT_COVERING") return -supportDirection * weight;
-  if (activity === "LONG_BUILDUP") return -supportDirection * Math.round(weight * 0.5);
+  if (activity === "LONG_BUILDUP") return -supportDirection * weight * 0.5;
   return 0;
 }
 

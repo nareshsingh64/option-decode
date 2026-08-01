@@ -283,8 +283,14 @@ export function scoreToPercent(score: number) {
   return Math.max(5, Math.min(100, Math.round(score / 15000)));
 }
 
+// Matches MOMENTUM_ACTIVATION_THRESHOLD in @option-decode/trading, which
+// gates the same buyerScore/sellerScore values server-side - kept in sync
+// so this label never disagrees with whether the buyer-momentum/
+// seller-safety recommendation actually fired. See that constant's doc
+// comment for the live calibration behind 150 (replacing an old value of
+// 8, tuned for a since-normalized raw-lot-count scale).
 function formatDirectionalScore(score: number, positiveLabel: string, negativeLabel: string) {
-  if (Math.abs(score) < 8) {
+  if (Math.abs(score) < 150) {
     return "Neutral";
   }
   return `${score > 0 ? positiveLabel : negativeLabel} ${formatSignedLarge(score)}`;

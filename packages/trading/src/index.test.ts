@@ -288,7 +288,7 @@ test("seller-safety recommendation carries concrete PE+CE sellSetups sized to th
   // 0.05-0.10, target 0.075).
   const snap = snapshot(ticks, 25000, 25000);
 
-  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], { buyerScore: 0, sellerScore: 15 });
+  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], { buyerScore: 0, sellerScore: 200 });
   const rec = recs.find((candidate) => candidate.id === "seller-safety");
   assert.ok(rec, "expected seller-safety recommendation to fire");
   assert.equal(rec!.sellSetups?.length, 2);
@@ -307,6 +307,39 @@ test("seller-safety recommendation carries concrete PE+CE sellSetups sized to th
   assert.equal(ce.breakevenAtExpiry, 25218);
 
   assert.match(rec!.action, /monthly delta-band setup/);
+});
+
+test("buyer-momentum fires on a strongly negative buyerScore too - genuine PE-buying momentum, not just CE", () => {
+  // buyerScore is a net directional sum (CE activity positive, PE activity
+  // negative - see getBuyerMomentumScore in @option-decode/analytics), not
+  // a naturally-positive magnitude. A bare >= gate previously meant this
+  // recommendation could never fire on real PE-buying momentum at all.
+  const snap = snapshot([tick({ optionType: "PE", strikePrice: 24800, delta: 0.18, lastPrice: 20 })], 25000, 25000);
+  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias({ bias: "Bearish" }), [strikeMovementRow()], {
+    buyerScore: -200,
+    sellerScore: 0
+  });
+  const rec = recs.find((candidate) => candidate.id === "buyer-momentum");
+  assert.ok(rec, "expected buyer-momentum to fire on a strongly negative buyerScore");
+  assert.match(rec!.explanation, /PE-side long buildup/);
+});
+
+test("seller-safety fires on a strongly negative sellerScore too - genuine CE-writing safety, not just PE", () => {
+  const snap = snapshot(
+    [
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.08, lastPrice: 18 }),
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.04, lastPrice: 9 })
+    ],
+    25000,
+    25000
+  );
+  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias({ bias: "Balanced" }), [strikeMovementRow()], {
+    buyerScore: 0,
+    sellerScore: -200
+  });
+  const rec = recs.find((candidate) => candidate.id === "seller-safety");
+  assert.ok(rec, "expected seller-safety to fire on a strongly negative sellerScore");
+  assert.match(rec!.explanation, /CE-side writing/);
 });
 
 test("balanced-market recommendation carries a two-leg sellSetups strangle instead of only text guidance", () => {
@@ -341,7 +374,7 @@ test("calculateTradeRecommendations biases seller-safety strikes beyond a suppli
     expectedLowerBoundary: 24800
   };
 
-  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], { buyerScore: 0, sellerScore: 15 }, atmStraddle);
+  const recs = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], { buyerScore: 0, sellerScore: 200 }, atmStraddle);
   const rec = recs.find((candidate) => candidate.id === "seller-safety")!;
   const ce = rec.sellSetups!.find((setup) => setup.optionType === "CE")!;
   const pe = rec.sellSetups!.find((setup) => setup.optionType === "PE")!;
@@ -411,7 +444,7 @@ test("buyer-momentum and seller-safety never ship together - a directional bias 
     tick({ optionType: "CE", strikePrice: 25200, delta: 0.08, lastPrice: 18 })
   ];
   const snap = snapshot(ticks, 25000, 25000);
-  const interpretation: TradeInterpretation = { buyerScore: 15, sellerScore: 15 };
+  const interpretation: TradeInterpretation = { buyerScore: 200, sellerScore: 200 };
 
   const directional = calculateTradeRecommendations(snap, bullishPressure, bullishMarketBias(), [strikeMovementRow()], interpretation);
   assert.ok(directional.some((rec) => rec.id === "buyer-momentum"), "a directional bias should keep buyer-momentum");
