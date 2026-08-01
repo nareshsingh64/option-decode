@@ -964,8 +964,13 @@ async function computeThetaEfficiency(accountId: string, client: PrismaClient): 
   if (closed.length === 0) {
     return null;
   }
+  // EOD snapshots only (one per trading day) - the intraday engine also
+  // writes to this table every 5 minutes during market hours, and summing
+  // both indiscriminately overcounts a single day's theta by up to ~78x on
+  // an actively-sampled trade (confirmed in production: 21 closed trades,
+  // ~1.6 days held on average, produced 69-351 snapshot rows each).
   const thetaAgg = await client.simMtmSnapshot.aggregate({
-    where: { tradeId: { in: closed.map((trade) => trade.id) } },
+    where: { tradeId: { in: closed.map((trade) => trade.id) }, source: "EOD" },
     _sum: { netTheta: true }
   });
   const thetaCollected = thetaAgg._sum.netTheta?.toNumber() ?? 0;
@@ -1041,7 +1046,8 @@ export async function runSimEodMarkToMarket(asOf = new Date(), client: PrismaCli
         netGamma: closeCost.greeks.netGamma,
         netTheta: closeCost.greeks.netTheta,
         netVega: closeCost.greeks.netVega,
-        marginReq: trade.bpe
+        marginReq: trade.bpe,
+        source: "EOD"
       },
       update: {
         closeCost: closeCost.closeCostTotal,
@@ -1329,7 +1335,8 @@ export async function runSimIntradayEngine(asOf = new Date(), client: PrismaClie
           netGamma: closeCost.greeks.netGamma,
           netTheta: closeCost.greeks.netTheta,
           netVega: closeCost.greeks.netVega,
-          marginReq: await computeDynamicMarginForTrade(trade, client, asOf)
+          marginReq: await computeDynamicMarginForTrade(trade, client, asOf),
+          source: "INTRADAY"
         }
       });
       result.sampledTrades += 1;

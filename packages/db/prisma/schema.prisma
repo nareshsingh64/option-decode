@@ -582,6 +582,16 @@ enum SimExitAction {
   LIQUIDATED   // Phase 3
 }
 
+// EOD (once/trading-day) vs INTRADAY (every 5 minutes during market hours,
+// see sim-eod-mtm.ts) - both jobs write into the same SimMtmSnapshot table,
+// and without this discriminator a trade held through active trading hours
+// accumulates dozens of intraday rows alongside its daily EOD row, silently
+// inflating any aggregate (e.g. summed theta) that assumes one row per day.
+enum SimMtmSource {
+  EOD
+  INTRADAY
+}
+
 model SimAccount {
   id              String     @id @default(cuid())
   userId          String
@@ -679,6 +689,7 @@ model SimMtmSnapshot {
   netTheta  Decimal? @db.Decimal(12, 2)
   netVega   Decimal? @db.Decimal(12, 2)
   marginReq Decimal? @db.Decimal(16, 2)
+  source    SimMtmSource @default(EOD)
   trade     SimTrade @relation(fields: [tradeId], references: [id])
 
   @@unique([tradeId, ts])
