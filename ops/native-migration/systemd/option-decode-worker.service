@@ -26,6 +26,16 @@ StandardError=append:/opt/option-decode-native/logs/worker/worker.log
 Restart=on-failure
 RestartSec=5
 
+# Explicit rather than relying on systemd's 90s default: the worker's
+# SIGTERM handler (apps/worker/src/worker.ts's shutdown()) calls
+# worker.close() on every BullMQ Worker, which waits for the currently
+# running job to finish before resolving. Jobs here are ~30s-cadence
+# option-chain/wave-quote captures, not long-running, so 30s is generous
+# headroom for graceful shutdown while still leaving the option-decode-
+# worker-restart.timer's 15-minute cadence (see that timer's own comment)
+# a wide margin before the next scheduled restart fires.
+TimeoutStopSec=30
+
 NoNewPrivileges=true
 ProtectSystem=strict
 PrivateTmp=true
