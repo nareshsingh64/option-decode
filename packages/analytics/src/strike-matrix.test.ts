@@ -87,9 +87,15 @@ test("DRCR bias bands: neutral, bearish, transitional gap, and zero-call guard",
   assert.equal(build(1000, 1000).bias, "Neutral"); // DRCR 1.0
   assert.equal(build(500, 1000).bias, "Bearish"); // DRCR 0.5
   assert.equal(build(1300, 1000).bias, "Transitional"); // DRCR 1.3 gap
+
+  // Puts written with no call-side writing at all: no finite ratio exists,
+  // but the direction is unambiguous. This used to read "Transitional"
+  // while its mirror (zero PUT churn) read a confident "Bearish".
   const zeroCall = build(1000, 0);
   assert.equal(zeroCall.drcr, undefined);
-  assert.equal(zeroCall.bias, "Transitional");
+  assert.equal(zeroCall.bias, "Bullish");
+  // Still no recommendation - the fixture's PE strike carries no open
+  // interest, so it can't clear the execution-strike liquidity floor.
   assert.equal(zeroCall.recommendation, undefined);
 });
 
@@ -107,8 +113,47 @@ test("DRCR excludes unwinding OI - a strike closing positions doesn't count as w
     "intraday"
   );
   assert.equal(result.putDrcTotal, 0, "a closing put strike should contribute nothing to putDrcTotal");
-  assert.equal(result.drcr, 0, "put side has no qualifying (opening) activity at all, so the ratio reads as no put support");
-  assert.equal(result.bias, "Bearish");
+  assert.equal(result.bias, "Bearish", "calls being written while puts are covered is unambiguously bearish");
+  assert.equal(result.drcr, undefined, "there is no finite ratio when the put side has no opening flow - the direction is reported, not a fabricated 0");
+});
+
+test("one-sided writer flow reads symmetrically - calls-only is Bearish, puts-only is Bullish", () => {
+  // The zero-guard used to be asymmetric: zero call churn returned
+  // undefined ("Transitional") while zero put churn produced drcr = 0 and
+  // a confident "Bearish". Both are equally one-sided and equally
+  // informative, so both must now yield a definite bias.
+  const callsOnly = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: -500 }), // closing
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500 }) // opening
+    ]),
+    "intraday"
+  );
+  const putsOnly = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: 500 }), // opening
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: -500 }) // closing
+    ]),
+    "intraday"
+  );
+
+  assert.equal(callsOnly.bias, "Bearish");
+  assert.equal(putsOnly.bias, "Bullish", "the mirror case used to fall through to Transitional, silently discarding a real signal");
+  assert.equal(callsOnly.drcr, undefined);
+  assert.equal(putsOnly.drcr, undefined);
+});
+
+test("no opening flow on either side is the only genuine no-signal case", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: -500 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: -500 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.drcr, undefined);
+  assert.equal(result.bias, "Transitional");
+  assert.equal(result.recommendation, undefined);
 });
 
 test("DRCR is normalized per qualifying strike, not a raw sum, so put skew alone can't rule out Bearish", () => {

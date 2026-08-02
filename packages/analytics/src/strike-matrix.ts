@@ -125,6 +125,40 @@ function classifyDrcr(drcr: number | undefined): StrikeMatrixBias {
   return "Transitional";
 }
 
+// Turns the two sides' per-strike average |DRC| into a ratio plus a bias.
+//
+// The zero-guard used to be one-sided: zero CALL churn returned undefined
+// ("no signal"), but zero PUT churn produced drcr = 0, which classifyDrcr
+// reads as a confident "Bearish". The two one-sided cases are genuinely
+// symmetric and both carry real information - calls being written while
+// puts aren't IS bearish, and puts being written while calls aren't IS
+// bullish - so the fix isn't to suppress both, which would throw away a
+// real signal, but to read both the same way.
+//
+// drcr itself stays undefined in those cases because there is no finite
+// ratio to report (the denominator is zero); the direction is still
+// unambiguous, so bias is set directly rather than inferred from a
+// fabricated number. Only genuinely-empty flow on BOTH sides reads as no
+// signal at all.
+function readWriterFlow(
+  putCount: number,
+  callCount: number,
+  putAverage: number,
+  callAverage: number
+): { drcr: number | undefined; bias: StrikeMatrixBias } {
+  if (putCount === 0 && callCount === 0) {
+    return { drcr: undefined, bias: "Transitional" };
+  }
+  if (callCount === 0) {
+    return { drcr: undefined, bias: "Bullish" };
+  }
+  if (putCount === 0) {
+    return { drcr: undefined, bias: "Bearish" };
+  }
+  const drcr = putAverage / callAverage;
+  return { drcr, bias: classifyDrcr(drcr) };
+}
+
 function buildRow(tick: OptionContractTick): StrikeMatrixRow | null {
   if (tick.delta === undefined) {
     return null;
@@ -496,8 +530,7 @@ export function calculateStrikeMatrix(
   // across 160 sampled snapshots under the un-normalized sum.
   const putDrcAverage = putDrcCount > 0 ? putDrcTotal / putDrcCount : 0;
   const callDrcAverage = callDrcCount > 0 ? callDrcTotal / callDrcCount : 0;
-  const drcr = callDrcAverage > 0 ? putDrcAverage / callDrcAverage : undefined;
-  const bias = classifyDrcr(drcr);
+  const { drcr, bias } = readWriterFlow(putDrcCount, callDrcCount, putDrcAverage, callDrcAverage);
   const effectiveWciThreshold = relativeWciThreshold(allRows, horizon);
   const callWall = findWall(universe, "CE", effectiveWciThreshold);
   const putWall = findWall(universe, "PE", effectiveWciThreshold);
