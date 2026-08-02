@@ -450,6 +450,19 @@ export function calculateStrikeMatrix(
     // Only recommend when every side the structure writes actually has an
     // execution strike available in the universe.
     if ((!cell.writesCall || callPick) && (!cell.writesPut || putPick)) {
+      // The walls above are what the whole framework treats as evidence of
+      // institutional backing, but the recommendation never used to read
+      // them - so a structure written against no qualifying wall on either
+      // side rendered exactly like one backed on both. Record which
+      // written side(s) lack a qualifying wall so the distinction survives
+      // into the API response.
+      const unbackedSides: ("CE" | "PE")[] = [];
+      if (cell.writesCall && !callWall?.meetsThreshold) {
+        unbackedSides.push("CE");
+      }
+      if (cell.writesPut && !putWall?.meetsThreshold) {
+        unbackedSides.push("PE");
+      }
       recommendation = {
         structure: cell.structure,
         targetDelta: cell.targetDelta,
@@ -458,7 +471,9 @@ export function calculateStrikeMatrix(
         putStrike: putPick?.strikePrice,
         putStrikeDelta: putPick?.delta,
         theoreticalPop: THEORETICAL_POP,
-        note: cell.note
+        note: cell.note,
+        wallBacked: unbackedSides.length === 0,
+        unbackedSides
       };
     }
   }

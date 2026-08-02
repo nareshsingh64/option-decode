@@ -216,6 +216,17 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
                       <span className="rounded border border-terminal-line bg-terminal-input px-2 py-1 text-terminal-muted">~{analysis.recommendation.theoreticalPop}% POP</span>
                     </div>
                     <p className="text-sm text-terminal-muted">{analysis.recommendation.note}</p>
+                    {/* The structure above comes purely from the DRCR bias
+                        cell; it doesn't require an institutional wall to
+                        exist. Say so plainly when one doesn't, instead of
+                        rendering an unbacked structure identically to a
+                        fully-backed one. */}
+                    {!analysis.recommendation.wallBacked ? (
+                      <p className="text-xs text-terminal-amber">
+                        No qualifying {analysis.recommendation.unbackedSides.join(" or ")} wall behind this structure (WCI never cleared {analysis.wciThreshold.toFixed(2)} on{" "}
+                        {analysis.recommendation.unbackedSides.length > 1 ? "either side" : "that side"}) — the bias is from DRCR alone, without institutional backing at the strike.
+                      </p>
+                    ) : null}
                     {onPaperTradePro && data ? (() => {
                       const draft = buildSimDraft(underlying, expiry, horizon, data);
                       if (!draft) {

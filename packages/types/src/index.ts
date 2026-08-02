@@ -374,6 +374,19 @@ export interface StrikeMatrixRecommendation {
   putStrikeDelta?: number;
   theoreticalPop: number;
   note: string;
+  // Whether EVERY side this structure actually writes is backed by a wall
+  // that cleared the horizon's conviction threshold. The engine computes
+  // call/put walls and their meetsThreshold, but the recommendation used to
+  // ignore them entirely - live, 100% of NIFTY's default-view
+  // recommendations (and 30-65% elsewhere) shipped with neither wall
+  // qualifying, presented identically to a fully-backed one. Recorded on
+  // the recommendation itself, not just in the UI's trade-button gate, so
+  // every consumer of the API sees the same distinction.
+  wallBacked: boolean;
+  // The side(s) the structure writes that lack a qualifying wall - empty
+  // when wallBacked is true. Lets a caller say exactly which leg is
+  // unsupported rather than only that something is.
+  unbackedSides: ("CE" | "PE")[];
 }
 
 export interface StrikeMatrixRiskRuleStatus {

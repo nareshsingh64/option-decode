@@ -275,6 +275,60 @@ test("bullish structures only populate the put side", () => {
   assert.equal(result.recommendation?.putStrike, 24800);
 });
 
+test("a recommendation written against no qualifying wall is flagged as unbacked", () => {
+  // Reproduces the live shape (NIFTY default view, 100% of sampled
+  // recommendations): a tradable DRCR bias with a valid execution strike,
+  // but WCI never clears the conviction bar on the written side - so the
+  // structure is DRCR-only, with no institutional wall behind the strike.
+  // The out-of-band background strike carries a high OI-change-to-volume
+  // ratio, lifting the chain's own turnover baseline (and therefore the
+  // relative threshold) well above what either in-band strike manages.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25000, delta: 0.5, volume: 10000, changeInOpenInterest: 5000, openInterest: 20000 }),
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 100000, changeInOpenInterest: 2000, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 100000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.bias, "Bullish");
+  assert.ok(result.recommendation, "expected a recommendation to still fire - the bias itself is tradable");
+  assert.equal(result.putWall?.meetsThreshold, false);
+  assert.equal(result.recommendation!.wallBacked, false);
+  assert.deepEqual(result.recommendation!.unbackedSides, ["PE"]);
+});
+
+test("a recommendation whose written side has a qualifying wall reads as backed", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([
+      // High OI change against modest volume -> WCI clears the bar.
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.bias, "Bullish");
+  assert.equal(result.putWall?.meetsThreshold, true);
+  assert.equal(result.recommendation!.wallBacked, true);
+  assert.deepEqual(result.recommendation!.unbackedSides, []);
+});
+
+test("only the side a structure actually writes counts toward wall backing", () => {
+  // Bullish intraday writes PUTS only, so an unqualifying CALL wall must
+  // not mark the recommendation unbacked - the call side isn't being sold.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 500000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.bias, "Bullish");
+  assert.equal(result.callWall?.meetsThreshold, false, "the call wall genuinely does not qualify");
+  assert.equal(result.recommendation!.wallBacked, true, "but this structure only writes puts, so call backing is irrelevant");
+  assert.deepEqual(result.recommendation!.unbackedSides, []);
+});
+
 test("isTradingHorizon narrows only the three valid horizons", () => {
   assert.equal(isTradingHorizon("intraday"), true);
   assert.equal(isTradingHorizon("weekly"), true);
