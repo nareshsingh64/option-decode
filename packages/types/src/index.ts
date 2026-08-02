@@ -334,6 +334,26 @@ export type TradingHorizon = "intraday" | "weekly" | "monthly";
 // force-fitted into a tradable bias.
 export type StrikeMatrixBias = "Bullish" | "Neutral" | "Bearish" | "Transitional";
 
+// The single definition of the DRCR bias-band boundaries. These were
+// previously written out independently in three places - the Strike Matrix
+// engine's classifyDrcr, the Sim scorecard's regime column, and the UI's
+// band caption - with nothing keeping them in sync, so changing one
+// silently diverged from the others.
+//
+// Lives here rather than in @option-decode/analytics because the web app
+// needs the numbers for display text but cannot import that package:
+// analytics uses .js-extension ESM specifiers that tsx resolves and
+// webpack does not. This package is already a dependency of every
+// consumer, and is a single file with no internal imports, so it bundles
+// cleanly. Use classifyDrcr from @option-decode/analytics to CLASSIFY a
+// value; these constants are for rendering the boundaries themselves.
+export const DRCR_BANDS = {
+  bullishAbove: 1.5,
+  bearishBelow: 0.6,
+  neutralFrom: 0.8,
+  neutralTo: 1.2
+} as const;
+
 export interface StrikeMatrixRow {
   optionType: OptionType;
   strikePrice: number;

@@ -752,7 +752,7 @@ export function calculateMarketPulse(points: MarketPulsePoint[]): MarketPulse | 
 }
 
 // Strike Matrix (WCI / DRC / DRCR) engine — see strike-matrix.ts
-export { calculateStrikeMatrix, isTradingHorizon, STRIKE_MATRIX_HORIZONS } from "./strike-matrix.js";
+export { calculateStrikeMatrix, classifyDrcr, isTradingHorizon, STRIKE_MATRIX_HORIZONS } from "./strike-matrix.js";
 
 // Elliott Wave engine — see elliott-wave.ts
 export { calculateElliottWave, detectZigZagPivots, WAVE_ZIGZAG_PRESETS } from "./elliott-wave.js";

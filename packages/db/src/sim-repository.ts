@@ -18,6 +18,7 @@
 //   50% defined-risk), hard stop at 3x credit, DTE <= 7 gamma flag,
 //   expiry settlement (intrinsic value, EXPIRED status).
 
+import { classifyDrcr } from "@option-decode/analytics";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -911,7 +912,10 @@ export async function getSimSummary(user: AuthUserDto, client: PrismaClient = pr
     if (trade.entryDrcr === null) {
       continue;
     }
-    const regime: SimSignalScorecardRow["regime"] = trade.entryDrcr > 1.5 ? "Bullish" : trade.entryDrcr < 0.6 ? "Bearish" : trade.entryDrcr >= 0.8 && trade.entryDrcr <= 1.2 ? "Neutral" : "Transitional";
+    // Classified by the Strike Matrix engine's own band definition rather
+    // than a hand-copied set of boundaries, so the scorecard can never
+    // bucket a trade into a different regime than the tab that produced it.
+    const regime: SimSignalScorecardRow["regime"] = classifyDrcr(trade.entryDrcr);
     const key = `${regime}:${trade.horizon}`;
     const bucket = scorecardBuckets.get(key) ?? { regime, horizon: trade.horizon, trades: 0, wins: 0, totalPnl: 0 };
     bucket.trades += 1;

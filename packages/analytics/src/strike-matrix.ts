@@ -17,6 +17,7 @@
 // ALL activity, opening or closing) demonstrably misread live data - see
 // classifyDrcr's call site below for the specifics and live evidence.
 
+import { DRCR_BANDS } from "@option-decode/types";
 import type {
   OptionChainSnapshot,
   OptionContractTick,
@@ -107,17 +108,22 @@ export function isTradingHorizon(value: string | undefined): value is TradingHor
   return value === "intraday" || value === "weekly" || value === "monthly";
 }
 
-function classifyDrcr(drcr: number | undefined): StrikeMatrixBias {
+// Boundaries come from DRCR_BANDS in @option-decode/types - the one
+// definition every consumer reads (see its doc comment for why it lives
+// there rather than here). This function is the only thing that should
+// CLASSIFY a DRCR value; callers that need a regime must call it rather
+// than re-implementing the comparisons.
+export function classifyDrcr(drcr: number | undefined): StrikeMatrixBias {
   if (drcr === undefined) {
     return "Transitional";
   }
-  if (drcr > 1.5) {
+  if (drcr > DRCR_BANDS.bullishAbove) {
     return "Bullish";
   }
-  if (drcr < 0.6) {
+  if (drcr < DRCR_BANDS.bearishBelow) {
     return "Bearish";
   }
-  if (drcr >= 0.8 && drcr <= 1.2) {
+  if (drcr >= DRCR_BANDS.neutralFrom && drcr <= DRCR_BANDS.neutralTo) {
     return "Neutral";
   }
   // 0.6–0.8 and 1.2–1.5 sit between the matrix's defined bands — surfaced

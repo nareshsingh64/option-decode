@@ -13,6 +13,7 @@
 
 import { Crosshair, FlaskConical, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DRCR_BANDS } from "@option-decode/types";
 import type { StrikeMatrixAnalysis, StrikeMatrixRow, TradingHorizon } from "@option-decode/types";
 import { CalendarDatePicker } from "./calendar-date-picker";
 import { formatPrice } from "./dashboard-formatters";
@@ -443,15 +444,18 @@ function biasTone(bias: StrikeMatrixAnalysis["bias"]): "emerald" | "red" | "ambe
   return undefined;
 }
 
+// Band numbers come from DRCR_BANDS in @option-decode/types, the same
+// constant classifyDrcr itself reads, so this caption can never quote a
+// boundary the engine no longer uses.
 function biasBandText(bias: StrikeMatrixAnalysis["bias"]): string {
   if (bias === "Bullish") {
-    return "DRCR > 1.5 — put-side writer flow dominates";
+    return `DRCR > ${DRCR_BANDS.bullishAbove} — put-side writer flow dominates`;
   }
   if (bias === "Bearish") {
-    return "DRCR < 0.6 — call-side writer flow dominates";
+    return `DRCR < ${DRCR_BANDS.bearishBelow} — call-side writer flow dominates`;
   }
   if (bias === "Neutral") {
-    return "DRCR 0.8–1.2 — balanced writer flow";
+    return `DRCR ${DRCR_BANDS.neutralFrom}–${DRCR_BANDS.neutralTo} — balanced writer flow`;
   }
   return "DRCR between defined bands — no tradable skew";
 }
