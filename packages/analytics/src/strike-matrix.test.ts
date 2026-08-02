@@ -117,6 +117,42 @@ test("DRCR excludes unwinding OI - a strike closing positions doesn't count as w
   assert.equal(result.drcr, undefined, "there is no finite ratio when the put side has no opening flow - the direction is reported, not a fabricated 0");
 });
 
+test("a near-zero-activity strike can't be called an institutional wall, however perfect its WCI ratio", () => {
+  // Reproduces the live shape on illiquid commodity chains (COPPER,
+  // SILVER): two contracts trade and both open, so WCI = 2/2 = 1.0 - the
+  // maximum possible ratio - off two contracts. It must never outrank or
+  // masquerade as institutional backing.
+  const result = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 2, changeInOpenInterest: 2, openInterest: 4 }),
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  const callWall = result.callWall!;
+  assert.equal(callWall.wci, 1, "the raw ratio is still 1.0 and is still reported honestly");
+  assert.equal(callWall.meetsThreshold, false, "but two contracts is not institutional backing");
+});
+
+test("a genuinely heavy wall is preferred over a perfect-ratio but near-empty strike on the same side", () => {
+  const result = calculateStrikeMatrix(
+    snapshot([
+      // Out-of-band background so the chain's own turnover baseline (and
+      // therefore the relative WCI threshold) isn't set by the two strikes
+      // under test themselves.
+      tick({ optionType: "CE", strikePrice: 26000, delta: 0.5, volume: 100000, changeInOpenInterest: 5000, openInterest: 50000 }),
+      // Perfect WCI (1.0) on 3 contracts.
+      tick({ optionType: "CE", strikePrice: 25100, delta: 0.2, volume: 3, changeInOpenInterest: 3, openInterest: 6 }),
+      // Lower WCI (0.75) but real size behind it.
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.18, volume: 4000, changeInOpenInterest: 3000, openInterest: 9000 }),
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(result.callWall?.strikePrice, 25200, "size-backed conviction should win the wall slot over a degenerate ratio");
+  assert.equal(result.callWall?.meetsThreshold, true);
+});
+
 test("one-sided writer flow reads symmetrically - calls-only is Bearish, puts-only is Bullish", () => {
   // The zero-guard used to be asymmetric: zero call churn returned
   // undefined ("Transitional") while zero put churn produced drcr = 0 and

@@ -181,6 +181,30 @@ function buildRow(tick: OptionContractTick): StrikeMatrixRow | null {
   };
 }
 
+// WCI is a pure ratio (OI change / volume), so it's completely scale-free:
+// a strike where two contracts traded and both opened scores WCI = 1.0,
+// the maximum possible "conviction", off two contracts. Without an
+// absolute floor those degenerate strikes outrank genuinely heavy
+// institutional walls - confirmed live across 10 trading days: 33 of 37
+// COPPER "institutional walls" and 21 of 24 SILVER ones rested on under
+// 100 contracts of volume or OI change (COPPER's 25th-percentile wall
+// volume was 2 contracts), while NIFTY's qualifying walls had a
+// 10th-percentile volume of 227,565.
+//
+// 100 sits far below every liquid index's 10th percentile (NIFTY 227,565,
+// BANKNIFTY 780, SENSEX 540 volume; 49,595 / 420 / 280 OI change) so it
+// costs the indices essentially nothing - 0/33, 2/60 and 2/55 qualifying
+// walls respectively - while removing the bulk of the commodity noise.
+// A strike below the floor can still be SURFACED as the best available on
+// its side (see the display fallback below); it just can never be called
+// institutionally backed.
+const MIN_INSTITUTIONAL_WALL_VOLUME = 100;
+const MIN_INSTITUTIONAL_WALL_OI_CHANGE = 100;
+
+function hasInstitutionalScale(row: StrikeMatrixRow): boolean {
+  return row.volume >= MIN_INSTITUTIONAL_WALL_VOLUME && Math.abs(row.oiChange) >= MIN_INSTITUTIONAL_WALL_OI_CHANGE;
+}
+
 function findWall(rows: StrikeMatrixRow[], optionType: "CE" | "PE", wciThreshold: number): StrikeMatrixWall | undefined {
   const candidates = rows.filter((row): row is StrikeMatrixRow & { wci: number } => row.optionType === optionType && row.wci !== undefined);
   if (!candidates.length) {
@@ -195,7 +219,7 @@ function findWall(rows: StrikeMatrixRow[], optionType: "CE" | "PE", wciThreshold
   // masked a real +0.323 WCI wall on 6.6x the volume, 500 points away).
   // Threshold itself uses the raw (signed) WCI: negative WCI means
   // positions are being unwound, which is never institutional backing.
-  const qualifying = candidates.filter((row) => row.wci > wciThreshold);
+  const qualifying = candidates.filter((row) => row.wci > wciThreshold && hasInstitutionalScale(row));
   const pool = qualifying.length ? qualifying : candidates;
 
   let best = pool[0];
@@ -210,7 +234,7 @@ function findWall(rows: StrikeMatrixRow[], optionType: "CE" | "PE", wciThreshold
     optionType,
     strikePrice: best.strikePrice,
     wci: best.wci,
-    meetsThreshold: best.wci > wciThreshold,
+    meetsThreshold: best.wci > wciThreshold && hasInstitutionalScale(best),
     delta: best.delta,
     oiChange: best.oiChange,
     volume: best.volume
