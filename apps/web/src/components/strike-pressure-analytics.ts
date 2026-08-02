@@ -132,28 +132,45 @@ export function buildZoneRows(overview: MarketOverview) {
   // historical tick data, not a single point-in-time LTP) - see
   // PressureZone's doc comment in @option-decode/types. Shown alongside
   // trueZone, not replacing it - they answer different questions.
-  const resistance = overview.pressure.resistanceZones.slice(0, 2).map((zone, index) => ({
-    label: `R${index + 1}`,
-    value: zone.strikePrice,
-    trueZone: zone.trueZone,
-    weightedTrueZone: zone.weightedTrueZone,
-    avgSellPrice: zone.avgSellPrice,
-    weightedSampleOi: zone.weightedSampleOi,
-    status: index === 0 ? "Strong" : "Moderate",
-    tone: "red" as const,
-    isCurrent: false
-  }));
-  const support = overview.pressure.supportZones.slice(0, 2).map((zone, index) => ({
-    label: `S${index + 1}`,
-    value: zone.strikePrice,
-    trueZone: zone.trueZone,
-    weightedTrueZone: zone.weightedTrueZone,
-    avgSellPrice: zone.avgSellPrice,
-    weightedSampleOi: zone.weightedSampleOi,
-    status: index === 0 ? "Strong" : "Key Level",
-    tone: "green" as const,
-    isCurrent: false
-  }));
+  // The two strongest-by-score zones are chosen first (unchanged), but R1/
+  // R2 and S1/S2 are then LABELLED and ORDERED by distance from spot, not
+  // by which one happened to score higher - confirmed live (BANKNIFTY): R2
+  // sat nearer to spot than R1, and S2 sat above S1, because both used to
+  // be plain score order. Resistance sits above spot (nearest = lowest
+  // strike of the two) and support sits below (nearest = highest strike of
+  // the two); both arrays are sorted strike-descending so the table renders
+  // as a genuine top-to-bottom price ladder: farthest resistance, nearest
+  // resistance, CMP, nearest support, farthest support.
+  const topResistance = [...overview.pressure.resistanceZones].slice(0, 2).sort((left, right) => right.strikePrice - left.strikePrice);
+  const resistance = topResistance.map((zone, index) => {
+    const isNearest = index === topResistance.length - 1;
+    return {
+      label: isNearest ? "R1" : "R2",
+      value: zone.strikePrice,
+      trueZone: zone.trueZone,
+      weightedTrueZone: zone.weightedTrueZone,
+      avgSellPrice: zone.avgSellPrice,
+      weightedSampleOi: zone.weightedSampleOi,
+      status: isNearest ? "Strong" : "Moderate",
+      tone: "red" as const,
+      isCurrent: false
+    };
+  });
+  const topSupport = [...overview.pressure.supportZones].slice(0, 2).sort((left, right) => right.strikePrice - left.strikePrice);
+  const support = topSupport.map((zone, index) => {
+    const isNearest = index === 0;
+    return {
+      label: isNearest ? "S1" : "S2",
+      value: zone.strikePrice,
+      trueZone: zone.trueZone,
+      weightedTrueZone: zone.weightedTrueZone,
+      avgSellPrice: zone.avgSellPrice,
+      weightedSampleOi: zone.weightedSampleOi,
+      status: isNearest ? "Strong" : "Key Level",
+      tone: "green" as const,
+      isCurrent: false
+    };
+  });
 
   return [
     ...resistance,
