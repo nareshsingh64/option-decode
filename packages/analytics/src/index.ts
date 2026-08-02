@@ -83,7 +83,7 @@ export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureS
   };
 }
 
-function calculateMaxPain(ticks: OptionContractTick[]): number | undefined {
+export function calculateMaxPain(ticks: OptionContractTick[]): number | undefined {
   const strikes = [...new Set(ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
   if (!strikes.length) {
     return undefined;
@@ -490,6 +490,13 @@ export function calculateAtmStraddleExpectedMove(snapshot: OptionChainSnapshot):
  * Referenced throughout the dashboard guide as the "OI Breadth" signal;
  * previously existed only as ad-hoc client-side math.
  */
+// How far one side's total OI must exceed the other's before "OI Breadth"
+// calls it dominance rather than Balanced. Exported because the dashboard
+// computes its own breadth (it needs the user's lots-vs-contracts display
+// preference, which this server-side version has no notion of) and the two
+// must agree on where the boundary sits.
+export const OI_BREADTH_DOMINANCE_RATIO = 1.05;
+
 export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
   const ceTicks = snapshot.ticks.filter((tick) => tick.optionType === "CE");
   const peTicks = snapshot.ticks.filter((tick) => tick.optionType === "PE");
@@ -498,7 +505,7 @@ export function calculateChainStats(snapshot: OptionChainSnapshot): ChainStats {
   const totalCeChange = ceTicks.reduce((sum, tick) => sum + (tick.changeInOpenInterest ?? 0), 0);
   const totalPeChange = peTicks.reduce((sum, tick) => sum + (tick.changeInOpenInterest ?? 0), 0);
   const maxOiTick = [...snapshot.ticks].sort((left, right) => (right.openInterest ?? 0) - (left.openInterest ?? 0))[0];
-  const breadth: ChainStats["breadth"] = totalPeOi > totalCeOi * 1.05 ? "Put Support" : totalCeOi > totalPeOi * 1.05 ? "Call Resistance" : "Balanced";
+  const breadth: ChainStats["breadth"] = totalPeOi > totalCeOi * OI_BREADTH_DOMINANCE_RATIO ? "Put Support" : totalCeOi > totalPeOi * OI_BREADTH_DOMINANCE_RATIO ? "Call Resistance" : "Balanced";
 
   return {
     totalCeOi,

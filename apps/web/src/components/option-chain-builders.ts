@@ -1,3 +1,4 @@
+import { OI_BREADTH_DOMINANCE_RATIO } from "@option-decode/analytics";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
 
@@ -265,11 +266,9 @@ export function buildTopStrikeRows(overview: MarketOverview, preferences: Displa
 // Deliberately NOT reusing @option-decode/analytics' calculateChainStats
 // here: that server-side version always sums raw contract-count OI, while
 // this client version needs to optionally convert to lots depending on the
-// user's quantityDisplayMode preference. The breadth-dominance ratio (1.05)
-// below must stay in sync with the same constant in
-// packages/analytics/src/index.ts's calculateChainStats - if one changes,
-// update the other, or "OI Breadth" can disagree between this page and any
-// server-computed view of the same snapshot.
+// user's quantityDisplayMode preference. The breadth boundary itself is
+// imported rather than re-typed, so the two can never disagree on where
+// dominance starts even though they aggregate differently.
 export function buildChainStats(overview: MarketOverview, preferences: DisplayPreferences) {
   const ceTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "CE");
   const peTicks = overview.snapshot.ticks.filter((tick) => tick.optionType === "PE");
@@ -279,7 +278,7 @@ export function buildChainStats(overview: MarketOverview, preferences: DisplayPr
   const totalCeChange = ceTicks.reduce((sum, tick) => sum + getQuantity(tick.changeInOpenInterest, tick), 0);
   const totalPeChange = peTicks.reduce((sum, tick) => sum + getQuantity(tick.changeInOpenInterest, tick), 0);
   const maxOiTick = [...overview.snapshot.ticks].sort((left, right) => getQuantity(right.openInterest, right) - getQuantity(left.openInterest, left))[0];
-  const breadth = totalPeOi > totalCeOi * 1.05 ? "Put Support" : totalCeOi > totalPeOi * 1.05 ? "Call Resistance" : "Balanced";
+  const breadth = totalPeOi > totalCeOi * OI_BREADTH_DOMINANCE_RATIO ? "Put Support" : totalCeOi > totalPeOi * OI_BREADTH_DOMINANCE_RATIO ? "Call Resistance" : "Balanced";
 
   return {
     totalCeOi,

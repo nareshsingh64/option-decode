@@ -1,4 +1,5 @@
-import type { PcrContext } from "@option-decode/types";
+import { calculateMaxPain, classifyOptionActivity as classifyOptionActivityFromEngine } from "@option-decode/analytics";
+import type { OptionContractTick, PcrContext } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 
 export type OptionActivityKind = "LONG_BUILDUP" | "WRITING" | "SHORT_COVERING" | "LONG_UNWINDING" | "NEUTRAL";
@@ -68,25 +69,11 @@ export function buildStrikeMovementSummary(rows: ReturnType<typeof buildStrikeMo
   };
 }
 
+// Delegates to the engine's own classifier instead of keeping a second
+// copy of the OI/LTP quadrant rules. OverviewTick carries the two fields
+// it reads (changeInOpenInterest, lastPriceChange), so the shapes line up.
 export function classifyOptionActivity(tick?: OverviewTick): OptionActivityKind {
-  if (!tick) {
-    return "NEUTRAL";
-  }
-  const oiChange = tick.changeInOpenInterest ?? 0;
-  const ltpChange = tick.lastPriceChange ?? 0;
-  if (oiChange > 0 && ltpChange > 0) {
-    return "LONG_BUILDUP";
-  }
-  if (oiChange > 0 && ltpChange < 0) {
-    return "WRITING";
-  }
-  if (oiChange < 0 && ltpChange > 0) {
-    return "SHORT_COVERING";
-  }
-  if (oiChange < 0 && ltpChange < 0) {
-    return "LONG_UNWINDING";
-  }
-  return "NEUTRAL";
+  return classifyOptionActivityFromEngine(tick as OptionContractTick | undefined);
 }
 
 export function getActivityLabel(activity: OptionActivityKind) {
@@ -313,37 +300,16 @@ function formatDirectionalScore(score: number, positiveLabel: string, negativeLa
   return `${score > 0 ? positiveLabel : negativeLabel} ${formatSignedLarge(score)}`;
 }
 
+// Client-side fallback used only when the server's own maxPain comes back
+// undefined. Delegates to the engine rather than reimplementing the
+// argmin-over-pain loop and its zero-OI guard - keeping a second copy is
+// exactly how that guard came to need fixing in two places at once.
+// Lot-size handling differs between the two (the engine reads tick.lotSize,
+// the dashboard falls back to a per-underlying table) but that is a
+// constant factor applied to every strike's pain equally, so it cannot
+// change which strike wins.
 function calculateMaxPainStrike(overview: MarketOverview) {
-  const strikes = [...new Set(overview.snapshot.ticks.map((tick) => tick.strikePrice))].sort((left, right) => left - right);
-  if (!strikes.length) {
-    return undefined;
-  }
-
-  // Same zero-OI guard as calculateMaxPain in @option-decode/analytics -
-  // this is the client-side fallback used only when the server's own
-  // maxPain comes back undefined, so it must not silently reintroduce the
-  // same bug (a zero-OI chain scoring every strike's "pain" as 0, and the
-  // lowest strike winning by default).
-  const totalOpenInterest = overview.snapshot.ticks.reduce((sum, tick) => sum + toLots(tick.openInterest, tick), 0);
-  if (totalOpenInterest <= 0) {
-    return undefined;
-  }
-
-  let bestStrike = strikes[0];
-  let lowestPain = Number.POSITIVE_INFINITY;
-  for (const candidate of strikes) {
-    const pain = overview.snapshot.ticks.reduce((sum, tick) => {
-      const openInterestLots = toLots(tick.openInterest, tick);
-      const intrinsic = tick.optionType === "CE" ? Math.max(0, candidate - tick.strikePrice) : Math.max(0, tick.strikePrice - candidate);
-      return sum + openInterestLots * intrinsic;
-    }, 0);
-    if (pain < lowestPain) {
-      lowestPain = pain;
-      bestStrike = candidate;
-    }
-  }
-
-  return bestStrike;
+  return calculateMaxPain(overview.snapshot.ticks as OptionContractTick[]);
 }
 
 function formatMaxPainDistance(distance?: number) {
