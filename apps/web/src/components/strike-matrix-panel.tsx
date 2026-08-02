@@ -55,7 +55,20 @@ function buildSimDraft(underlying: string, expiry: string, horizon: TradingHoriz
   // counts as institutional backing - a strongly negative (unwinding) WCI
   // used to win here via Math.abs() and get stamped onto the trade as
   // conviction, which is the literal opposite of what a negative WCI means.
-  const wallWcis = [analysis.callWall, analysis.putWall].filter((wall): wall is NonNullable<typeof wall> => wall?.meetsThreshold === true).map((wall) => wall.wci);
+  //
+  // Restricted to the side(s) this structure actually WRITES: taking the
+  // best of both walls meant a strong put wall could lend its conviction
+  // to a call-only structure (and vice versa) - a wall on a side the trade
+  // never sells is not backing for that trade. Uses the minimum across the
+  // written legs rather than the maximum, so a two-legged structure is
+  // reported only as backed as its weakest sold leg - the same rule
+  // recommendation.wallBacked applies server-side, which requires EVERY
+  // written side to qualify.
+  const wallWcis = [hasCall ? analysis.callWall : undefined, hasPut ? analysis.putWall : undefined]
+    .filter((wall): wall is NonNullable<typeof wall> => wall?.meetsThreshold === true)
+    .map((wall) => wall.wci);
+  const writesBothSides = hasCall && hasPut;
+  const backedOnEveryWrittenSide = wallWcis.length === (writesBothSides ? 2 : 1);
   return {
     underlyingSymbol: underlying,
     expiry,
@@ -63,7 +76,7 @@ function buildSimDraft(underlying: string, expiry: string, horizon: TradingHoriz
     horizon: horizon === "intraday" ? "INTRADAY" : horizon === "weekly" ? "WEEKLY" : "MONTHLY",
     shortPutStrike: recommendation.putStrike,
     shortCallStrike: recommendation.callStrike,
-    wci: wallWcis.length ? Math.max(...wallWcis) : null,
+    wci: backedOnEveryWrittenSide ? Math.min(...wallWcis) : null,
     drcr: analysis.drcr ?? null,
     signalRef: `${underlying}:${data.expiry}:${horizon}:${data.snapshotTime}`,
     note: `${analysis.bias} bias - ${recommendation.structure}`
