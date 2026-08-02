@@ -360,6 +360,36 @@ test("only the side a structure actually writes counts toward wall backing", () 
   assert.deepEqual(result.recommendation!.unbackedSides, []);
 });
 
+test("a horizon applied to a contract of the wrong tenor is flagged, not applied silently", () => {
+  const chain = snapshot([
+    tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 }),
+    tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+  ]);
+  // Default fixture expiry is 2026-07-21; analysed as of 2026-07-16, so
+  // ~5 days out - a genuinely weekly-tenor contract.
+  const asOf = new Date("2026-07-16T04:00:00.000Z");
+
+  const weekly = calculateStrikeMatrix(chain, "weekly", asOf);
+  assert.equal(weekly.horizonTenorMismatch, undefined, "weekly against a ~5-DTE chain is the matching pairing");
+
+  // Reproduces BANKNIFTY's live case in miniature: the intraday framework
+  // pointed at a chain that is nowhere near expiry.
+  const intraday = calculateStrikeMatrix(chain, "intraday", asOf);
+  assert.ok(intraday.horizonTenorMismatch, "intraday against a ~5-DTE chain should be flagged");
+  assert.match(intraday.horizonTenorMismatch!, /shorter-dated/);
+
+  // Reproduces NIFTY's live case: monthly framework, weekly-only chain.
+  const monthly = calculateStrikeMatrix(chain, "monthly", asOf);
+  assert.ok(monthly.horizonTenorMismatch, "monthly against a ~5-DTE chain should be flagged");
+  assert.match(monthly.horizonTenorMismatch!, /longer-dated/);
+});
+
+test("daysToExpiry is reported alongside the analysis so the tenor is never implicit", () => {
+  const chain = snapshot([tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 })]);
+  const result = calculateStrikeMatrix(chain, "weekly", new Date("2026-07-16T10:00:00.000Z"));
+  assert.equal(Math.round(result.daysToExpiry), 5); // 2026-07-16 -> 2026-07-21
+});
+
 test("isTradingHorizon narrows only the three valid horizons", () => {
   assert.equal(isTradingHorizon("intraday"), true);
   assert.equal(isTradingHorizon("weekly"), true);

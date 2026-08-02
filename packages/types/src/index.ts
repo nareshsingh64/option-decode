@@ -433,6 +433,17 @@ export interface StrikeMatrixAnalysis {
   // engine otherwise trades. Cross-cutting: evaluated the same way
   // regardless of which horizon is selected, unlike the other three rules.
   institutionalUnwinding?: StrikeMatrixInstitutionalUnwinding;
+  // Calendar days from the analysed snapshot to this chain's own expiry.
+  daysToExpiry: number;
+  // Set when the selected horizon's assumed tenor doesn't match the
+  // contract actually being analysed - e.g. picking "Monthly" against
+  // NIFTY's only-weekly expiries applies the monthly delta band and the
+  // IV-Rank rule to a 4-DTE contract, and BANKNIFTY's "Intraday" tab does
+  // the same against a 25-DTE monthly-only chain. The horizon toggle
+  // changes the framework, never the contract, so this says plainly when
+  // the two disagree rather than presenting the mismatch silently.
+  // undefined when the horizon fits the contract.
+  horizonTenorMismatch?: string;
 }
 
 // --- Elliott Wave Engine ---

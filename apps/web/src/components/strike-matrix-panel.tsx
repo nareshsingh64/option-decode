@@ -182,6 +182,13 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
 
       {analysis ? (
         <>
+          {/* The horizon toggle picks the analysis framework; the expiry
+              dropdown picks the contract. They can disagree - say so
+              rather than silently applying one horizon's delta band and
+              risk rule to a contract of a completely different tenor. */}
+          {analysis.horizonTenorMismatch ? (
+            <p className="rounded border border-terminal-amber/50 bg-terminal-amber/10 px-3 py-2 text-xs text-terminal-amber">{analysis.horizonTenorMismatch}</p>
+          ) : null}
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="DRCR (Put ΣDRC / Call ΣDRC)" value={analysis.drcr === undefined ? "--" : analysis.drcr.toFixed(2)} sub={`Put ${formatCompact(analysis.putDrcTotal)} / Call ${formatCompact(analysis.callDrcTotal)}`} tone={biasTone(analysis.bias)} />
             <MetricCard label="Market bias" value={analysis.bias} sub={biasBandText(analysis.bias)} tone={biasTone(analysis.bias)} />

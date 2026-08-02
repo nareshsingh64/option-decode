@@ -298,6 +298,52 @@ const WEEKEND_DECAY_FRIDAY_START_HOUR_IST = 12;
 const WEEKEND_DECAY_MONDAY_END_HOUR_IST = 11;
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
+// Calendar days from `now` to the chain's own expiry. NSE/BSE index options
+// expire at market close (15:30 IST = 10:00 UTC), matching the convention
+// getCalendarDaysToExpiry uses for the gamma-risk alert in this package.
+function calendarDaysToExpiry(expiry: string, now: Date): number {
+  const expiryMs = Date.parse(`${expiry}T10:00:00.000Z`);
+  if (!Number.isFinite(expiryMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return (expiryMs - now.getTime()) / 86_400_000;
+}
+
+// The horizon toggle changes the analysis FRAMEWORK (delta band, WCI
+// multiplier, mandatory risk rule) but never which contract is loaded -
+// that's driven by the separately-chosen expiry. So a horizon can end up
+// applied to a contract whose tenor it was never meant for: picking
+// "Monthly" against NIFTY, which lists only weekly expiries, runs the
+// monthly delta band and the IV-Rank gate against a 4-DTE chain, and
+// BANKNIFTY's "Intraday" tab does the reverse against a 25-DTE
+// monthly-only chain. Both were confirmed live.
+//
+// Bounds mirror the horizon's own intent rather than inventing new ones:
+// intraday means expiry today/tomorrow, weekly means inside a week or so,
+// monthly means genuinely multi-week. Returns undefined when the pairing
+// is sensible, so callers can treat presence as "worth surfacing."
+const HORIZON_TENOR_BOUNDS: Record<TradingHorizon, { maxDays?: number; minDays?: number; label: string }> = {
+  intraday: { maxDays: 2, label: "expiry today or tomorrow" },
+  weekly: { maxDays: 10, minDays: 1, label: "about a week to expiry" },
+  monthly: { minDays: 10, label: "several weeks to expiry" }
+};
+
+function describeHorizonTenorMismatch(horizon: TradingHorizon, daysToExpiry: number): string | undefined {
+  if (!Number.isFinite(daysToExpiry)) {
+    return undefined;
+  }
+  const bounds = HORIZON_TENOR_BOUNDS[horizon];
+  const rounded = Math.max(0, Math.round(daysToExpiry));
+  const contractText = `${rounded} day${rounded === 1 ? "" : "s"} to expiry`;
+  if (bounds.maxDays !== undefined && daysToExpiry > bounds.maxDays) {
+    return `${horizon} assumes ${bounds.label}, but this contract has ${contractText} - the delta band and risk rule below are sized for a shorter-dated chain than the one selected.`;
+  }
+  if (bounds.minDays !== undefined && daysToExpiry < bounds.minDays) {
+    return `${horizon} assumes ${bounds.label}, but this contract has ${contractText} - the delta band and risk rule below are sized for a longer-dated chain than the one selected.`;
+  }
+  return undefined;
+}
+
 function isWeekendDecayWindow(now: Date): boolean {
   const ist = new Date(now.getTime() + IST_OFFSET_MS);
   const day = ist.getUTCDay(); // 0=Sun ... 5=Fri, 6=Sat
@@ -495,9 +541,12 @@ export function calculateStrikeMatrix(
   const riskRuleStatus: StrikeMatrixRiskRuleStatus =
     horizon === "intraday" ? evaluateIntradayRiskRule() : horizon === "weekly" ? evaluateWeeklyRiskRule(now) : evaluateMonthlyRiskRule(snapshot, ivHistory);
   const institutionalUnwinding = detectInstitutionalUnwinding(allRows);
+  const daysToExpiry = calendarDaysToExpiry(snapshot.expiry, now);
 
   return {
     horizon,
+    daysToExpiry,
+    horizonTenorMismatch: describeHorizonTenorMismatch(horizon, daysToExpiry),
     deltaMin: profile.deltaMin,
     deltaMax: profile.deltaMax,
     // The bar actually applied above (may be lower than the horizon's base
