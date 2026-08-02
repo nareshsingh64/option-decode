@@ -159,6 +159,38 @@ test("generateMarketAlerts flags pinning risk when spot is within the proximity 
   assert.equal(pinAlert?.title, "CMP near max pain");
 });
 
+test("an alert's id changes when its severity escalates, so a dismissed warning can't swallow the critical", () => {
+  // Reproduces the live case the audit flagged: the SAME metric on the
+  // SAME underlying/expiry escalating warning -> critical during a
+  // session. Dismissals and the worker's push cooldown are both keyed on
+  // alert.id, so an id that ignores severity meant dismissing the 10:00
+  // warning also hid the 14:00 critical.
+  const snap = snapshot([], 25000, 25000);
+  const base: PressureScore = { bullishPressure: 50, bearishPressure: 50, supportZones: [], resistanceZones: [], pcr: undefined, maxPain: undefined };
+
+  const warningAlerts = generateMarketAlerts(snap, { ...base, pcr: 1.2 }); // >= pcrUpper 1.15, < critical 1.25
+  const criticalAlerts = generateMarketAlerts(snap, { ...base, pcr: 1.6 }); // >= pcrCriticalUpper
+
+  const warning = warningAlerts.find((alert) => alert.metric === "pcr")!;
+  const critical = criticalAlerts.find((alert) => alert.metric === "pcr")!;
+
+  assert.equal(warning.severity, "warning");
+  assert.equal(critical.severity, "critical");
+  assert.notEqual(warning.id, critical.id, "an escalated alert must be a distinct id, not the same one it was dismissed under");
+});
+
+test("an alert's id is stable across polls while its severity is unchanged", () => {
+  // The flip side: severity in the id must not make a steady alert churn a
+  // new id every poll, which would defeat dismissal and the push cooldown
+  // entirely.
+  const snap = snapshot([], 25000, 25000);
+  const pressure: PressureScore = { bullishPressure: 50, bearishPressure: 50, supportZones: [], resistanceZones: [], pcr: 1.6, maxPain: undefined };
+
+  const first = generateMarketAlerts(snap, pressure, new Date("2026-07-01T09:30:00.000Z")).find((alert) => alert.metric === "pcr")!;
+  const second = generateMarketAlerts(snap, pressure, new Date("2026-07-01T13:45:00.000Z")).find((alert) => alert.metric === "pcr")!;
+  assert.equal(first.id, second.id);
+});
+
 test("classifyOptionActivity reads the four OI/LTP combinations correctly", () => {
   const base = { optionType: "CE" as const, strikePrice: 25000 };
   assert.equal(classifyOptionActivity(tick({ ...base, changeInOpenInterest: 10, lastPriceChange: 1 })), "LONG_BUILDUP");

@@ -148,6 +148,21 @@ function weightedVolumeContribution(volume: number, oi: number, averageVolume: n
   return cappedVolume * 0.5 * surgeMultiplier;
 }
 
+// Alert identity includes SEVERITY, not just underlying+expiry+metric.
+// Dismissals (client-side, persisted in localStorage) and the worker's
+// push cooldown are both keyed on this id, so without severity in it, an
+// alert dismissed or pushed at "warning" level silently swallowed its own
+// later escalation to "critical" - dismissing a PCR warning at 10:00 hid
+// the identical-id critical PCR alert at 14:00, the exact case where the
+// user most needs to see it. With severity in the id, an escalation is a
+// genuinely new alert: it re-surfaces after a lower-severity dismissal and
+// gets its own push slot rather than inheriting the warning's cooldown.
+// The fixed-severity alerts below pass their constant severity too, purely
+// so every id is built the same way; their ids are unchanged in practice.
+function alertId(snapshot: OptionChainSnapshot, metric: string, severity: MarketAlert["severity"]): string {
+  return `${snapshot.underlyingSymbol}-${snapshot.expiry}-${metric}-${severity}`;
+}
+
 export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: PressureScore, now = new Date(), thresholds?: AlertThresholdConfig): MarketAlert[] {
   const createdAt = now.toISOString();
   const alerts: MarketAlert[] = [];
@@ -165,9 +180,10 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
   const maxPainDistance = pressure.maxPain !== undefined ? Math.abs(snapshot.spotPrice - pressure.maxPain) : undefined;
 
   if (pressure.bearishPressure >= pressureWarning && nearestResistance) {
+    const severity = pressure.bearishPressure >= pressureCritical ? "critical" : "warning";
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bearish-pressure`,
-      severity: pressure.bearishPressure >= pressureCritical ? "critical" : "warning",
+      id: alertId(snapshot, "bearish-pressure", severity),
+      severity,
       title: "Resistance pressure active",
       message: `CE pressure is ${pressure.bearishPressure}% with strongest resistance near ${formatStrike(nearestResistance.strikePrice)}.`,
       metric: "bearishPressure",
@@ -176,9 +192,10 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
   }
 
   if (pressure.bullishPressure >= pressureWarning && nearestSupport) {
+    const severity = pressure.bullishPressure >= pressureCritical ? "critical" : "warning";
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-bullish-pressure`,
-      severity: pressure.bullishPressure >= pressureCritical ? "critical" : "warning",
+      id: alertId(snapshot, "bullish-pressure", severity),
+      severity,
       title: "Support pressure active",
       message: `PE support is ${pressure.bullishPressure}% with strongest support near ${formatStrike(nearestSupport.strikePrice)}.`,
       metric: "bullishPressure",
@@ -187,9 +204,10 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
   }
 
   if (pressure.pcr !== undefined && (pressure.pcr >= pcrUpper || pressure.pcr <= pcrLower)) {
+    const severity = pressure.pcr >= pcrCriticalUpper || pressure.pcr <= pcrCriticalLower ? "critical" : "warning";
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-pcr-bias`,
-      severity: pressure.pcr >= pcrCriticalUpper || pressure.pcr <= pcrCriticalLower ? "critical" : "warning",
+      id: alertId(snapshot, "pcr-bias", severity),
+      severity,
       title: "PCR bias detected",
       message: `PCR is ${pressure.pcr.toFixed(2)}, showing ${pressure.pcr > 1 ? "put-side support" : "call-side resistance"} bias.`,
       metric: "pcr",
@@ -199,7 +217,7 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
 
   if (resistanceDistance !== undefined && resistanceDistance <= proximityThreshold && nearestResistance) {
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-resistance`,
+      id: alertId(snapshot, "near-resistance", "info"),
       severity: "info",
       title: "CMP near resistance",
       message: `Spot is within ${formatStrike(resistanceDistance)} points of resistance at ${formatStrike(nearestResistance.strikePrice)}.`,
@@ -210,7 +228,7 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
 
   if (supportDistance !== undefined && supportDistance <= proximityThreshold && nearestSupport) {
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-support`,
+      id: alertId(snapshot, "near-support", "info"),
       severity: "info",
       title: "CMP near support",
       message: `Spot is within ${formatStrike(supportDistance)} points of support at ${formatStrike(nearestSupport.strikePrice)}.`,
@@ -221,7 +239,7 @@ export function generateMarketAlerts(snapshot: OptionChainSnapshot, pressure: Pr
 
   if (maxPainDistance !== undefined && pressure.maxPain !== undefined && maxPainDistance <= proximityThreshold) {
     alerts.push({
-      id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-near-max-pain`,
+      id: alertId(snapshot, "near-max-pain", "info"),
       severity: "info",
       title: "CMP near max pain",
       message: `Spot is within ${formatStrike(maxPainDistance)} points of max pain at ${formatStrike(pressure.maxPain)}.`,
@@ -295,7 +313,7 @@ function buildGammaRiskAlert(
   }
 
   return {
-    id: `${snapshot.underlyingSymbol}-${snapshot.expiry}-gamma-risk`,
+    id: alertId(snapshot, "gamma-risk", "critical"),
     severity: "critical",
     title: "Gamma risk — roll or close short strikes",
     message: `${snapshot.underlyingSymbol} expires in ${daysToExpiry <= 0 ? "hours" : "under a day"} and spot is within ${GAMMA_RISK_PROXIMITY_PERCENT}% of the ${threatenedZone.type} ${threatenedZone.type === "CE" ? "resistance" : "support"} wall at ${formatStrike(threatenedZone.zone.strikePrice)}. Premium on a short here can spike 300-500% on a small move — roll or buy back now rather than holding into the close.`,
