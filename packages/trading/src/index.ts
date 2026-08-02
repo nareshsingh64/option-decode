@@ -418,7 +418,14 @@ export function calculateTradeRecommendations(
   }
 
   // 2. MAX PAIN
-  if (maxPainDist !== undefined && maxPainDistPct !== undefined && maxPain !== undefined) {
+  // The "writers push spot toward max pain" thesis is a near-expiry gamma/
+  // theta dynamic, not something that holds meaningfully 3+ weeks out - but
+  // this recommendation had no days-to-expiry gate at all, confirmed live
+  // firing "short straddle into expiry" language on a BANKNIFTY contract 25
+  // calendar days from expiry. Reuses WEEKLY_MAX_DAYS_TO_EXPIRY (the same
+  // cutoff inferSellerTimeframe already uses to separate "weekly" from
+  // "monthly" contracts above) rather than inventing a second threshold.
+  if (daysToExpiry <= WEEKLY_MAX_DAYS_TO_EXPIRY && maxPainDist !== undefined && maxPainDistPct !== undefined && maxPain !== undefined) {
     if (maxPainDistPct <= 0.5) {
       recs.push({
         id: "at-max-pain",

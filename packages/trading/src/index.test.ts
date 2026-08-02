@@ -216,6 +216,34 @@ test("near-resistance recommendation includes a PE trade setup anchored to the r
   assert.equal(rec!.tradeSetup!.entryPrice, 150);
 });
 
+test("max-pain recommendations never fire on a contract far from expiry, even when spot sits exactly at max pain", () => {
+  // Reproduces the exact live shape (BANKNIFTY): a monthly-horizon
+  // contract (default snapshot() expiry is ~30 calendar days out) can
+  // still show spot pinned at max pain, but the "writers push spot toward
+  // max pain" thesis only holds meaningfully near expiry.
+  const recs = calculateTradeRecommendations(
+    snapshot(chainTicks, 24000, 24000),
+    { ...bullishPressure, maxPain: 24000 },
+    bullishMarketBias({ bias: "Balanced" }),
+    [strikeMovementRow({ netScore: 0 })],
+    noInterpretation
+  );
+  assert.equal(recs.find((rec) => rec.id === "at-max-pain"), undefined);
+  assert.equal(recs.find((rec) => rec.id === "near-max-pain"), undefined);
+});
+
+test("max-pain recommendations fire once the contract is within the weekly days-to-expiry window", () => {
+  const nearExpirySnapshot: OptionChainSnapshot = { ...snapshot(chainTicks, 24000, 24000), expiry: "2026-07-03" }; // ~2 days out from the default snapshotTime
+  const recs = calculateTradeRecommendations(
+    nearExpirySnapshot,
+    { ...bullishPressure, maxPain: 24000 },
+    bullishMarketBias({ bias: "Balanced" }),
+    [strikeMovementRow({ netScore: 0 })],
+    noInterpretation
+  );
+  assert.ok(recs.some((rec) => rec.id === "at-max-pain"), "expected at-max-pain to fire close to expiry");
+});
+
 // ---------------------------------------------------------------------
 // Seller-side setup builder (buildSellerTradeSetup / inferSellerTimeframe)
 // ---------------------------------------------------------------------
