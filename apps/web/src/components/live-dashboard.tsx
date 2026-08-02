@@ -570,6 +570,19 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   });
   const tickerSymbolsRef = useRef(initialOverview.ticker?.map((item) => item.symbol) ?? [initialOverview.selectedUnderlying]);
   const isRefreshingRef = useRef(false);
+  // Coalescing queue for overview loads. Both a user changing
+  // underlying/expiry and a refresh (SSE snapshot-ready or the countdown
+  // timer) resolve to the same operation - fetch an overview - and both
+  // used to be dropped outright when one was already in flight. A dropped
+  // selection left the user looking at the previous symbol's data with the
+  // new one selected and no error; a dropped snapshot-ready left the UI on
+  // staler data than the server had until the next timer tick.
+  //
+  // Holding only the newest request is deliberate: if the user clicks
+  // through three symbols while a poll runs, the one they end on is the
+  // only one worth loading. `null` means "reload whatever is currently
+  // selected"; a concrete target means "switch to this".
+  const pendingLoadRef = useRef<{ target: { underlying: string; expiry: string } | null } | null>(null);
   const isFastRefreshingRef = useRef(false);
   const isPaperRefreshingRef = useRef(false);
   const isMarketStreamConnectedRef = useRef(false);
@@ -766,63 +779,76 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
     };
   }, [orderExpiry, overview.selectedExpiry, overview.selectedUnderlying]);
 
+  // Single entry point for every overview load. Queues rather than drops
+  // when one is already running, and always drains to the NEWEST queued
+  // request - see pendingLoadRef's declaration for why both callers used to
+  // lose work here.
+  const enqueueOverviewLoad = useCallback(
+    async (target: { underlying: string; expiry: string } | null) => {
+      pendingLoadRef.current = { target };
+      if (isRefreshingRef.current) {
+        return;
+      }
+
+      isRefreshingRef.current = true;
+      setIsRefreshing(true);
+      try {
+        while (pendingLoadRef.current) {
+          const queued = pendingLoadRef.current;
+          pendingLoadRef.current = null;
+          const isSelectionChange = queued.target !== null;
+          const { underlying, expiry } = queued.target ?? selectionRef.current;
+          setRefreshError(null);
+          try {
+            const nextOverview = await fetchMarketOverview(underlying, expiry);
+            // A newer request arrived while this one was in flight - its
+            // result is already stale, so skip committing it and let the
+            // loop pick the newer one up rather than flashing outdated
+            // data on screen first.
+            if (pendingLoadRef.current) {
+              continue;
+            }
+            setOverview(nextOverview);
+            tickerSymbolsRef.current = nextOverview.ticker?.map((item) => item.symbol) ?? [nextOverview.selectedUnderlying];
+            setLastRefresh(new Date().toISOString());
+            setSecondsToRefresh(REFRESH_SECONDS);
+            if (isSelectionChange) {
+              selectionRef.current = {
+                underlying: nextOverview.selectedUnderlying,
+                expiry: nextOverview.selectedExpiry
+              };
+              onMarketSelectionChange?.({
+                underlying: nextOverview.selectedUnderlying,
+                expiry: nextOverview.selectedExpiry
+              });
+            }
+          } catch (error) {
+            const fallback = isSelectionChange ? "Unable to load selected market" : "Unable to refresh market data";
+            setRefreshError(error instanceof Error ? error.message : fallback);
+          }
+        }
+      } finally {
+        isRefreshingRef.current = false;
+        setIsRefreshing(false);
+      }
+    },
+    [onMarketSelectionChange]
+  );
+
   const refreshOverview = useCallback(async () => {
-    if (isRefreshingRef.current) {
-      return;
-    }
+    await enqueueOverviewLoad(null);
+  }, [enqueueOverviewLoad]);
 
-    isRefreshingRef.current = true;
-    setIsRefreshing(true);
-    setRefreshError(null);
-    try {
-      const { underlying, expiry } = selectionRef.current;
-      const nextOverview = await fetchMarketOverview(underlying, expiry);
-      setOverview(nextOverview);
-      tickerSymbolsRef.current = nextOverview.ticker?.map((item) => item.symbol) ?? [nextOverview.selectedUnderlying];
-      setLastRefresh(new Date().toISOString());
-      setSecondsToRefresh(REFRESH_SECONDS);
-    } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : "Unable to refresh market data");
-    } finally {
-      isRefreshingRef.current = false;
-      setIsRefreshing(false);
-    }
-  }, []);
-
-  const loadMarketSelection = useCallback(async (underlying: string, expiry = "") => {
-    if (isRefreshingRef.current) {
-      return;
-    }
-
-    const nextUnderlying = underlying.trim().toUpperCase();
-    if (!nextUnderlying) {
-      return;
-    }
-
-    isRefreshingRef.current = true;
-    setIsRefreshing(true);
-    setRefreshError(null);
-    try {
-      const nextOverview = await fetchMarketOverview(nextUnderlying, expiry.trim());
-      setOverview(nextOverview);
-      tickerSymbolsRef.current = nextOverview.ticker?.map((item) => item.symbol) ?? [nextOverview.selectedUnderlying];
-      setLastRefresh(new Date().toISOString());
-      setSecondsToRefresh(REFRESH_SECONDS);
-      selectionRef.current = {
-        underlying: nextOverview.selectedUnderlying,
-        expiry: nextOverview.selectedExpiry
-      };
-      onMarketSelectionChange?.({
-        underlying: nextOverview.selectedUnderlying,
-        expiry: nextOverview.selectedExpiry
-      });
-    } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : "Unable to load selected market");
-    } finally {
-      isRefreshingRef.current = false;
-      setIsRefreshing(false);
-    }
-  }, [onMarketSelectionChange]);
+  const loadMarketSelection = useCallback(
+    async (underlying: string, expiry = "") => {
+      const nextUnderlying = underlying.trim().toUpperCase();
+      if (!nextUnderlying) {
+        return;
+      }
+      await enqueueOverviewLoad({ underlying: nextUnderlying, expiry: expiry.trim() });
+    },
+    [enqueueOverviewLoad]
+  );
 
   const refreshPaperSummary = useCallback(async () => {
     if (isPaperRefreshingRef.current) {
