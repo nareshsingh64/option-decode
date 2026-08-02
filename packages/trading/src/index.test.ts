@@ -321,20 +321,53 @@ test("seller-safety recommendation carries concrete PE+CE sellSetups sized to th
   assert.ok(rec, "expected seller-safety recommendation to fire");
   assert.equal(rec!.sellSetups?.length, 2);
 
+  // Monthly risk profile: stop at 2x entry, profit-take at 55% decay.
   const pe = rec!.sellSetups!.find((setup) => setup.optionType === "PE")!;
   assert.equal(pe.strike, 24800);
   assert.equal(pe.timeframe, "monthly");
-  assert.equal(pe.stopLoss, 35);
-  assert.equal(pe.target, 10);
+  assert.equal(pe.stopLoss, 40);
+  assert.equal(pe.target, 9);
   assert.equal(pe.breakevenAtExpiry, 24780);
+  assert.equal(pe.probabilityOfProfit, 92); // 1 - |0.08|
 
   const ce = rec!.sellSetups!.find((setup) => setup.optionType === "CE")!;
   assert.equal(ce.strike, 25200);
-  assert.equal(ce.stopLoss, 31.5);
-  assert.equal(ce.target, 9);
+  assert.equal(ce.stopLoss, 36);
+  assert.equal(ce.target, 8.1);
   assert.equal(ce.breakevenAtExpiry, 25218);
+  assert.equal(ce.probabilityOfProfit, 92);
 
   assert.match(rec!.action, /monthly delta-band setup/);
+});
+
+test("seller risk parameters vary by timeframe instead of one fixed multiplier for every setup", () => {
+  // Same strike/premium/delta shape, only the chain's expiry differs, so
+  // any difference in stop/target comes purely from the timeframe profile.
+  const ticks = [tick({ optionType: "PE", strikePrice: 24800, delta: 0.12, lastPrice: 20 })];
+  const intradaySetup = buildSellerTradeSetup({ ...snapshot(ticks, 25000, 25000), expiry: "2026-07-01" }, "PE", "intraday")!;
+  const monthlySetup = buildSellerTradeSetup(snapshot(ticks, 25000, 25000), "PE", "monthly")!;
+
+  assert.ok(
+    intradaySetup.stopLossMultiplier < monthlySetup.stopLossMultiplier,
+    "intraday sits closest to the money with the sharpest gamma risk, so it should take the tighter stop"
+  );
+  assert.ok(intradaySetup.stopLoss < monthlySetup.stopLoss);
+  assert.ok(monthlySetup.target < intradaySetup.target, "monthly banks a deeper share of the premium per the IV-crush rule");
+});
+
+test("probabilityOfProfit is derived from the strike actually picked, and rises as the delta band deepens", () => {
+  const nearTheMoney = [tick({ optionType: "PE", strikePrice: 24800, delta: 0.2, lastPrice: 20 })];
+  const deepOtm = [tick({ optionType: "PE", strikePrice: 24800, delta: 0.05, lastPrice: 20 })];
+
+  const nearSetup = buildSellerTradeSetup(snapshot(nearTheMoney, 25000, 25000), "PE", "intraday")!;
+  const deepSetup = buildSellerTradeSetup(snapshot(deepOtm, 25000, 25000), "PE", "monthly")!;
+
+  assert.equal(nearSetup.probabilityOfProfit, 80); // 1 - |0.20|
+  assert.equal(deepSetup.probabilityOfProfit, 95); // 1 - |0.05|
+  assert.ok(
+    deepSetup.probabilityOfProfit > nearSetup.probabilityOfProfit && deepSetup.riskRewardRatio < nearSetup.riskRewardRatio,
+    "premium selling trades payoff for probability - the deeper-OTM write should show higher POP against a nominally worse R:R"
+  );
 });
 
 test("buyer-momentum fires on a strongly negative buyerScore too - genuine PE-buying momentum, not just CE", () => {

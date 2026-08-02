@@ -183,16 +183,31 @@ const SELLER_DELTA_BANDS: Record<TradeTimeframe, { min: number; max: number; tar
   monthly: { min: 0.05, max: 0.1, target: 0.075 }
 };
 
-// The playbook's intraday system-stop rule (1.5x-2x premium collected)
-// applied as a conservative uniform default across every timeframe, rather
-// than a tighter number for weekly/monthly - a wider stop errs toward not
-// getting shaken out by ordinary premium noise, which matters more the
-// longer the trade is meant to be held.
-const SELLER_STOP_LOSS_MULTIPLIER = 1.75;
-// The playbook's monthly "IV crush lets you exit at 50-60% profit" rule,
-// generalized as the default profit-take across timeframes: buy back once
-// the premium has decayed to half of what was collected.
-const SELLER_PROFIT_TARGET_PERCENT = 0.5;
+// Stop-loss multiple and profit-take, per timeframe. These used to be two
+// flat constants (1.75x / 50%) applied to every setup alike, which meant a
+// 0.05-delta monthly write and a 0.175-delta intraday write shipped
+// identical risk parameters despite having very different risk profiles.
+//
+// The shape follows the playbook's own rules rather than a uniform
+// default: intraday sits closest to the money with the sharpest gamma
+// risk, so it takes the tightest stop and banks profit fastest (theta is
+// also fastest there, so a 50% decay arrives quickly). Monthly sits deep
+// OTM where premium is small and weeks of ordinary noise can easily double
+// it, so it needs the widest stop, and the playbook's "IV crush lets you
+// exit at 50-60% profit" rule is specifically a monthly rule.
+//
+// Reward-to-risk is deliberately at or below 1 across all three - that is
+// the structure of premium selling, not a defect. The compensation is
+// probability, not payoff: POP rises as the delta band falls (see
+// probabilityOfProfit below), so expectancy still improves as R:R
+// nominally worsens. The trade-guide checklist's "at least 1:1.5" is a
+// directional-BUYING rule (its own table is headed "Bullish Trade /
+// Bearish Trade") and does not apply to these setups.
+const SELLER_RISK_PROFILES: Record<TradeTimeframe, { stopLossMultiplier: number; profitTargetPercent: number }> = {
+  intraday: { stopLossMultiplier: 1.5, profitTargetPercent: 0.5 },
+  weekly: { stopLossMultiplier: 1.75, profitTargetPercent: 0.5 },
+  monthly: { stopLossMultiplier: 2, profitTargetPercent: 0.55 }
+};
 
 // Below this many calendar days to expiry, a chain is read as "intraday"
 // (expiry today/tomorrow); below this many days it's "weekly"; otherwise
@@ -265,8 +280,8 @@ function findStrikeByTargetDelta(
  * Seller-side counterpart to buildTradeSetup(): turns a timeframe + option
  * side into a concrete premium-collection setup — strike picked by target
  * delta (optionally constrained beyond a weekly expected-move boundary),
- * stop-loss ABOVE entry at the playbook's 1.5x-2x multiple, and a profit
- * target BELOW entry at the playbook's ~50% decay rule. Mirrors
+ * stop-loss ABOVE entry and a profit target BELOW entry, both sized from
+ * the timeframe's own risk profile (see SELLER_RISK_PROFILES). Mirrors
  * buildTradeSetup's "return undefined rather than fabricate a price" contract
  * when the chosen strike has no live premium.
  */
@@ -281,13 +296,20 @@ export function buildSellerTradeSetup(snapshot: OptionChainSnapshot, optionType:
     return undefined;
   }
 
+  const { stopLossMultiplier, profitTargetPercent } = SELLER_RISK_PROFILES[timeframe];
   const entryPrice = tick.lastPrice;
-  const stopLoss = roundToTick(entryPrice * SELLER_STOP_LOSS_MULTIPLIER);
-  const target = roundToTick(Math.max(0.05, entryPrice * (1 - SELLER_PROFIT_TARGET_PERCENT)));
+  const stopLoss = roundToTick(entryPrice * stopLossMultiplier);
+  const target = roundToTick(Math.max(0.05, entryPrice * (1 - profitTargetPercent)));
   const riskPerUnit = stopLoss - entryPrice;
   const rewardPerUnit = entryPrice - target;
   const riskRewardRatio = riskPerUnit > 0 ? Number((rewardPerUnit / riskPerUnit).toFixed(2)) : 0;
   const breakevenAtExpiry = optionType === "CE" ? match.strike + entryPrice : match.strike - entryPrice;
+  // Delta approximates the risk-neutral probability of finishing ITM, so a
+  // short option's probability of expiring worthless is ~1 - |delta|. Uses
+  // the SELECTED strike's own delta, not the band's target, so a chain
+  // whose strike spacing lands away from target reports the POP actually
+  // being taken on.
+  const probabilityOfProfit = Math.round(Math.max(0, Math.min(1, 1 - Math.abs(match.delta))) * 100);
 
   return {
     optionType,
@@ -297,9 +319,10 @@ export function buildSellerTradeSetup(snapshot: OptionChainSnapshot, optionType:
     actualDelta: Number(match.delta.toFixed(3)),
     entryPrice: roundToTick(entryPrice),
     stopLoss,
-    stopLossMultiplier: SELLER_STOP_LOSS_MULTIPLIER,
+    stopLossMultiplier,
     target,
     riskRewardRatio,
+    probabilityOfProfit,
     breakevenAtExpiry: roundToTick(Math.max(0.05, breakevenAtExpiry))
   };
 }

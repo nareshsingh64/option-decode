@@ -243,15 +243,25 @@ export interface RecommendedSellSetup {
   // entryPrice for a short option, unlike the buy-side stopLoss which sits
   // below entry.
   stopLoss: number;
-  // The multiple of entryPrice used to size stopLoss (1.5-2x per the
-  // playbook's intraday system-stop rule, applied uniformly across
-  // timeframes as a conservative default).
+  // The multiple of entryPrice used to size stopLoss — varies by timeframe
+  // (see SELLER_RISK_PROFILES in @option-decode/trading): tighter near
+  // expiry where gamma risk is sharpest, wider on longer-dated writes that
+  // need room to ride out ordinary premium noise.
   stopLossMultiplier: number;
   // Buy-back price that closes the trade at a defined profit — BELOW
-  // entryPrice, reflecting the playbook's "buy back at ~50% of collected
-  // premium" theta-decay exit rule.
+  // entryPrice, reflecting the playbook's theta-decay exit rule.
   target: number;
+  // Reward-to-risk on this setup. Deliberately below 1 for most
+  // premium-selling setups — that is the structure of the strategy, not a
+  // defect: a short option wins often and loses bigger occasionally. Read
+  // it together with probabilityOfProfit below rather than against a
+  // directional-buying R:R minimum.
   riskRewardRatio: number;
+  // Approximate probability the short option expires worthless, derived
+  // from the selected strike's own |delta| (delta approximates the
+  // risk-neutral probability of finishing ITM, so POP ≈ 1 - |delta|).
+  // Expressed 0-100.
+  probabilityOfProfit: number;
   // Underlying spot level at which the short option is exactly break-even
   // at expiry: strike + premium collected for a CE, strike - premium for a
   // PE — the same "true zone" math as PressureZone.trueZone.

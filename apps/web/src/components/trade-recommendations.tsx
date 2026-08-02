@@ -33,6 +33,7 @@ interface RecommendedSellSetup {
   stopLossMultiplier: number;
   target: number;
   riskRewardRatio: number;
+  probabilityOfProfit: number;
   breakevenAtExpiry: number;
 }
 
@@ -203,7 +204,13 @@ function SellSetupRow({ setup }: { setup: RecommendedSellSetup }) {
         <span className="text-terminal-emerald">
           Buy back (target) <span className="font-medium">₹{setup.target.toFixed(2)}</span>
         </span>
+        {/* R:R on a premium-selling setup is normally below 1 by design -
+            the edge is win RATE, not payoff size. POP is shown right
+            beside it so the ratio never reads as a red flag on its own. */}
         <span className="text-terminal-muted">1:{setup.riskRewardRatio}</span>
+        <span className="text-terminal-muted">
+          POP <span className="font-medium text-terminal-text">{setup.probabilityOfProfit}%</span>
+        </span>
       </div>
       <div className="mt-1 text-terminal-muted">
         Breakeven at expiry <span className="font-medium text-terminal-text">₹{setup.breakevenAtExpiry.toFixed(2)}</span>
