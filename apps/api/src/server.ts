@@ -505,7 +505,18 @@ app.get<{
     userPromise
   ]);
   const marketPulsePromise = getCachedMarketPulse(snapshot.underlyingSymbol, snapshot.expiry);
-  const pressure = await getHotCacheValue(oiWeightedZonesCache, `${snapshot.underlyingSymbol}:${snapshot.expiry}`, OI_WEIGHTED_ZONES_CACHE_MS, () =>
+  // Keyed by the exact capture (snapshotTime), not just underlying+expiry.
+  // The snapshot cache keys on the REQUESTED expiry - "" when the client
+  // sends none - while this one keyed on the RESOLVED expiry, so two
+  // different snapshot-cache entries ("NIFTY:" and "NIFTY:2026-08-04")
+  // that resolve to the same expiry shared a single pressure entry, and
+  // whichever populated it first won. Within their independent 10s TTLs
+  // that let ticks from one capture pair with bias/zones computed from
+  // another. Including snapshotTime makes the pressure entry belong to the
+  // ticks actually being returned - the same discipline the replay route
+  // below already uses by keying on its snapshot id.
+  const pressureCacheKey = `${snapshot.underlyingSymbol}:${snapshot.expiry}:${snapshot.snapshotTime}`;
+  const pressure = await getHotCacheValue(oiWeightedZonesCache, pressureCacheKey, OI_WEIGHTED_ZONES_CACHE_MS, () =>
     enrichZonesWithAvgSellPrice(calculatePressureScore(snapshot), snapshot.underlyingSymbol, snapshot.expiry)
   );
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
@@ -1732,6 +1743,25 @@ async function getMarketAuxData(symbols?: string[]) {
   return value;
 }
 
+// Drops entries whose TTL has already lapsed. These caches only ever
+// overwrote a key or got cleared wholesale, so any cache whose keyspace
+// grows over time - `replay:<snapshotId>` grows as snapshots are viewed,
+// and the pressure cache is now keyed per capture - would otherwise retain
+// every entry it ever held for the process's lifetime. Sweeping on write
+// keeps them bounded by what's actually live within the TTL, which for a
+// 10s window is a handful of entries. Cheap for that reason: the sweep is
+// O(size) but the sweep is exactly what keeps size small.
+function pruneExpiredHotCacheEntries<T>(cache: Map<string, HotCacheEntry<T>>, now: number) {
+  for (const [entryKey, entry] of cache) {
+    // Never evict an in-flight load: its promise is what de-duplicates
+    // concurrent callers, and expiresAt on a pending entry is only a
+    // provisional stamp set before the value exists.
+    if (entry.promise === undefined && entry.expiresAt <= now) {
+      cache.delete(entryKey);
+    }
+  }
+}
+
 async function getHotCacheValue<T>(cache: Map<string, HotCacheEntry<T>>, key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const cached = cache.get(key);
@@ -1741,6 +1771,7 @@ async function getHotCacheValue<T>(cache: Map<string, HotCacheEntry<T>>, key: st
   if (cached?.promise) {
     return cached.promise;
   }
+  pruneExpiredHotCacheEntries(cache, now);
 
   const pending = load()
     .then((value) => {
