@@ -828,7 +828,21 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
       // Favorable (profit-locking) readings are unaffected - they apply
       // immediately as before, since that's the wanted behavior.
       const isDangerNow = position.trailingStop && isTradeSignalDanger(position.action, position.optionType, scoreSignal);
-      const nextDangerStreak = isDangerNow ? position.dangerSignalStreak + 1 : 0;
+      // Incremented atomically in the database rather than read-modify-
+      // written from `position`, which was loaded earlier in this pass. Two
+      // concurrent callers (the worker's 30s tick and a browser summary
+      // poll landing together) could otherwise each read the same streak
+      // value and write back the same +1, losing one increment and pushing
+      // the confirmation an extra cycle away - which is precisely the
+      // debounce this streak exists to provide. The update returns the
+      // post-increment value, so the stop calculation below reads the true
+      // streak rather than this pass's stale estimate; a plain reset to 0
+      // needs no atomicity since it's idempotent.
+      const { dangerSignalStreak: nextDangerStreak } = await client.paperPosition.update({
+        where: { id: position.id },
+        data: { dangerSignalStreak: isDangerNow ? { increment: 1 } : 0 },
+        select: { dangerSignalStreak: true }
+      });
       const dangerConfirmed = nextDangerStreak >= DANGER_STREAK_REQUIRED;
       const effectiveScoreSignal = isDangerNow && !dangerConfirmed ? 0 : scoreSignal;
 
@@ -843,8 +857,8 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
           currentPrice: latestPrice,
           stopLoss: normalizeTradablePrice(stopLoss),
           trailDistance,
-          bestPrice: nextBestPrice,
-          dangerSignalStreak: nextDangerStreak
+          bestPrice: nextBestPrice
+          // dangerSignalStreak is already persisted atomically above.
         }
       });
 
