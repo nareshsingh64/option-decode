@@ -216,6 +216,92 @@ test("near-resistance recommendation includes a PE trade setup anchored to the r
   assert.equal(rec!.tradeSetup!.entryPrice, 150);
 });
 
+test("S/R proximity scales with the chain's own strike spacing, not a flat point count", () => {
+  // Same relative geometry on two chains whose strike spacing differs 4x -
+  // spot sits exactly 1.5 strike widths above support in both. A flat
+  // point gate would fire on the narrow-spaced chain and miss the
+  // wide-spaced one purely because its numbers are bigger; measuring in
+  // strike widths must treat them identically.
+  const narrowTicks = [
+    tick({ optionType: "PE", strikePrice: 24000, lastPrice: 40 }),
+    tick({ optionType: "PE", strikePrice: 24050, lastPrice: 45 }),
+    tick({ optionType: "CE", strikePrice: 24000, lastPrice: 100, delta: 0.5 }),
+    tick({ optionType: "CE", strikePrice: 24050, lastPrice: 80 })
+  ];
+  const narrowPressure: PressureScore = {
+    bullishPressure: 60,
+    bearishPressure: 40,
+    supportZones: [{ strikePrice: 24000, score: 100, reason: "PE support pressure" }],
+    resistanceZones: [],
+    pcr: 1.2,
+    maxPain: undefined
+  };
+  // 50-wide strikes, spot 75 above support = 1.5 strike widths.
+  const narrow = calculateTradeRecommendations(
+    snapshot(narrowTicks, 24075, 24050),
+    narrowPressure,
+    bullishMarketBias(),
+    [strikeMovementRow({ netScore: 5 })],
+    noInterpretation
+  );
+
+  const wideTicks = [
+    tick({ optionType: "PE", strikePrice: 78000, lastPrice: 40 }),
+    tick({ optionType: "PE", strikePrice: 78200, lastPrice: 45 }),
+    tick({ optionType: "CE", strikePrice: 78000, lastPrice: 100, delta: 0.5 }),
+    tick({ optionType: "CE", strikePrice: 78200, lastPrice: 80 })
+  ];
+  const widePressure: PressureScore = {
+    bullishPressure: 60,
+    bearishPressure: 40,
+    supportZones: [{ strikePrice: 78000, score: 100, reason: "PE support pressure" }],
+    resistanceZones: [],
+    pcr: 1.2,
+    maxPain: undefined
+  };
+  // 200-wide strikes, spot 300 above support = the same 1.5 strike widths,
+  // but 300 points - far past the old flat 80-point gate.
+  const wide = calculateTradeRecommendations(
+    snapshot(wideTicks, 78300, 78200),
+    widePressure,
+    bullishMarketBias(),
+    [strikeMovementRow({ netScore: 5 })],
+    noInterpretation
+  );
+
+  assert.ok(narrow.some((rec) => rec.id === "near-support"), "1.5 strike widths should read as near on a narrow-spaced chain");
+  assert.ok(
+    wide.some((rec) => rec.id === "near-support"),
+    "the identical 1.5-strike-width geometry must also read as near on a wide-spaced chain - this is the case the flat 80-point gate silently killed on SENSEX/BANKNIFTY"
+  );
+});
+
+test("a wall several strike widths away is still not 'near', however few points that is", () => {
+  const ticks = [
+    tick({ optionType: "PE", strikePrice: 24000, lastPrice: 40 }),
+    tick({ optionType: "PE", strikePrice: 24050, lastPrice: 45 }),
+    tick({ optionType: "CE", strikePrice: 24000, lastPrice: 100, delta: 0.5 }),
+    tick({ optionType: "CE", strikePrice: 24050, lastPrice: 80 })
+  ];
+  const pressure: PressureScore = {
+    bullishPressure: 60,
+    bearishPressure: 40,
+    supportZones: [{ strikePrice: 24000, score: 100, reason: "PE support pressure" }],
+    resistanceZones: [],
+    pcr: 1.2,
+    maxPain: undefined
+  };
+  // 50-wide strikes, spot 250 above support = 5 strike widths.
+  const recs = calculateTradeRecommendations(
+    snapshot(ticks, 24250, 24250),
+    pressure,
+    bullishMarketBias(),
+    [strikeMovementRow({ netScore: 5 })],
+    noInterpretation
+  );
+  assert.equal(recs.find((rec) => rec.id === "near-support"), undefined);
+});
+
 test("max-pain recommendations never fire on a contract far from expiry, even when spot sits exactly at max pain", () => {
   // Reproduces the exact live shape (BANKNIFTY): a monthly-horizon
   // contract (default snapshot() expiry is ~30 calendar days out) can

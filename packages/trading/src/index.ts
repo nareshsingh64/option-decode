@@ -43,6 +43,11 @@ export function createPaperOrder(request: PaperOrderRequest, now = new Date()): 
 // poll regardless of real momentum.
 const MOMENTUM_ACTIVATION_THRESHOLD = 150;
 
+// How many strike widths from a support/resistance wall still counts as
+// "spot is near it" - see the calibration note at the near-support /
+// near-resistance recommendations below.
+const NEAR_WALL_STRIKE_WIDTHS = 2;
+
 const CONVICTION_SCORE: Record<MarketBiasSummary["conviction"], number> = {
   High: 70,
   Moderate: 45,
@@ -474,7 +479,28 @@ export function calculateTradeRecommendations(
   }
 
   // 3. SUPPORT / RESISTANCE
-  if (supportDist !== undefined && support && supportDist <= 80) {
+  // "Near" a wall is measured in STRIKE WIDTHS, not a flat point count. A
+  // fixed 80 points meant "near" was a completely different thing per
+  // instrument - confirmed live across 14 trading days (42 samples each):
+  // the 80pt gate fired on 48-52% of NIFTY snapshots but only 7-12% of
+  // SENSEX and 2% of BANKNIFTY resistance, so an entire recommendation
+  // category was effectively dead on the larger-numbered indices while
+  // routine on NIFTY, purely because their spot values are 2-3x bigger.
+  //
+  // Strike spacing is the natural unit here: options only trade at strike
+  // increments, so "within two strikes of the wall" means the same thing
+  // on every chain and self-adjusts if an exchange changes its spacing.
+  // Reuses getStrikeInterval (measured near spot, per its own doc comment)
+  // rather than a second scaling table to keep in sync. At 2x, live fire
+  // rates land at 60%/55% NIFTY, 33%/7% BANKNIFTY, 26%/26% SENSEX -
+  // closest to preserving today's NIFTY behaviour (the one underlying the
+  // flat 80 was actually calibrated for) while bringing the other two into
+  // the same range. BANKNIFTY resistance stays low because its nearest
+  // call wall genuinely sits ~10 strike widths above spot in this sample -
+  // a real market-structure fact, not something a threshold should force.
+  const proximityLimit = getStrikeInterval(snapshot.ticks, spot) * NEAR_WALL_STRIKE_WIDTHS;
+
+  if (supportDist !== undefined && support && supportDist <= proximityLimit) {
     recs.push({
       id: "near-support",
       category: "strategy",
@@ -487,7 +513,7 @@ export function calculateTradeRecommendations(
     });
   }
 
-  if (resistanceDist !== undefined && resistance && resistanceDist <= 80) {
+  if (resistanceDist !== undefined && resistance && resistanceDist <= proximityLimit) {
     recs.push({
       id: "near-resistance",
       category: "strategy",
