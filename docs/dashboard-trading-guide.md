@@ -106,16 +106,16 @@ Setup Quality combines pressure spread, PCR alignment, activity, and level proxi
 
 Typical reading:
 
-- `A+ / A`: strong setup candidate.
-- `B`: tradable only with confirmation.
-- `C`: watch only.
-- `Wait`: no clean edge.
+- `A+ Setup` / `A Setup`: strong setup candidate.
+- `B Setup`: tradable only with confirmation.
+- `C Setup`: watch only.
+- `No Edge`: no clean edge.
 
 Decision:
 
 - For option buying, prefer `A` or `A+` because buyers need movement.
 - For option selling, `B` can be acceptable if price is near a strong level and risk is controlled.
-- Avoid fresh trades when setup quality says `Wait`.
+- Avoid fresh trades when setup quality says `No Edge`.
 
 ### PCR
 
@@ -148,8 +148,9 @@ Decision:
 Conviction measures whether pressure has enough activity behind it.
 
 - `High`: signals have strong activity.
-- `Medium`: trade only with confirmation.
+- `Moderate`: trade only with confirmation.
 - `Low`: avoid fresh directional trades.
+- `Neutral`: no meaningful activity behind the reading.
 
 Decision:
 
@@ -378,7 +379,7 @@ Avoid CE buying when:
 - Spot is directly below strong CE OI resistance.
 - CE LTP is flat or falling.
 - IV is very high and spot momentum is weak.
-- Setup Quality says Wait.
+- Setup Quality says `No Edge`.
 
 ### Buy PE Setup
 
@@ -397,7 +398,7 @@ Avoid PE buying when:
 - Spot is directly above strong PE OI support.
 - PE LTP is flat or falling.
 - IV is very high and spot momentum is weak.
-- Setup Quality says Wait.
+- Setup Quality says `No Edge`.
 
 ## 15. Option Selling Playbook
 
@@ -516,7 +517,89 @@ Decision:
 - If replay shows signals are late or flipping often, reduce confidence.
 - If replay shows signals leading price, the setup has better quality.
 
-## 18. Trade Decision Checklist
+## 18. Panels and Signals Not Covered Above
+
+These ship in the app but had no entry in this guide. Documented here so
+the guide matches what is actually on screen.
+
+### Readiness
+
+Distinct from Setup Quality. Reads `Actionable`, `Watch`, or `Wait`.
+Setup Quality grades how good the setup is; Readiness says whether to act
+on it now. `Wait` here is a valid, expected reading - it is not the same
+thing as Setup Quality's `No Edge`.
+
+### True Zone
+
+Support and resistance rows carry a True Zone alongside the raw strike. A
+writer's real defence line is not the bare strike, it is the strike offset
+by the premium they collected: strike + premium for a CE resistance wall,
+strike - premium for a PE support floor. Use it as the level that actually
+has to break, not the round number.
+
+A second Weighted True Zone is shown where available. It uses the
+OI-buildup-weighted average sell price from stored tick history rather than
+a single point-in-time LTP, so it answers "what did writers here actually
+collect on average" instead of "what is this option worth right now". The
+two answer different questions and are shown side by side rather than one
+replacing the other.
+
+### ATM Straddle Expected Move
+
+ATM Call LTP + ATM Put LTP is the market's own priced-in move for the
+current expiry cycle. The band is spot +/- that straddle price. Separate
+from the India-VIX-derived range shown elsewhere; both are kept because
+they are different estimates, not competing versions of one number. Seller
+strike selection on weekly chains prefers strikes beyond this boundary.
+
+### Market Pulse
+
+A regression over recent pressure history showing whether the bullish/
+bearish gap is trending or flat, rather than only its current value. Use it
+to tell a reading that is building from one that is fading.
+
+### Gamma Risk Alert
+
+Fires when the current expiry is within a day and spot sits within 0.5% of
+a written wall. Premium on a short there can move several hundred percent
+on a small spot move. This is the highest-severity alert the app sends and
+it takes priority over every other critical alert for push delivery.
+
+Alert identity includes severity, so an alert that escalates from warning
+to critical is treated as a new alert: dismissing the warning does not hide
+the escalation.
+
+### Trade Recommendations
+
+The Dashboard's recommendation cards. Each carries a category, a priority,
+a confidence, and where applicable a concrete trade setup.
+
+Directly contradictory recommendations are resolved before display rather
+than shipped together: buy-CE versus buy-PE, and buy-options versus
+sell-options, defer to the market's own bias, and with no directional bias
+the conflicting directional pair is dropped entirely.
+
+Seller-side setups carry a Probability of Profit next to the risk/reward.
+Read them together. R:R below 1 is normal and expected for premium
+selling - the edge is win rate, not payoff size - so the "at least 1:1.5"
+line in the Trade Decision Checklist below applies to directional buying
+only, not to these setups. Stop and target multiples vary by timeframe
+rather than being one fixed pair.
+
+### Strike Matrix notes
+
+A recommendation records whether every side it actually writes is backed by
+a wall that cleared the conviction bar. An unbacked structure is still
+shown - the bias itself may be tradable - but is labelled, because the
+structure comes from DRCR alone with no institutional wall behind the
+strike.
+
+The horizon toggle selects the analysis framework (delta band, conviction
+multiplier, risk rule); the expiry dropdown selects the contract. When the
+two do not match - a monthly framework against a weekly-only chain, say -
+the panel says so rather than applying one silently to the other.
+
+## 19. Trade Decision Checklist
 
 Use this checklist before any trade.
 
@@ -532,6 +615,12 @@ Use this checklist before any trade.
 | IV/Delta | Responsive strike, not overpriced | Responsive strike, not overpriced |
 | Risk/Reward | At least 1:1.5 | At least 1:1.5 |
 
+This checklist is for DIRECTIONAL BUYING - that is what its Bullish Trade /
+Bearish Trade columns describe. The 1:1.5 minimum does not carry over to
+premium-selling setups, where a sub-1 ratio is the structure of the
+strategy rather than a failed check; judge those on Probability of Profit
+alongside the ratio (see section 18).
+
 Trade quality:
 
 - 8-9 checks aligned: high-quality paper trade candidate.
@@ -539,11 +628,11 @@ Trade quality:
 - 4-5 checks aligned: watch only or very small paper trade.
 - 3 or fewer checks aligned: no trade.
 
-## 19. No-Trade Conditions
+## 20. No-Trade Conditions
 
 Avoid trades when:
 
-- Setup Quality says Wait.
+- Setup Quality says `No Edge`.
 - Bullish and bearish pressure are close.
 - ATM score is mixed or flipping rapidly.
 - Spot is trapped between strong CE and PE walls.
@@ -556,7 +645,7 @@ Avoid trades when:
 
 No trade is a valid trading decision.
 
-## 20. Practical Examples
+## 21. Practical Examples
 
 ### Bullish CE Buy
 
@@ -638,7 +727,7 @@ Decision:
 - Wait for breakout/breakdown.
 - Only experienced sellers may consider range trades with strict SL.
 
-## 21. Golden Rules
+## 22. Golden Rules
 
 - Never trade from one signal.
 - Pressure gives direction, option chain gives confirmation, paper trading defines risk.
