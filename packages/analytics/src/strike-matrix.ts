@@ -39,7 +39,21 @@ interface HorizonProfile {
   matrix: Record<Exclude<StrikeMatrixBias, "Transitional">, { structure: string; targetDelta: number; note: string; writesCall: boolean; writesPut: boolean }>;
 }
 
-const THEORETICAL_POP = 85;
+// Probability that every leg of the structure expires worthless, derived
+// from the deltas of the strikes ACTUALLY picked. Delta approximates the
+// risk-neutral probability of finishing ITM, so a single short leg is
+// ~1 - |delta|; a two-legged structure (strangle/iron condor) needs BOTH
+// legs to expire worthless, so the two tail probabilities subtract.
+//
+// Was previously a hardcoded 85 stamped on every recommendation regardless
+// of which strike the engine chose - confirmed live, two-legged structures
+// whose own deltas implied 67-76% still displayed "~85% POP" beside a
+// trade button.
+function theoreticalPop(callDelta: number | undefined, putDelta: number | undefined): number {
+  const callTail = callDelta === undefined ? 0 : Math.abs(callDelta);
+  const putTail = putDelta === undefined ? 0 : Math.abs(putDelta);
+  return Math.round(Math.max(0, Math.min(1, 1 - callTail - putTail)) * 100);
+}
 
 // Liquidity floor for the EXECUTION strike a recommendation actually names
 // (not for the WCI/DRC/DRCR universe itself, which needs the full delta
@@ -470,7 +484,7 @@ export function calculateStrikeMatrix(
         callStrikeDelta: callPick?.delta,
         putStrike: putPick?.strikePrice,
         putStrikeDelta: putPick?.delta,
-        theoreticalPop: THEORETICAL_POP,
+        theoreticalPop: theoreticalPop(callPick?.delta, putPick?.delta),
         note: cell.note,
         wallBacked: unbackedSides.length === 0,
         unbackedSides

@@ -372,6 +372,10 @@ export interface StrikeMatrixRecommendation {
   callStrikeDelta?: number;
   putStrike?: number;
   putStrikeDelta?: number;
+  // Probability (0-100) that every leg of this structure expires
+  // worthless, derived from the deltas of the strikes actually picked -
+  // ~1 - |delta| for a single leg, with both tails subtracted for a
+  // two-legged structure. Not a fixed constant.
   theoreticalPop: number;
   note: string;
   // Whether EVERY side this structure actually writes is backed by a wall

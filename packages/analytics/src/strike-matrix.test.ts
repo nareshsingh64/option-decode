@@ -231,7 +231,9 @@ test("recommendation picks execution strikes closest to the matrix cell's target
   assert.equal(result.recommendation?.structure, "Sell short strangle");
   assert.equal(result.recommendation?.callStrike, 25300);
   assert.equal(result.recommendation?.putStrike, 24700);
-  assert.equal(result.recommendation?.theoreticalPop, 85);
+  // Both legs must expire worthless, so the two tails subtract:
+  // 1 - |0.16| - |0.15| = 0.69. Used to read a flat 85 regardless.
+  assert.equal(result.recommendation?.theoreticalPop, 69);
 });
 
 test("a zero-liquidity strike closest to target delta is skipped in favor of a liquid one further away", () => {
@@ -273,6 +275,35 @@ test("bullish structures only populate the put side", () => {
   assert.equal(result.bias, "Bullish"); // DRCR = 360/100 = 3.6
   assert.equal(result.recommendation?.callStrike, undefined);
   assert.equal(result.recommendation?.putStrike, 24800);
+});
+
+test("theoreticalPop tracks the strikes actually picked - one tail for a single leg, both for a strangle", () => {
+  // Bullish intraday writes PUTS only, so only the put tail subtracts.
+  const singleLeg = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "PE", strikePrice: 24800, delta: -0.18, volume: 1000, changeInOpenInterest: 2000, openInterest: 5000 }),
+      tick({ optionType: "CE", strikePrice: 25200, delta: 0.2, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(singleLeg.bias, "Bullish");
+  assert.equal(singleLeg.recommendation?.callStrike, undefined, "a bullish structure writes no call leg");
+  assert.equal(singleLeg.recommendation?.theoreticalPop, 82); // 1 - |−0.18|
+
+  // Neutral writes both sides, so both tails subtract off the same base.
+  const twoLeg = calculateStrikeMatrix(
+    snapshot([
+      tick({ optionType: "CE", strikePrice: 25300, delta: 0.16, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 }),
+      tick({ optionType: "PE", strikePrice: 24700, delta: -0.15, volume: 1000, changeInOpenInterest: 500, openInterest: 5000 })
+    ]),
+    "intraday"
+  );
+  assert.equal(twoLeg.bias, "Neutral");
+  assert.equal(twoLeg.recommendation?.theoreticalPop, 69); // 1 - 0.16 - 0.15
+  assert.ok(
+    twoLeg.recommendation!.theoreticalPop < singleLeg.recommendation!.theoreticalPop,
+    "a two-legged structure has two ways to lose, so its POP must be strictly lower than a comparable single leg"
+  );
 });
 
 test("a recommendation written against no qualifying wall is flagged as unbacked", () => {
