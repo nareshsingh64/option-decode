@@ -1,4 +1,5 @@
-import { OI_BREADTH_DOMINANCE_RATIO } from "@option-decode/analytics";
+import { OI_BREADTH_DOMINANCE_RATIO, pressureValue } from "@option-decode/analytics";
+import type { OptionContractTick } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
 
@@ -214,12 +215,13 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
       peOiPercent: 0,
       peChgPercent: 0,
       peVolPercent: 0,
-      ceOiRank: undefined as 1 | 2 | undefined,
-      ceChgRank: undefined as 1 | 2 | undefined,
-      ceVolRank: undefined as 1 | 2 | undefined,
-      peOiRank: undefined as 1 | 2 | undefined,
-      peChgRank: undefined as 1 | 2 | undefined,
-      peVolRank: undefined as 1 | 2 | undefined
+      // ONE verdict per side, from the three guards combined - not six
+      // independent leaderboards. ceSrRank identifies the strongest (1) and
+      // second strongest (2) RESISTANCE, peSrRank the same for SUPPORT.
+      ceSrRank: undefined as 1 | 2 | undefined,
+      peSrRank: undefined as 1 | 2 | undefined,
+      ceSrScore: 0,
+      peSrScore: 0
     }))
     .sort((left, right) => right.strike - left.strike);
 
@@ -244,26 +246,71 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
     row.peVolPercent = percent;
   });
 
-  applyPressureRanks(visibleRows, (row) => row.ceOiLots, (row, rank) => {
-    row.ceOiRank = rank;
+  // The three guards, combined into ONE score per strike per side, then
+  // ranked once. This replaces six independent leaderboards (OI, OI change
+  // and volume, per side) that between them flagged three to four different
+  // strikes as "strongest" with no verdict - confirmed live on NIFTY, where
+  // resistance was simultaneously 24800 by OI, 24400 by OI change and
+  // volume, and 24500 by volume rank 2.
+  //
+  // pressureValue is the Dashboard's own zone-scoring function, reused
+  // rather than reimplemented: open interest as the base, OI change
+  // weighted by activity quadrant (writing counts most, and unwinding
+  // SUBTRACTS rather than counting as strength), and a volume contribution
+  // capped at the strike's own OI so turnover confirms a level instead of
+  // defining it. That last cap is why a chain whose volume runs 15-16x its
+  // OI no longer reads as a most-traded-strike list.
+  const ceAverageVolume = averageVolumeOf(visibleRows.map((row) => row.ceVolLots));
+  const peAverageVolume = averageVolumeOf(visibleRows.map((row) => row.peVolLots));
+  for (const row of visibleRows) {
+    row.ceSrScore = pressureValue(toScoringTick(row, "CE"), ceAverageVolume);
+    row.peSrScore = pressureValue(toScoringTick(row, "PE"), peAverageVolume);
+  }
+
+  // Ranked directionally, matching topZones in @option-decode/analytics:
+  // resistance is a ceiling so it can only be at or above spot, support is a
+  // floor so it can only be at or below. Without this the combined score
+  // happily returned a "2nd strongest support" ABOVE spot - live NIFTY gave
+  // 24500 against a spot of 24367, and SENSEX did the same - which is a put
+  // wall the market has already traded through, not a floor under it.
+  applyPressureRanks(visibleRows, (row) => (row.strike >= spot ? row.ceSrScore : 0), (row, rank) => {
+    row.ceSrRank = rank;
   });
-  applyPressureRanks(visibleRows, (row) => row.ceChgLots, (row, rank) => {
-    row.ceChgRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.ceVolLots, (row, rank) => {
-    row.ceVolRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peOiLots, (row, rank) => {
-    row.peOiRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peChgLots, (row, rank) => {
-    row.peChgRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => row.peVolLots, (row, rank) => {
-    row.peVolRank = rank;
+  applyPressureRanks(visibleRows, (row) => (row.strike <= spot ? row.peSrScore : 0), (row, rank) => {
+    row.peSrRank = rank;
   });
 
   return visibleRows;
+}
+
+function averageVolumeOf(values: number[]): number {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+// Rebuilds the minimal OptionContractTick shape pressureValue reads. The
+// row already holds these in LOTS (toLots was applied when the row was
+// built), so lotSize is pinned to 1 here to stop pressureValue dividing a
+// second time. Signed OI change is deliberate - pressureValue's own
+// quadrant logic needs the sign to tell writing from unwinding, and the
+// row's ceChgLots/peChgLots are absolute values.
+function toScoringTick(
+  row: { strike: number; ceOiLots: number; ceChgSignedLots: number; ceVolLots: number; ceLtpChange?: number; peOiLots: number; peChgSignedLots: number; peVolLots: number; peLtpChange?: number },
+  optionType: "CE" | "PE"
+): OptionContractTick {
+  const isCall = optionType === "CE";
+  return {
+    tradingDate: "",
+    tickTime: "",
+    underlyingSymbol: "",
+    expiry: "",
+    optionType,
+    strikePrice: row.strike,
+    lotSize: 1,
+    openInterest: isCall ? row.ceOiLots : row.peOiLots,
+    changeInOpenInterest: isCall ? row.ceChgSignedLots : row.peChgSignedLots,
+    volume: isCall ? row.ceVolLots : row.peVolLots,
+    lastPriceChange: (isCall ? row.ceLtpChange : row.peLtpChange) ?? 0
+  };
 }
 
 export function buildOiBuildupRows(chainRows: ReturnType<typeof buildChainRows>, atmStrike: number, numberFormatMode: NumberFormatMode) {

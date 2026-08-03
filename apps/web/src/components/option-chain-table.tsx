@@ -91,14 +91,14 @@ export function OptionChainTable({
                 <>
                   <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
                   <td className="group relative px-2 py-3">
-                    {renderPressureCell(row.ceOi, row.ceOiRank, row.ceOiPercent, "CE")}
+                    {renderPressureCell(row.ceOi, row.ceSrRank, row.ceOiPercent, "CE")}
                     <div className="absolute inset-0 hidden items-center justify-start gap-1 bg-terminal-panel px-2 group-hover:flex">
                       <QuickOrderButton label="B" title={`Buy ${row.strike} CE`} tone="buy" onClick={() => onQuickOrder(row.strike, "CE", "BUY")} />
                       <QuickOrderButton label="S" title={`Sell ${row.strike} CE`} tone="sell" onClick={() => onQuickOrder(row.strike, "CE", "SELL")} />
                     </div>
                   </td>
-                  <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
-                  <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
+                  <td className="px-2 py-3">{renderPressureCell(row.ceChg, undefined, row.ceChgPercent, "CE")}</td>
+                  <td className="px-2 py-3">{renderPressureCell(row.ceVol, undefined, row.ceVolPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity, row.ceIntrinsic, row.ceTimeValue)}</td>
                   <td className="px-2 py-3 text-center font-semibold text-terminal-text">
                     <span className="flex flex-col items-center leading-tight">
@@ -111,10 +111,10 @@ export function OptionChainTable({
                     </span>
                   </td>
                   <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity, row.peIntrinsic, row.peTimeValue)}</td>
-                  <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
-                  <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
+                  <td className="px-2 py-3">{renderPressureCell(row.peVol, undefined, row.peVolPercent, "PE")}</td>
+                  <td className="px-2 py-3">{renderPressureCell(row.peChg, undefined, row.peChgPercent, "PE")}</td>
                   <td className="group relative px-2 py-3">
-                    {renderPressureCell(row.peOi, row.peOiRank, row.peOiPercent, "PE")}
+                    {renderPressureCell(row.peOi, row.peSrRank, row.peOiPercent, "PE")}
                     <div className="absolute inset-0 hidden items-center justify-end gap-1 bg-terminal-panel px-2 group-hover:flex">
                       <QuickOrderButton label="B" title={`Buy ${row.strike} PE`} tone="buy" onClick={() => onQuickOrder(row.strike, "PE", "BUY")} />
                       <QuickOrderButton label="S" title={`Sell ${row.strike} PE`} tone="sell" onClick={() => onQuickOrder(row.strike, "PE", "SELL")} />

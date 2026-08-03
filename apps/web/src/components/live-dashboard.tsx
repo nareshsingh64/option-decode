@@ -2020,7 +2020,14 @@ function findOptionTick(overview: MarketOverview, strikePrice: number, optionTyp
 
 function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") {
   const alignClass = side === "PE" ? "justify-end text-right" : "justify-start text-left";
-  const shouldHighlight = rank === 1 || (rank === 2 && percent >= 75);
+  // Both the strongest and the second strongest level are always marked.
+  // Rank 2 used to additionally require reaching 75% of the column max,
+  // which silently suppressed most second marks - confirmed live, 5 of 6 on
+  // BANKNIFTY and 5 of 6 on SENSEX. The rank now comes from the combined
+  // three-guard score (see buildChainRows), so a second place is a genuine
+  // second-strongest level rather than an also-ran in one isolated column,
+  // and is worth showing on its own terms.
+  const shouldHighlight = rank === 1 || rank === 2;
 
   if (!shouldHighlight) {
     return (
@@ -2033,7 +2040,15 @@ function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: num
     );
   }
 
-  const rankClass = rank === 1 ? "bg-red-300 text-slate-950 shadow-[0_0_18px_rgba(252,165,165,0.2)]" : "bg-yellow-300 text-slate-950 shadow-[0_0_18px_rgba(253,224,71,0.18)]";
+  // Both ranks are yellow. The strongest gets the fully saturated swatch and
+  // the second a lighter one, so they stay distinguishable at a glance while
+  // reading as one family of "this is a level" rather than the previous
+  // red-vs-yellow pairing, where red read as a warning about the strike
+  // rather than as the marking it actually is.
+  const rankClass =
+    rank === 1
+      ? "bg-yellow-300 text-slate-950 shadow-[0_0_18px_rgba(253,224,71,0.28)]"
+      : "bg-yellow-300/55 text-slate-950 shadow-[0_0_14px_rgba(253,224,71,0.16)]";
 
   return (
     <span className={`flex ${alignClass}`}>

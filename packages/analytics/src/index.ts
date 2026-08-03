@@ -15,7 +15,17 @@ import type {
   TradeInterpretation
 } from "@option-decode/types";
 
-function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
+// The combined support/resistance score for a single strike-side: open
+// interest as the base, OI change weighted by which activity quadrant it
+// falls in (writing counts most, unwinding subtracts), and a volume
+// contribution capped at the strike's own OI so turnover confirms a level
+// rather than defining it.
+//
+// Exported so the Option Chain table can rank strikes on the SAME combined
+// measure the Dashboard's zones use. That table previously ranked OI, OI
+// change and volume independently, which produced three or four different
+// "strongest" strikes per side with no single verdict.
+export function pressureValue(tick: OptionContractTick, averageVolume = 0): number {
   const oi = toLots(tick.openInterest, tick);
   const oiChange = toLots(tick.changeInOpenInterest, tick);
   const volume = toLots(tick.volume, tick);
