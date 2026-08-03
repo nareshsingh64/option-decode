@@ -64,12 +64,15 @@ import {
   buildAtmStrikeRange,
   buildChainRows,
   buildChainStats,
-  buildIvSkewRows,
+  buildMarketRead,
   buildOiBuildupRows,
+  buildOiMovementRows,
+  buildPremiumLadder,
   buildTopStrikeRows,
   buildVixStrikeRange
 } from "./option-chain-builders";
-import { IvSkewChart, OiBuildupChart } from "./option-chain-charts";
+import type { ChainMode } from "./option-chain-builders";
+import { OiBuildupChart } from "./option-chain-charts";
 import { OptionChainPanel } from "./option-chain-panel";
 import { PaperTradingPanel } from "./paper-trading-panel";
 import type { HedgeLegDraft } from "./paper-trading-panel";
@@ -159,6 +162,17 @@ export interface MarketOverview {
     atmStraddlePrice: number;
     expectedUpperBoundary: number;
     expectedLowerBoundary: number;
+  };
+  // Where today's ATM call IV sits in its own recent range. Undefined when
+  // there's no usable history; `sufficient` false when there is history but
+  // too little of it to quote a percentile honestly.
+  atmIvPercentile?: {
+    percentile: number;
+    current: number;
+    low: number;
+    high: number;
+    sampleDays: number;
+    sufficient: boolean;
   };
   alerts: Array<{
     id: string;
@@ -564,6 +578,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [quantityDisplayMode, setQuantityDisplayMode] = useState<QuantityDisplayMode>("lots");
   const [visibleStrikeMode, setVisibleStrikeMode] = useState<VisibleStrikeMode>("vix");
   const [chainTableMode, setChainTableMode] = useState<ChainTableMode>("standard");
+  const [chainMode, setChainMode] = useState<ChainMode>("sell");
   const selectionRef = useRef({
     underlying: initialOverview.selectedUnderlying,
     expiry: initialOverview.selectedExpiry
@@ -668,6 +683,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         numberFormatMode: NumberFormatMode;
         quantityDisplayMode: QuantityDisplayMode;
         visibleStrikeMode: VisibleStrikeMode;
+        chainMode: ChainMode;
       }>;
       if (storedPreferences.numberFormatMode === "metric" || storedPreferences.numberFormatMode === "indian") {
         setNumberFormatMode(storedPreferences.numberFormatMode);
@@ -677,6 +693,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       }
       if (storedPreferences.visibleStrikeMode === "atm" || storedPreferences.visibleStrikeMode === "vix") {
         setVisibleStrikeMode(storedPreferences.visibleStrikeMode);
+      }
+      if (storedPreferences.chainMode === "buy" || storedPreferences.chainMode === "sell") {
+        setChainMode(storedPreferences.chainMode);
       }
     } catch {
       window.localStorage.removeItem("option-decode-display-preferences");
@@ -693,10 +712,11 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       JSON.stringify({
         numberFormatMode,
         quantityDisplayMode,
-        visibleStrikeMode
+        visibleStrikeMode,
+        chainMode
       })
     );
-  }, [numberFormatMode, quantityDisplayMode, visibleStrikeMode]);
+  }, [chainMode, numberFormatMode, quantityDisplayMode, visibleStrikeMode]);
 
   useEffect(() => {
     setOverview(initialOverview);
@@ -1193,7 +1213,6 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const displayPreferences = useMemo(() => ({ numberFormatMode, quantityDisplayMode }), [numberFormatMode, quantityDisplayMode]);
   const chainRows = useMemo(() => buildChainRows(overview, chainRange, displayPreferences), [chainRange, displayPreferences, overview]);
   const oiBuildupRows = useMemo(() => buildOiBuildupRows(chainRows, overview.snapshot.atmStrike, numberFormatMode), [chainRows, numberFormatMode, overview.snapshot.atmStrike]);
-  const ivSkewRows = useMemo(() => buildIvSkewRows(chainRows), [chainRows]);
   const replayChainRows = useMemo(() => buildChainRows(replayOverview ?? overview, replayChainRange, displayPreferences), [displayPreferences, overview, replayChainRange, replayOverview]);
   const activeAlerts = useMemo(() => overview.alerts.filter((alert) => !dismissedAlertIds.includes(alert.id)), [dismissedAlertIds, overview.alerts]);
   const visibleAlerts = useMemo(() => {
@@ -1213,6 +1232,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const topStrikeRows = useMemo(() => buildTopStrikeRows(overview, displayPreferences), [displayPreferences, overview]);
   const zoneRows = useMemo(() => buildZoneRows(overview), [overview]);
   const chainStats = useMemo(() => buildChainStats(overview, displayPreferences), [displayPreferences, overview]);
+  const marketRead = useMemo(() => buildMarketRead(overview, chainRange, chainStats, chainMode, numberFormatMode), [chainMode, chainRange, chainStats, numberFormatMode, overview]);
+  const premiumLadder = useMemo(() => buildPremiumLadder(overview, chainMode), [chainMode, overview]);
+  const oiMovement = useMemo(() => buildOiMovementRows(overview, displayPreferences), [displayPreferences, overview]);
   const pressureSummary = useMemo(() => buildPressureSummary(overview), [overview]);
   const strikeMovementRows = useMemo(() => buildStrikeMovementRows(overview), [overview]);
   const strikeMovementSummary = useMemo(() => buildStrikeMovementSummary(strikeMovementRows), [strikeMovementRows]);
@@ -1859,19 +1881,20 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           chainTableMode={chainTableMode}
           setChainTableMode={setChainTableMode}
           isMarketStreamConnected={isMarketStreamConnected}
-          chainStats={chainStats}
           formatLarge={formatLarge}
           numberFormatMode={numberFormatMode}
-          formatSignedLarge={formatSignedLarge}
           oiBuildupChart={<OiBuildupChart rows={oiBuildupRows} />}
-          ivSkewChart={<IvSkewChart rows={ivSkewRows} atmStrike={overview.snapshot.atmStrike} />}
+          chainMode={chainMode}
+          setChainMode={setChainMode}
+          marketRead={marketRead}
+          premiumLadder={premiumLadder}
+          oiMovement={oiMovement}
           chainRows={chainRows}
           formatOptionalNumber={formatOptionalNumber}
           renderIvDeltaCell={renderIvDeltaCell}
           renderLtpStack={renderLtpStack}
           renderPressureCell={renderPressureCell}
           topStrikeRows={topStrikeRows}
-          zoneRows={zoneRows}
           onQuickOrder={handleQuickOrder}
         />
       ) : null}

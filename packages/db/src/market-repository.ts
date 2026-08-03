@@ -708,23 +708,44 @@ export async function getAtmCallIvHistory(underlyingSymbol: string, days: number
     take: days
   });
 
+  // Two phases rather than a per-day snapshot fetch that `include`d every CE
+  // tick on the chain. That pulled ~200 rows per day just to read one of
+  // them, and on a live-ingesting database it was slow enough to blow a
+  // 2-minute timeout outright. Phase one selects only the id/atmStrike of
+  // each day's last snapshot; phase two fetches exactly the ATM CE ticks for
+  // those snapshots in a single query. Same result, a fraction of the rows.
+  const daySnapshots = await Promise.all(
+    tradingDates.map(({ tradingDate }) =>
+      client.optionChainSnapshot.findFirst({
+        where: { underlyingSymbol, tradingDate },
+        orderBy: { snapshotTime: "desc" },
+        select: { id: true, tradingDate: true, atmStrike: true }
+      })
+    )
+  );
+
+  const wanted = daySnapshots.filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== null);
+  if (!wanted.length) {
+    return [];
+  }
+
+  const ticks = await client.optionContractTick.findMany({
+    where: {
+      OR: wanted.map((snapshot) => ({ snapshotId: snapshot.id, optionType: "CE" as const, strikePrice: snapshot.atmStrike }))
+    },
+    select: { snapshotId: true, impliedVolatility: true }
+  });
+
+  const ivBySnapshot = new Map(ticks.map((tick) => [tick.snapshotId, tick.impliedVolatility]));
   const history: number[] = [];
-  for (const { tradingDate } of tradingDates) {
-    const snapshot = await client.optionChainSnapshot.findFirst({
-      where: { underlyingSymbol, tradingDate },
-      orderBy: { snapshotTime: "desc" },
-      include: { ticks: { where: { optionType: "CE" } } }
-    });
-    if (!snapshot) {
-      continue;
-    }
-    const atmStrike = snapshot.atmStrike.toNumber();
-    const atmTick = snapshot.ticks.find((tick) => tick.strikePrice.toNumber() === atmStrike);
-    if (atmTick?.impliedVolatility) {
-      history.push(atmTick.impliedVolatility.toNumber());
+  // Walk oldest-first so the returned series is chronological.
+  for (const snapshot of [...wanted].reverse()) {
+    const iv = ivBySnapshot.get(snapshot.id);
+    if (iv) {
+      history.push(iv.toNumber());
     }
   }
-  return history.reverse();
+  return history;
 }
 
 export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?: string, limit = 60, client: DbClient = prisma) {

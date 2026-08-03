@@ -1,5 +1,6 @@
 import type {
   AlertThresholdConfig,
+  AtmIvPercentile,
   AtmStraddleExpectedMove,
   ChainStats,
   MarketAlert,
@@ -90,6 +91,38 @@ export function calculatePressureScore(snapshot: OptionChainSnapshot): PressureS
     resistanceZones: topZones(ceTicks, snapshot.spotPrice, "resistance"),
     pcr: totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : undefined,
     maxPain: calculateMaxPain(snapshot.ticks)
+  };
+}
+
+// Minimum trading days before an ATM-IV percentile is worth showing. Below
+// this the "range" is a handful of prints and the percentile jumps in coarse
+// steps - better to say nothing than to imply precision that isn't there.
+const MIN_IV_PERCENTILE_SAMPLE_DAYS = 8;
+
+/**
+ * Where `current` sits inside `history`, as a percentile (share of days
+ * below it). See AtmIvPercentile in @option-decode/types for why this is a
+ * percentile rather than the conventional (current-low)/(high-low) IV Rank.
+ *
+ * `history` is the chronological ATM call IV series; `current` is today's
+ * reading and is NOT assumed to be part of it.
+ */
+export function calculateAtmIvPercentile(history: number[], current: number | undefined): AtmIvPercentile | undefined {
+  if (current === undefined || !Number.isFinite(current) || current <= 0) {
+    return undefined;
+  }
+  const usable = history.filter((value) => Number.isFinite(value) && value > 0);
+  if (!usable.length) {
+    return undefined;
+  }
+  const below = usable.filter((value) => value < current).length;
+  return {
+    percentile: Math.round((below / usable.length) * 100),
+    current,
+    low: Math.min(...usable),
+    high: Math.max(...usable),
+    sampleDays: usable.length,
+    sufficient: usable.length >= MIN_IV_PERCENTILE_SAMPLE_DAYS
   };
 }
 

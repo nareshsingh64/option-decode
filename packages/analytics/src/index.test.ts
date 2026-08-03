@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, PressureScore } from "@option-decode/types";
 import {
+  calculateAtmIvPercentile,
   calculateAtmStraddleExpectedMove,
   calculateChainStats,
   calculateMarketBias,
@@ -650,4 +651,40 @@ test("generateMarketAlerts does not fire gamma-risk when expiry is imminent but 
     alerts.find((alert) => alert.metric === "gammaRisk"),
     undefined
   );
+});
+
+test("calculateAtmIvPercentile counts the share of history below the current reading", () => {
+  const result = calculateAtmIvPercentile([8, 9, 10, 11, 12, 13, 14, 15], 12);
+  assert.equal(result?.percentile, 50);
+  assert.equal(result?.current, 12);
+  assert.equal(result?.low, 8);
+  assert.equal(result?.high, 15);
+  assert.equal(result?.sampleDays, 8);
+  assert.equal(result?.sufficient, true);
+});
+
+test("calculateAtmIvPercentile is unmoved by a single outlier, which is why it is used instead of IV rank", () => {
+  // Production history really does contain days like this: one 2.7% reading
+  // against an 8-12% band. IV rank ((cur-min)/(max-min)) reads 65 with the
+  // outlier and 9 without it - a 56-point swing off one day. The percentile
+  // moves 11 points over the same pair.
+  const withOutlier = calculateAtmIvPercentile([2.7, 8.2, 8.9, 9.4, 10.1, 10.8, 11.2, 11.6], 8.5);
+  const withoutOutlier = calculateAtmIvPercentile([8.2, 8.9, 9.4, 10.1, 10.8, 11.2, 11.6], 8.5);
+  assert.equal(withOutlier?.percentile, 25);
+  assert.equal(withoutOutlier?.percentile, 14);
+});
+
+test("calculateAtmIvPercentile flags a short history as insufficient rather than hiding it", () => {
+  const result = calculateAtmIvPercentile([9, 10, 11], 10.5);
+  assert.equal(result?.sampleDays, 3);
+  assert.equal(result?.sufficient, false);
+});
+
+test("calculateAtmIvPercentile returns undefined without a usable current reading or history", () => {
+  assert.equal(calculateAtmIvPercentile([9, 10], undefined), undefined);
+  assert.equal(calculateAtmIvPercentile([9, 10], 0), undefined);
+  assert.equal(calculateAtmIvPercentile([9, 10], Number.NaN), undefined);
+  assert.equal(calculateAtmIvPercentile([], 10), undefined);
+  // Zero/negative IV days are placeholders in the tick table, not real vol.
+  assert.equal(calculateAtmIvPercentile([0, 0], 10), undefined);
 });

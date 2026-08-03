@@ -268,15 +268,22 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
   }
 
   // Ranked directionally, matching topZones in @option-decode/analytics:
-  // resistance is a ceiling so it can only be at or above spot, support is a
-  // floor so it can only be at or below. Without this the combined score
+  // resistance is a ceiling so it can only be at or above the money, support
+  // is a floor so it can only be at or below. Without this the combined score
   // happily returned a "2nd strongest support" ABOVE spot - live NIFTY gave
   // 24500 against a spot of 24367, and SENSEX did the same - which is a put
   // wall the market has already traded through, not a floor under it.
-  applyPressureRanks(visibleRows, (row) => (row.strike >= spot ? row.ceSrScore : 0), (row, rank) => {
+  //
+  // The pivot is the ATM strike rather than raw spot: spot almost never sits
+  // exactly on a strike, so testing against it hands the ATM strike to
+  // whichever side happens to be nearer. With NIFTY spot 24590.85 and ATM
+  // 24600 the ATM put wall - routinely the heaviest support on the chain -
+  // was excluded from support ranking every single tick.
+  const moneyPivot = overview.snapshot.atmStrike || spot;
+  applyPressureRanks(visibleRows, (row) => (row.strike >= moneyPivot ? row.ceSrScore : 0), (row, rank) => {
     row.ceSrRank = rank;
   });
-  applyPressureRanks(visibleRows, (row) => (row.strike <= spot ? row.peSrScore : 0), (row, rank) => {
+  applyPressureRanks(visibleRows, (row) => (row.strike <= moneyPivot ? row.peSrScore : 0), (row, rank) => {
     row.peSrRank = rank;
   });
 
@@ -328,29 +335,257 @@ export function buildOiBuildupRows(chainRows: ReturnType<typeof buildChainRows>,
   }));
 }
 
-export function buildIvSkewRows(chainRows: ReturnType<typeof buildChainRows>) {
-  const rows = [...chainRows].sort((left, right) => left.strike - right.strike);
-  const ivValues = rows.flatMap((row) => [row.ceIv, row.peIv]).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  const minIv = ivValues.length ? Math.min(...ivValues) : 0;
-  const maxIv = ivValues.length ? Math.max(...ivValues) : 1;
-  const ivRange = Math.max(1, maxIv - minIv);
-  const width = 520;
-  const height = 180;
-  const padding = 22;
-  const xRange = Math.max(1, rows.length - 1);
-  const yForIv = (iv?: number) => {
-    if (iv === undefined || !Number.isFinite(iv)) {
-      return undefined;
-    }
-    return height - padding - ((iv - minIv) / ivRange) * (height - padding * 2);
+export type ChainMode = "buy" | "sell";
+
+// --- Market read strip -------------------------------------------------
+// Six cells answering "what kind of market is this, and which side" before
+// the trader reads a single strike. Every metric serves BOTH directions -
+// only the verdict flips - which is why one mode toggle covers buying and
+// selling rather than needing two separate layouts.
+
+export interface MarketReadCell {
+  label: string;
+  value: string;
+  detail: string;
+  verdict: string;
+  tone: "good" | "warn" | "info" | "neutral";
+}
+
+export function buildMarketRead(
+  overview: MarketOverview,
+  range: VixStrikeRange,
+  chainStats: ReturnType<typeof buildChainStats>,
+  mode: ChainMode,
+  numberFormatMode: NumberFormatMode
+): MarketReadCell[] {
+  const spot = overview.snapshot.spotPrice;
+  const atm = overview.snapshot.atmStrike;
+  const atmCe = overview.snapshot.ticks.find((tick) => tick.optionType === "CE" && tick.strikePrice === atm);
+  const atmPe = overview.snapshot.ticks.find((tick) => tick.optionType === "PE" && tick.strikePrice === atm);
+
+  // --- IV percentile ---
+  const iv = overview.atmIvPercentile;
+  const ivCell: MarketReadCell = !iv
+    ? { label: "ATM IV", value: "--", detail: "no history yet", verdict: "UNAVAILABLE", tone: "neutral" }
+    : !iv.sufficient
+      ? {
+          label: "ATM IV",
+          value: `${iv.current.toFixed(2)}%`,
+          detail: `only ${iv.sampleDays} day${iv.sampleDays === 1 ? "" : "s"} of history`,
+          verdict: "TOO LITTLE HISTORY",
+          tone: "neutral"
+        }
+      : {
+          label: "IV percentile",
+          value: `${iv.percentile}`,
+          detail: `ATM ${iv.current.toFixed(2)}% · ${iv.sampleDays}d ${iv.low.toFixed(1)}-${iv.high.toFixed(1)}%`,
+          // High IV favours the seller and penalises the buyer; low IV the
+          // reverse. Same number, opposite reading.
+          verdict:
+            iv.percentile >= 70
+              ? mode === "sell" ? "RICH — GOOD TO SELL" : "EXPENSIVE — POOR TO BUY"
+              : iv.percentile <= 30
+                ? mode === "sell" ? "CHEAP — POOR TO SELL" : "CHEAP — GOOD TO BUY"
+                : "MIDDLING — NO VOL EDGE",
+          tone:
+            iv.percentile >= 70
+              ? mode === "sell" ? "good" : "warn"
+              : iv.percentile <= 30
+                ? mode === "sell" ? "warn" : "good"
+                : "info"
+        };
+
+  // --- Skew (PE IV - CE IV at the money) ---
+  const ceIv = atmCe?.impliedVolatility;
+  const peIv = atmPe?.impliedVolatility;
+  const skew = ceIv !== undefined && peIv !== undefined && ceIv > 0 && peIv > 0 ? peIv - ceIv : undefined;
+  const skewCell: MarketReadCell =
+    skew === undefined
+      ? { label: "Skew", value: "--", detail: "no ATM IV on one side", verdict: "UNAVAILABLE", tone: "neutral" }
+      : {
+          label: "Skew",
+          value: `${skew >= 0 ? "+" : ""}${skew.toFixed(2)}`,
+          detail: `PE ${peIv!.toFixed(2)} vs CE ${ceIv!.toFixed(2)}`,
+          // A seller wants the richer side; a buyer wants the cheaper one -
+          // so the same sign points them at opposite legs.
+          verdict:
+            Math.abs(skew) < 0.5
+              ? "FLAT — NO SIDE EDGE"
+              : skew > 0
+                ? mode === "sell" ? "SELL PUTS — RICHER" : "BUY CALLS — CHEAPER"
+                : mode === "sell" ? "SELL CALLS — RICHER" : "BUY PUTS — CHEAPER",
+          tone: Math.abs(skew) < 0.5 ? "info" : "good"
+        };
+
+  // --- PCR / OI breadth ---
+  const pcr = overview.pressure.pcr;
+  const pcrCell: MarketReadCell = {
+    label: "PCR",
+    value: pcr === undefined ? "--" : pcr.toFixed(2),
+    detail: chainStats.breadth,
+    verdict: pcr === undefined ? "UNAVAILABLE" : pcr > 1.1 ? "PUT SUPPORT DOMINANT" : pcr < 0.9 ? "CALL RESISTANCE DOMINANT" : "BALANCED",
+    tone: "info"
   };
 
-  return rows.map((row, index) => ({
-    strike: row.strike,
-    x: padding + (index / xRange) * (width - padding * 2),
-    ceY: yForIv(row.ceIv),
-    peY: yForIv(row.peIv)
-  }));
+  // --- Expected move ---
+  const straddle = overview.atmStraddle?.atmStraddlePrice;
+  const movePercent = spot > 0 ? (range.expectedMove / spot) * 100 : 0;
+  const moveCell: MarketReadCell = {
+    label: "Expected move",
+    value: `±${Math.round(range.expectedMove)}`,
+    detail: straddle ? `${movePercent.toFixed(2)}% of spot · ATM straddle ${straddle.toFixed(0)}` : `${movePercent.toFixed(2)}% of spot`,
+    // The seller's cushion is the buyer's hurdle.
+    verdict: mode === "sell" ? "ROOM BEFORE BREACH" : "MOVE NEEDED TO PROFIT",
+    tone: mode === "sell" ? "info" : "warn"
+  };
+
+  // --- Kept: total OI and max-OI strike ---
+  const oiCell: MarketReadCell = {
+    label: "Total OI",
+    value: `CE ${formatLarge(chainStats.totalCeOi, numberFormatMode)}`,
+    detail: `PE ${formatLarge(chainStats.totalPeOi, numberFormatMode)}`,
+    verdict: "CHAIN-WIDE",
+    tone: "neutral"
+  };
+  const maxOiCell: MarketReadCell = {
+    label: "Max OI strike",
+    value: chainStats.maxOiStrikeText,
+    detail: chainStats.maxOiSide,
+    verdict: "HEAVIEST SINGLE STRIKE",
+    tone: "neutral"
+  };
+
+  return [ivCell, skewCell, pcrCell, moveCell, oiCell, maxOiCell];
+}
+
+// --- Premium ladder ----------------------------------------------------
+// What the trader would actually transact at each horizon, rather than what
+// every strike happens to cost. Sell mode uses the Strike Matrix's own delta
+// bands and reports credit + probability of profit; buy mode reports cost,
+// breakeven and the move required to reach it.
+
+export interface LadderLeg {
+  optionType: "CE" | "PE";
+  strike: number;
+  price: number;
+  delta: number;
+  // Sell mode only - probability the short leg expires worthless.
+  pop?: number;
+  // Buy mode only - spot at which the long leg breaks even, and the move
+  // from here needed to get there.
+  breakeven?: number;
+  movePercent?: number;
+}
+
+export interface LadderBand {
+  label: string;
+  detail: string;
+  legs: LadderLeg[];
+  // Sell mode only - combined credit for writing both legs.
+  credit?: number;
+}
+
+// Sell-side bands mirror STRIKE_MATRIX_HORIZONS' target deltas exactly, so
+// the ladder can never suggest a strike the Strike Matrix tab wouldn't.
+const SELL_LADDER_BANDS: Array<{ label: string; targetDelta: number }> = [
+  { label: "Intraday", targetDelta: 0.18 },
+  { label: "Weekly", targetDelta: 0.15 },
+  { label: "Monthly", targetDelta: 0.1 }
+];
+
+// Buy-side has no equivalent convention anywhere in this codebase, so these
+// are a starting point rather than a rule: at the money, then two steps out.
+// Worth replacing with the trader's own preferred deltas once known.
+const BUY_LADDER_BANDS: Array<{ label: string; targetDelta: number }> = [
+  { label: "At the money", targetDelta: 0.5 },
+  { label: "Near OTM", targetDelta: 0.3 },
+  { label: "Far OTM", targetDelta: 0.15 }
+];
+
+function pickByDelta(overview: MarketOverview, optionType: "CE" | "PE", targetDelta: number): OverviewTick | undefined {
+  // Same reason as the S/R pivot above: measured against raw spot the ATM
+  // strike counts as ITM for whichever side spot happens to sit below, so an
+  // "at the money" band would quietly skip the Δ0.50 put and settle for the
+  // Δ0.38 one a strike lower.
+  const moneyPivot = overview.snapshot.atmStrike || overview.snapshot.spotPrice;
+  let best: OverviewTick | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const tick of overview.snapshot.ticks) {
+    if (tick.optionType !== optionType) continue;
+    const delta = tick.delta === undefined ? 0 : Math.abs(tick.delta);
+    // Needs a real delta and a real premium to be transactable at all.
+    if (delta <= 0 || !tick.lastPrice || tick.lastPrice <= 0) continue;
+    // Only OTM-or-ATM strikes: writing or buying deep ITM is a different
+    // trade from the one this ladder describes.
+    if (optionType === "CE" ? tick.strikePrice < moneyPivot : tick.strikePrice > moneyPivot) continue;
+    const distance = Math.abs(delta - targetDelta);
+    if (distance < bestDistance) {
+      best = tick;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+export function buildPremiumLadder(overview: MarketOverview, mode: ChainMode): LadderBand[] {
+  const spot = overview.snapshot.spotPrice;
+  const bands = mode === "sell" ? SELL_LADDER_BANDS : BUY_LADDER_BANDS;
+
+  return bands.map(({ label, targetDelta }) => {
+    const legs: LadderLeg[] = [];
+    for (const optionType of ["PE", "CE"] as const) {
+      const tick = pickByDelta(overview, optionType, targetDelta);
+      if (!tick || !tick.lastPrice) continue;
+      const delta = Math.abs(tick.delta ?? 0);
+      const leg: LadderLeg = { optionType, strike: tick.strikePrice, price: tick.lastPrice, delta };
+      if (mode === "sell") {
+        // Delta approximates the chance of finishing ITM, so a short leg's
+        // chance of expiring worthless is ~1 - |delta|.
+        leg.pop = Math.round((1 - delta) * 100);
+      } else {
+        const breakeven = optionType === "CE" ? tick.strikePrice + tick.lastPrice : tick.strikePrice - tick.lastPrice;
+        leg.breakeven = breakeven;
+        leg.movePercent = spot > 0 ? ((breakeven - spot) / spot) * 100 : 0;
+      }
+      legs.push(leg);
+    }
+    const credit = mode === "sell" && legs.length ? legs.reduce((sum, leg) => sum + leg.price, 0) : undefined;
+    return { label, detail: `Δ${targetDelta.toFixed(2)}`, legs, credit };
+  });
+}
+
+// --- OI movement rail --------------------------------------------------
+// Where positions were opened and closed today, across the WHOLE chain
+// rather than the visible window - a wall forming outside the expected-move
+// range is exactly the kind of move worth catching early. Not available on
+// any other tab.
+
+export interface OiMovementRow {
+  optionType: "CE" | "PE";
+  strike: number;
+  // Both in whatever unit the user picked - lots or raw contracts - so this
+  // rail reads in the same units as the chain table beside it.
+  change: number;
+  openInterest: number;
+}
+
+const OI_MOVEMENT_ROWS_PER_DIRECTION = 4;
+
+export function buildOiMovementRows(overview: MarketOverview, preferences: DisplayPreferences): { building: OiMovementRow[]; unwinding: OiMovementRow[] } {
+  const getQuantity = (value: number | undefined, tick: OverviewTick) => (preferences.quantityDisplayMode === "lots" ? toLots(value, tick) : value ?? 0);
+  const rows: OiMovementRow[] = overview.snapshot.ticks
+    .filter((tick) => (tick.changeInOpenInterest ?? 0) !== 0)
+    .map((tick) => ({
+      optionType: tick.optionType,
+      strike: tick.strikePrice,
+      change: getQuantity(tick.changeInOpenInterest, tick),
+      openInterest: getQuantity(tick.openInterest, tick)
+    }));
+
+  return {
+    building: rows.filter((row) => row.change > 0).sort((left, right) => right.change - left.change).slice(0, OI_MOVEMENT_ROWS_PER_DIRECTION),
+    unwinding: rows.filter((row) => row.change < 0).sort((left, right) => left.change - right.change).slice(0, OI_MOVEMENT_ROWS_PER_DIRECTION)
+  };
 }
 
 function displayRankValue(lotsValue: number, rawValue: number, preferences: DisplayPreferences) {

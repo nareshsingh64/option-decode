@@ -323,6 +323,32 @@ export interface AtmStraddleExpectedMove {
   expectedLowerBoundary: number;
 }
 
+// Where today's ATM implied volatility sits inside its own recent range -
+// the first question before either selling or buying premium, and something
+// the Option Chain tab had no way to answer.
+//
+// Deliberately a PERCENTILE (share of past days below today) rather than the
+// more common IV Rank formula, (current - low) / (high - low). Rank is
+// hostage to a single bad print: on real NIFTY history a stray 2.71% reading
+// on 2026-07-14, against 8.19-11.65% on every other day, moved IV Rank from
+// 2 to 62 while the percentile moved only 8 to 14. With a short, feed-quality
+// -dependent history, the robust measure is the honest one.
+export interface AtmIvPercentile {
+  // 0-100. Share of the sampled days whose ATM call IV was below today's.
+  percentile: number;
+  current: number;
+  low: number;
+  high: number;
+  // How many trading days actually contributed. Retention and feed gaps mean
+  // this is routinely well short of the requested lookback - production held
+  // 15 days against a 25-day request - so it is reported rather than implied.
+  sampleDays: number;
+  // False when too few days exist for the percentile to mean anything. The
+  // UI shows the cell as unavailable instead of printing a confident number
+  // derived from a handful of prints.
+  sufficient: boolean;
+}
+
 // --- Strike Matrix (Strikes Movement Design & Decision Matrix) ---
 // WCI = OI Change / Volume; DRC = OI Change × Delta (signed);
 // DRCR = Σ|DRC| puts / Σ|DRC| calls. See docs/New Dashboard ver 1.0.

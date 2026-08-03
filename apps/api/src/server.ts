@@ -4,7 +4,7 @@ import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
-import { calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
+import { calculateAtmIvPercentile, calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
 import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAtmCallIvHistory, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, validatePaperOrderCapacity, verifyEmailToken } from "@option-decode/db";
@@ -128,6 +128,11 @@ const ELLIOTT_WAVE_CACHE_MS: Record<TradingHorizon, number> = {
 };
 const oiWeightedZonesCache = new Map<string, HotCacheEntry<PressureScore>>();
 const marketPulseCache = new Map<string, HotCacheEntry<MarketPulse | null>>();
+// ATM IV history changes once per trading day, so it is cached far longer
+// than the 10s market caches. Without this the overview route would pay for
+// a multi-day history walk on every poll.
+const atmIvHistoryCache = new Map<string, HotCacheEntry<number[]>>();
+const ATM_IV_HISTORY_CACHE_MS = 30 * 60 * 1000;
 const expiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tradableExpiriesCache = new Map<string, HotCacheEntry<string[]>>();
 const tickerSymbolsCache = new Map<string, HotCacheEntry<string[] | undefined>>();
@@ -521,6 +526,14 @@ app.get<{
   );
   const alertThreshold = user ? await getUserAlertThreshold(user.id, snapshot.underlyingSymbol) : null;
   const alerts = generateMarketAlerts(snapshot, pressure, new Date(), alertThreshold ?? undefined);
+  // Where today's ATM IV sits in its own recent range - the first thing both
+  // a seller and a buyer want to know, and previously computed only for the
+  // Strike Matrix's monthly IV-Rank rule and never surfaced anywhere else.
+  const atmIvHistory = await getHotCacheValue(atmIvHistoryCache, snapshot.underlyingSymbol, ATM_IV_HISTORY_CACHE_MS, () =>
+    getAtmCallIvHistory(snapshot.underlyingSymbol, IV_RANK_LOOKBACK_DAYS)
+  );
+  const atmCallIv = snapshot.ticks.find((tick) => tick.optionType === "CE" && tick.strikePrice === snapshot.atmStrike)?.impliedVolatility;
+  const atmIvPercentile = calculateAtmIvPercentile(atmIvHistory, atmCallIv);
   const strikeMovement = calculateStrikeMovement(snapshot);
   const tradeInterpretation = calculateTradeInterpretation(strikeMovement);
   const marketBias = calculateMarketBias(snapshot, pressure);
@@ -560,6 +573,7 @@ app.get<{
     // High" band fired ~91x more often than this server value's). Sending
     // it makes this the one and only source of truth for those three cards.
     marketBias,
+    atmIvPercentile,
     recommendations: calculateTradeRecommendations(snapshot, pressure, marketBias, strikeMovement, tradeInterpretation, atmStraddle)
   };
 });
