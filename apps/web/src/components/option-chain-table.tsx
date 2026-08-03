@@ -7,7 +7,15 @@ interface OptionChainTableProps {
   chainTableMode: "standard" | "greeks";
   renderIvDeltaCell: (iv: number | undefined, delta: number | undefined, align: "left" | "right") => ReactNode;
   renderPressureCell: (value: string, rank: 1 | 2 | undefined, percent: number, side: "CE" | "PE") => ReactNode;
-  renderLtpStack: (ltp: number | undefined, change: number | undefined, changePercent: number | undefined, align: "left" | "right", activity?: OptionActivityKind) => ReactNode;
+  renderLtpStack: (
+    ltp: number | undefined,
+    change: number | undefined,
+    changePercent: number | undefined,
+    align: "left" | "right",
+    activity?: OptionActivityKind,
+    intrinsic?: number,
+    timeValue?: number
+  ) => ReactNode;
   formatOptionalNumber: (value: number | undefined, decimals: number) => string;
   // Hovering the CE/PE OI cell reveals quick Buy/Sell buttons for that
   // strike - clicking one fills the Paper Order Ticket instead of making
@@ -78,9 +86,9 @@ export function OptionChainTable({
                   </td>
                   <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
-                  <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
+                  <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity, row.ceIntrinsic, row.ceTimeValue)}</td>
                   <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                  <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
+                  <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity, row.peIntrinsic, row.peTimeValue)}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
                   <td className="group relative px-2 py-3">
@@ -99,9 +107,9 @@ export function OptionChainTable({
                   <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceGamma, 4)}</td>
                   <td className="px-2 py-3 text-left text-terminal-red">{formatOptionalNumber(row.ceTheta, 2)}</td>
                   <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceVega, 2)}</td>
-                  <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity)}</td>
+                  <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity, row.ceIntrinsic, row.ceTimeValue)}</td>
                   <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
-                  <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity)}</td>
+                  <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity, row.peIntrinsic, row.peTimeValue)}</td>
                   <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peVega, 2)}</td>
                   <td className="px-2 py-3 text-right text-terminal-red">{formatOptionalNumber(row.peTheta, 2)}</td>
                   <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peGamma, 4)}</td>

@@ -77,7 +77,41 @@ function getDaysToExpiry(expiry: string, snapshotTime: string) {
   return Math.max(1, Math.ceil((expiryTime - snapshotDate) / 86_400_000));
 }
 
+// Intrinsic value is what the option is worth on moneyness alone if it
+// expired right now: a call is worth spot - strike once spot is above it, a
+// put is worth strike - spot once spot is below. Everything above that in
+// the premium is TIME value - the part that decays, and the part a seller
+// is actually harvesting. Both were absent from the whole codebase (the
+// only prior occurrence of the concept was a local variable inside
+// calculateMaxPain, never surfaced), so the chain showed what an option
+// costs without showing how much of that is moneyness you carry versus
+// decay you collect.
+function intrinsicValue(optionType: "CE" | "PE", strike: number, spot: number): number {
+  return optionType === "CE" ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+}
+
+// Time value needs a live premium to subtract from, and only means
+// anything when that premium is at least the option's intrinsic value.
+//
+// A stale or crossed quote can print an LTP *below* intrinsic. Flooring
+// the result at 0 there would render an internally inconsistent pair - a
+// deep-ITM put showing "133 intr / 0 tv" beside an LTP of 120, which does
+// not add up on screen and invites the reader to distrust both numbers.
+// Returning undefined instead means the UI simply omits the split for that
+// strike rather than showing a reconciliation that fails. The small
+// tolerance absorbs ordinary rounding at the feed's 2-decimal precision
+// without letting a genuinely crossed quote through.
+const CROSSED_QUOTE_TOLERANCE = 0.05;
+
+function timeValue(lastPrice: number | undefined, intrinsic: number): number | undefined {
+  if (lastPrice === undefined || lastPrice + CROSSED_QUOTE_TOLERANCE < intrinsic) {
+    return undefined;
+  }
+  return Math.max(0, lastPrice - intrinsic);
+}
+
 export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, preferences: DisplayPreferences) {
+  const spot = overview.snapshot.spotPrice;
   const ticksByStrike = new Map<number, Partial<Record<"CE" | "PE", OverviewTick>>>();
 
   for (const tick of overview.snapshot.ticks) {
@@ -90,6 +124,10 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
     .filter(([strike]) => strike >= range.lower && strike <= range.upper)
     .map(([strike, pair]) => ({
       strike,
+      ceIntrinsic: intrinsicValue("CE", strike, spot),
+      ceTimeValue: timeValue(pair.CE?.lastPrice, intrinsicValue("CE", strike, spot)),
+      peIntrinsic: intrinsicValue("PE", strike, spot),
+      peTimeValue: timeValue(pair.PE?.lastPrice, intrinsicValue("PE", strike, spot)),
       ceOi: formatQuantityValue(pair.CE?.openInterest, pair.CE, preferences),
       ceOiLots: toLots(pair.CE?.openInterest, pair.CE),
       ceOiRaw: pair.CE?.openInterest ?? 0,

@@ -2045,14 +2045,33 @@ function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: num
   );
 }
 
-function renderLtpStack(value?: number, change?: number, changePercent?: number, align: "left" | "right" = "left", activity: OptionActivityKind = "NEUTRAL") {
+function renderLtpStack(
+  value?: number,
+  change?: number,
+  changePercent?: number,
+  align: "left" | "right" = "left",
+  activity: OptionActivityKind = "NEUTRAL",
+  intrinsic?: number,
+  timeValue?: number
+) {
   const changeClass = change === undefined ? "text-terminal-muted" : change >= 0 ? "text-terminal-emerald" : "text-terminal-red";
   const alignment = align === "right" ? "items-end" : "items-start";
+  // Only worth splitting the premium where there IS intrinsic value. Every
+  // OTM strike is 100% time value, so printing "0 intr" on most of the
+  // chain would be noise - the split only earns its row height once the
+  // strike is in the money and the trader is carrying moneyness as well as
+  // decay.
+  const showPremiumSplit = intrinsic !== undefined && intrinsic > 0 && timeValue !== undefined;
 
   return (
     <div className={`flex flex-col gap-0.5 ${alignment}`}>
       <span className="font-semibold text-terminal-text">{formatPrice(value)}</span>
       <span className={`whitespace-nowrap text-xs ${changeClass}`}>{formatLtpChange(change, changePercent)}</span>
+      {showPremiumSplit ? (
+        <span className="whitespace-nowrap text-[0.65rem] text-terminal-muted" title="Intrinsic value (moneyness) vs time value (decay you collect)">
+          {formatPrice(intrinsic)} intr · {formatPrice(timeValue)} tv
+        </span>
+      ) : null}
       {activity !== "NEUTRAL" ? <span className={`whitespace-nowrap text-[0.65rem] font-semibold uppercase ${getActivityToneClass(activity)}`}>{getActivityLabel(activity)}</span> : null}
     </div>
   );
