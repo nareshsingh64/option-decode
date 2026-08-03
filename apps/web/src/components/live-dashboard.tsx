@@ -2040,15 +2040,13 @@ function renderPressureCell(value: string, rank: 1 | 2 | undefined, percent: num
     );
   }
 
-  // Both ranks are yellow. The strongest gets the fully saturated swatch and
-  // the second a lighter one, so they stay distinguishable at a glance while
-  // reading as one family of "this is a level" rather than the previous
-  // red-vs-yellow pairing, where red read as a warning about the strike
-  // rather than as the marking it actually is.
+  // Red for the strongest level, yellow for the second - the two read as
+  // distinct tiers at a glance, which is what matters when scanning a column
+  // for where the wall actually is.
   const rankClass =
     rank === 1
-      ? "bg-yellow-300 text-slate-950 shadow-[0_0_18px_rgba(253,224,71,0.28)]"
-      : "bg-yellow-300/55 text-slate-950 shadow-[0_0_14px_rgba(253,224,71,0.16)]";
+      ? "bg-red-300 text-slate-950 shadow-[0_0_18px_rgba(252,165,165,0.2)]"
+      : "bg-yellow-300 text-slate-950 shadow-[0_0_18px_rgba(253,224,71,0.18)]";
 
   return (
     <span className={`flex ${alignClass}`}>
