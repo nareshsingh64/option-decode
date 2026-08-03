@@ -1,4 +1,4 @@
-import { OI_BREADTH_DOMINANCE_RATIO, pressureValue } from "@option-decode/analytics";
+import { MIN_RECOMMENDATION_OPEN_INTEREST, OI_BREADTH_DOMINANCE_RATIO, pressureValue } from "@option-decode/analytics";
 import type { OptionContractTick } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
@@ -483,6 +483,9 @@ export interface LadderBand {
   legs: LadderLeg[];
   // Sell mode only - combined credit for writing both legs.
   credit?: number;
+  // Shown in place of legs when nothing qualifies, so an empty band explains
+  // itself rather than looking broken.
+  emptyNote?: string;
 }
 
 // Sell-side bands mirror STRIKE_MATRIX_HORIZONS' target deltas exactly, so
@@ -493,14 +496,26 @@ const SELL_LADDER_BANDS: Array<{ label: string; targetDelta: number }> = [
   { label: "Monthly", targetDelta: 0.1 }
 ];
 
-// Buy-side has no equivalent convention anywhere in this codebase, so these
-// are a starting point rather than a rule: at the money, then two steps out.
-// Worth replacing with the trader's own preferred deltas once known.
-const BUY_LADDER_BANDS: Array<{ label: string; targetDelta: number }> = [
-  { label: "At the money", targetDelta: 0.5 },
-  { label: "Near OTM", targetDelta: 0.3 },
-  { label: "Far OTM", targetDelta: 0.15 }
-];
+// Buying is a delta FLOOR rather than a set of bands: the trader wants a
+// contract that tracks the underlying, and anything at or above this is
+// acceptable. Deliberately not three fixed targets like the sell side -
+// Dhan sends delta/IV/theta as literal 0 for ITM calls (47 strikes on a
+// normal day, including ones carrying 24 lakh OI), so a 0.70/0.80/0.90
+// ladder would silently repeat the one call strike that does carry greeks
+// in all three rows. Listing whatever clears the floor degrades honestly.
+const MIN_BUY_DELTA = 0.7;
+const BUY_CANDIDATES_PER_SIDE = 3;
+
+// A strike with a printed price but no book behind it is not a fill. Reusing
+// the Strike Matrix's own execution-strike gate rather than inventing a
+// second standard - this ladder names a strike to trade for exactly the same
+// reason its recommendations do. Without it the delta floor surfaced 22,700
+// CE at Δ0.99 on 65 traded and 260 OI, asking Rs 1,865 of premium.
+function isTransactable(tick: OverviewTick) {
+  return Boolean(
+    tick.lastPrice && tick.lastPrice > 0 && (tick.volume ?? 0) > 0 && (tick.openInterest ?? 0) >= MIN_RECOMMENDATION_OPEN_INTEREST
+  );
+}
 
 function pickByDelta(overview: MarketOverview, optionType: "CE" | "PE", targetDelta: number): OverviewTick | undefined {
   // Same reason as the S/R pivot above: measured against raw spot the ATM
@@ -514,9 +529,9 @@ function pickByDelta(overview: MarketOverview, optionType: "CE" | "PE", targetDe
     if (tick.optionType !== optionType) continue;
     const delta = tick.delta === undefined ? 0 : Math.abs(tick.delta);
     // Needs a real delta and a real premium to be transactable at all.
-    if (delta <= 0 || !tick.lastPrice || tick.lastPrice <= 0) continue;
-    // Only OTM-or-ATM strikes: writing or buying deep ITM is a different
-    // trade from the one this ladder describes.
+    if (delta <= 0 || !isTransactable(tick)) continue;
+    // Only OTM-or-ATM strikes: writing deep ITM is a different trade from
+    // the one this ladder describes.
     if (optionType === "CE" ? tick.strikePrice < moneyPivot : tick.strikePrice > moneyPivot) continue;
     const distance = Math.abs(delta - targetDelta);
     if (distance < bestDistance) {
@@ -527,31 +542,72 @@ function pickByDelta(overview: MarketOverview, optionType: "CE" | "PE", targetDe
   return best;
 }
 
-export function buildPremiumLadder(overview: MarketOverview, mode: ChainMode): LadderBand[] {
-  const spot = overview.snapshot.spotPrice;
-  const bands = mode === "sell" ? SELL_LADDER_BANDS : BUY_LADDER_BANDS;
+// Cheapest-first: the trader asked for delta at or above the floor, so the
+// strike that just clears it is the one that costs least to express the view.
+function pickAboveDelta(overview: MarketOverview, optionType: "CE" | "PE", floor: number, limit: number): OverviewTick[] {
+  return overview.snapshot.ticks
+    .filter((tick) => tick.optionType === optionType && Math.abs(tick.delta ?? 0) >= floor && isTransactable(tick))
+    .sort((left, right) => Math.abs(left.delta ?? 0) - Math.abs(right.delta ?? 0))
+    .slice(0, limit);
+}
 
-  return bands.map(({ label, targetDelta }) => {
+function buildSellLadder(overview: MarketOverview): LadderBand[] {
+  return SELL_LADDER_BANDS.map(({ label, targetDelta }) => {
     const legs: LadderLeg[] = [];
     for (const optionType of ["PE", "CE"] as const) {
       const tick = pickByDelta(overview, optionType, targetDelta);
-      if (!tick || !tick.lastPrice) continue;
+      if (!tick?.lastPrice) continue;
       const delta = Math.abs(tick.delta ?? 0);
-      const leg: LadderLeg = { optionType, strike: tick.strikePrice, price: tick.lastPrice, delta };
-      if (mode === "sell") {
+      legs.push({
+        optionType,
+        strike: tick.strikePrice,
+        price: tick.lastPrice,
+        delta,
         // Delta approximates the chance of finishing ITM, so a short leg's
         // chance of expiring worthless is ~1 - |delta|.
-        leg.pop = Math.round((1 - delta) * 100);
-      } else {
-        const breakeven = optionType === "CE" ? tick.strikePrice + tick.lastPrice : tick.strikePrice - tick.lastPrice;
-        leg.breakeven = breakeven;
-        leg.movePercent = spot > 0 ? ((breakeven - spot) / spot) * 100 : 0;
-      }
-      legs.push(leg);
+        pop: Math.round((1 - delta) * 100)
+      });
     }
-    const credit = mode === "sell" && legs.length ? legs.reduce((sum, leg) => sum + leg.price, 0) : undefined;
-    return { label, detail: `Δ${targetDelta.toFixed(2)}`, legs, credit };
+    return {
+      label,
+      detail: `Δ${targetDelta.toFixed(2)}`,
+      legs,
+      credit: legs.length ? legs.reduce((sum, leg) => sum + leg.price, 0) : undefined,
+      emptyNote: legs.length ? undefined : "No strike in this delta band."
+    };
   });
+}
+
+function buildBuyLadder(overview: MarketOverview): LadderBand[] {
+  const spot = overview.snapshot.spotPrice;
+  return (["CE", "PE"] as const).map((optionType) => {
+    const legs: LadderLeg[] = pickAboveDelta(overview, optionType, MIN_BUY_DELTA, BUY_CANDIDATES_PER_SIDE).map((tick) => {
+      const price = tick.lastPrice ?? 0;
+      const breakeven = optionType === "CE" ? tick.strikePrice + price : tick.strikePrice - price;
+      return {
+        optionType,
+        strike: tick.strikePrice,
+        price,
+        delta: Math.abs(tick.delta ?? 0),
+        breakeven,
+        movePercent: spot > 0 ? ((breakeven - spot) / spot) * 100 : 0
+      };
+    });
+    return {
+      label: optionType === "CE" ? "Calls" : "Puts",
+      detail: `Δ ≥ ${MIN_BUY_DELTA.toFixed(2)}`,
+      legs,
+      emptyNote: legs.length
+        ? undefined
+        : optionType === "CE"
+          ? `No liquid call at Δ ≥ ${MIN_BUY_DELTA.toFixed(2)} — the feed reports no greeks for ITM calls.`
+          : `No liquid put at Δ ≥ ${MIN_BUY_DELTA.toFixed(2)}.`
+    };
+  });
+}
+
+export function buildPremiumLadder(overview: MarketOverview, mode: ChainMode): LadderBand[] {
+  return mode === "sell" ? buildSellLadder(overview) : buildBuyLadder(overview);
 }
 
 // --- OI movement rail --------------------------------------------------

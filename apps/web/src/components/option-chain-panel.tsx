@@ -72,7 +72,7 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
   } = props;
 
   return (
-    <section className="grid min-w-0 gap-3 2xl:grid-cols-[minmax(0,1fr)_18rem]">
+    <section className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_21rem]">
       <div className="min-w-0 rounded border border-terminal-line bg-terminal-panel/80">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-terminal-line p-4">
           <div>
@@ -119,19 +119,16 @@ export function OptionChainPanel(props: OptionChainPanelProps) {
           renderPressureCell={renderPressureCell}
           onQuickOrder={onQuickOrder}
         />
-        <div className="border-t border-terminal-line p-3">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-terminal-muted">
-            Premium ladder &mdash; {chainMode === "sell" ? "what you collect" : "what you pay"}
-          </h3>
-          <div className="grid gap-2 md:grid-cols-3">
+      </div>
+
+      <div className="grid content-start gap-3">
+        <TerminalPanel title={chainMode === "sell" ? "Premium ladder - what you collect" : "Buy candidates - what you pay"}>
+          <div className="grid gap-2">
             {premiumLadder.map((band) => (
               <LadderCard key={band.label} band={band} chainMode={chainMode} formatStrike={formatStrike} />
             ))}
           </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3">
+        </TerminalPanel>
         <TerminalPanel title={`${overview.snapshot.underlyingSymbol} Option Chain - Top Strikes`}>
           <div className="grid gap-1">
             {topStrikeRows.map((row) => (
@@ -184,42 +181,45 @@ function MarketReadCellView({ cell }: { cell: MarketReadCell }) {
 
 function LadderCard({ band, chainMode, formatStrike }: { band: LadderBand; chainMode: ChainMode; formatStrike: (value: number) => string }) {
   return (
-    <div className="rounded border border-terminal-line bg-white/[0.03] p-3">
+    <div className="rounded border border-terminal-line bg-white/[0.03] px-3 py-2">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-semibold text-terminal-text">{band.label}</p>
-        {band.credit === undefined ? null : (
-          <p className="text-sm font-semibold tabular-nums text-terminal-emerald">+{band.credit.toFixed(2)}</p>
-        )}
+        <p className="text-sm font-semibold text-terminal-text">
+          {band.label} <span className="text-xs font-normal text-terminal-muted">{band.detail}</span>
+        </p>
+        {band.credit === undefined ? null : <p className="text-sm font-semibold tabular-nums text-terminal-emerald">+{band.credit.toFixed(2)}</p>}
       </div>
-      <p className="mt-0.5 text-xs text-terminal-muted">{band.detail}</p>
-      <div className="mt-2 grid gap-1">
-        {band.legs.length ? (
-          band.legs.map((leg) => <LadderLegView key={`${leg.optionType}-${leg.strike}`} chainMode={chainMode} formatStrike={formatStrike} leg={leg} />)
-        ) : (
-          <p className="text-sm text-terminal-muted">No strike in this delta band.</p>
-        )}
-      </div>
+      {band.legs.length ? (
+        <div className="mt-1.5 grid gap-1.5">
+          {band.legs.map((leg) => (
+            <LadderLegView key={`${leg.optionType}-${leg.strike}`} chainMode={chainMode} formatStrike={formatStrike} leg={leg} />
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-xs leading-snug text-terminal-muted">{band.emptyNote}</p>
+      )}
     </div>
   );
 }
 
+// Two lines per leg rather than three columns: the rail is ~21rem, and a
+// buy leg carries strike, price, delta, breakeven and the move to reach it.
 function LadderLegView({ leg, chainMode, formatStrike }: { leg: LadderLeg; chainMode: ChainMode; formatStrike: (value: number) => string }) {
-  const trailing =
+  const footnote =
     chainMode === "sell"
-      ? leg.pop === undefined
-        ? "-"
-        : `${leg.pop.toFixed(0)}% keep`
-      : leg.breakeven === undefined || leg.movePercent === undefined
-        ? "-"
-        : `BE ${formatStrike(leg.breakeven)} (${leg.movePercent >= 0 ? "+" : ""}${leg.movePercent.toFixed(1)}%)`;
+      ? `Δ${leg.delta.toFixed(2)} · ${leg.pop === undefined ? "--" : `${leg.pop}% keep`}`
+      : `Δ${leg.delta.toFixed(2)} · BE ${leg.breakeven === undefined ? "--" : formatStrike(Math.round(leg.breakeven))}${
+          leg.movePercent === undefined ? "" : ` (${leg.movePercent >= 0 ? "+" : ""}${leg.movePercent.toFixed(2)}%)`
+        }`;
 
   return (
-    <div className="grid grid-cols-[minmax(5rem,1fr)_minmax(3.5rem,0.6fr)_minmax(6rem,1fr)] items-center gap-1 text-sm">
-      <span className="font-medium text-terminal-text">
-        {formatStrike(leg.strike)} <span className={leg.optionType === "CE" ? "text-terminal-emerald" : "text-terminal-red"}>{leg.optionType}</span>
-      </span>
-      <span className="text-right tabular-nums text-terminal-text">{leg.price.toFixed(2)}</span>
-      <span className="text-right tabular-nums text-terminal-muted">{trailing}</span>
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-terminal-text">
+          {formatStrike(leg.strike)} <span className={leg.optionType === "CE" ? "text-terminal-emerald" : "text-terminal-red"}>{leg.optionType}</span>
+        </span>
+        <span className="text-sm font-semibold tabular-nums text-terminal-text">{leg.price.toFixed(2)}</span>
+      </div>
+      <p className="text-xs tabular-nums text-terminal-muted">{footnote}</p>
     </div>
   );
 }

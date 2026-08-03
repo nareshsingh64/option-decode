@@ -63,7 +63,7 @@ function theoreticalPop(callDelta: number | undefined, putDelta: number | undefi
 // to a stamped "~85% POP" - confirmed live on BANKNIFTY, reproduced at three
 // consecutive snapshots. Matches Sim's own MIN_OPEN_INTEREST liquidity gate
 // (packages/db/src/sim-repository.ts) for consistency across the app.
-const MIN_RECOMMENDATION_OPEN_INTEREST = 500;
+export const MIN_RECOMMENDATION_OPEN_INTEREST = 500;
 
 export const STRIKE_MATRIX_HORIZONS: Record<TradingHorizon, HorizonProfile> = {
   intraday: {
