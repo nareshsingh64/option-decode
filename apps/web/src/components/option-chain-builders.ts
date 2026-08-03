@@ -110,6 +110,25 @@ function timeValue(lastPrice: number | undefined, intrinsic: number): number | u
   return Math.max(0, lastPrice - intrinsic);
 }
 
+// How many of the heaviest open-interest strikes per side are pulled back
+// into view when the expected-move window would have excluded them.
+// Two per side matches what the chain marks (strongest and second
+// strongest support and resistance), so the marking can never point at a
+// level that isn't on screen.
+const ALWAYS_VISIBLE_OI_WALLS_PER_SIDE = 2;
+
+// The heaviest-OI strikes on each side, regardless of where the range
+// falls. Ranked on raw open interest rather than the display-converted
+// value: which strike carries the most OI is a property of the chain, not
+// of whether the user is currently viewing lots or contracts.
+function topOpenInterestStrikes(ticks: OverviewTick[], optionType: "CE" | "PE"): number[] {
+  return ticks
+    .filter((tick) => tick.optionType === optionType && (tick.openInterest ?? 0) > 0)
+    .sort((left, right) => (right.openInterest ?? 0) - (left.openInterest ?? 0))
+    .slice(0, ALWAYS_VISIBLE_OI_WALLS_PER_SIDE)
+    .map((tick) => tick.strikePrice);
+}
+
 export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, preferences: DisplayPreferences) {
   const spot = overview.snapshot.spotPrice;
   const ticksByStrike = new Map<number, Partial<Record<"CE" | "PE", OverviewTick>>>();
@@ -120,10 +139,33 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
     ticksByStrike.set(tick.strikePrice, row);
   }
 
+  // The expected-move window alone regularly excludes the heaviest OI
+  // strikes - confirmed live, NIFTY's window [23859, 24874] left out BOTH
+  // the top call wall (25000) and the top put wall (23000), and CRUDEOIL
+  // and SILVER did the same. That matters beyond the missing rows: the
+  // support/resistance marking below can only rank what survives this
+  // filter, so it was choosing a "strongest support" from a set that
+  // excluded the actual strongest support.
+  //
+  // The window still decides the bulk of the view (the whole point of the
+  // range is to avoid rendering every strike), but the top OI walls are
+  // unioned back in and flagged outOfRange so the table can show they sit
+  // beyond the expected move rather than pretending they're inside it.
+  const wallStrikes = new Set([
+    ...topOpenInterestStrikes(overview.snapshot.ticks, "CE"),
+    ...topOpenInterestStrikes(overview.snapshot.ticks, "PE")
+  ]);
+
+  const isInRange = (strike: number) => strike >= range.lower && strike <= range.upper;
+
   const allRows = [...ticksByStrike.entries()]
-    .filter(([strike]) => strike >= range.lower && strike <= range.upper)
+    .filter(([strike]) => isInRange(strike) || wallStrikes.has(strike))
     .map(([strike, pair]) => ({
       strike,
+      // True only for strikes pulled in as OI walls from beyond the
+      // expected-move window - the table renders these differently so the
+      // range stays a meaningful boundary rather than a silent fiction.
+      outOfRange: !isInRange(strike),
       ceIntrinsic: intrinsicValue("CE", strike, spot),
       ceTimeValue: timeValue(pair.CE?.lastPrice, intrinsicValue("CE", strike, spot)),
       peIntrinsic: intrinsicValue("PE", strike, spot),

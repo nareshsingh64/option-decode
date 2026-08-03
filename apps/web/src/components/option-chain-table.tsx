@@ -73,7 +73,20 @@ export function OptionChainTable({
         </thead>
         <tbody>
           {chainRows.map((row) => (
-            <tr key={row.strike} className={row.strike === atmStrike ? "border-y border-terminal-blue/70 bg-terminal-blue/10" : "border-t border-terminal-line/80"}>
+            <tr
+              key={row.strike}
+              className={
+                row.strike === atmStrike
+                  ? "border-y border-terminal-blue/70 bg-terminal-blue/10"
+                  : row.outOfRange
+                    ? // Pulled in from beyond the expected-move window because it
+                      // carries one of the heaviest OI positions on its side. Tinted
+                      // so the range stays a real boundary rather than a silent
+                      // fiction - see buildChainRows' wall-union comment.
+                      "border-t border-terminal-amber/40 bg-terminal-amber/[0.07]"
+                    : "border-t border-terminal-line/80"
+              }
+            >
               {chainTableMode === "standard" ? (
                 <>
                   <td className="px-2 py-3">{renderIvDeltaCell(row.ceIv, row.ceDelta, "left")}</td>
@@ -87,7 +100,16 @@ export function OptionChainTable({
                   <td className="px-2 py-3">{renderPressureCell(row.ceChg, row.ceChgRank, row.ceChgPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.ceVol, row.ceVolRank, row.ceVolPercent, "CE")}</td>
                   <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity, row.ceIntrinsic, row.ceTimeValue)}</td>
-                  <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
+                  <td className="px-2 py-3 text-center font-semibold text-terminal-text">
+                    <span className="flex flex-col items-center leading-tight">
+                      <span>{row.strike}</span>
+                      {row.outOfRange ? (
+                        <span className="text-[0.6rem] font-normal uppercase text-terminal-amber" title="Major OI wall sitting outside the expected-move range">
+                          outside range
+                        </span>
+                      ) : null}
+                    </span>
+                  </td>
                   <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity, row.peIntrinsic, row.peTimeValue)}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peVol, row.peVolRank, row.peVolPercent, "PE")}</td>
                   <td className="px-2 py-3">{renderPressureCell(row.peChg, row.peChgRank, row.peChgPercent, "PE")}</td>
@@ -108,7 +130,16 @@ export function OptionChainTable({
                   <td className="px-2 py-3 text-left text-terminal-red">{formatOptionalNumber(row.ceTheta, 2)}</td>
                   <td className="px-2 py-3 text-left">{formatOptionalNumber(row.ceVega, 2)}</td>
                   <td className="px-2 py-3">{renderLtpStack(row.ceLtp, row.ceLtpChange, row.ceLtpChangePercent, "left", row.ceActivity, row.ceIntrinsic, row.ceTimeValue)}</td>
-                  <td className="px-2 py-3 text-center font-semibold text-terminal-text">{row.strike}</td>
+                  <td className="px-2 py-3 text-center font-semibold text-terminal-text">
+                    <span className="flex flex-col items-center leading-tight">
+                      <span>{row.strike}</span>
+                      {row.outOfRange ? (
+                        <span className="text-[0.6rem] font-normal uppercase text-terminal-amber" title="Major OI wall sitting outside the expected-move range">
+                          outside range
+                        </span>
+                      ) : null}
+                    </span>
+                  </td>
                   <td className="px-2 py-3 text-right">{renderLtpStack(row.peLtp, row.peLtpChange, row.peLtpChangePercent, "right", row.peActivity, row.peIntrinsic, row.peTimeValue)}</td>
                   <td className="px-2 py-3 text-right">{formatOptionalNumber(row.peVega, 2)}</td>
                   <td className="px-2 py-3 text-right text-terminal-red">{formatOptionalNumber(row.peTheta, 2)}</td>
