@@ -1,5 +1,6 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
+import type { FastifyBaseLogger } from "fastify";
 import Redis from "ioredis";
 import net from "node:net";
 import tls from "node:tls";
@@ -259,15 +260,21 @@ app.post("/api/auth/register", async (request, reply) => {
     return reply.status(409).send({ message: "An account already exists for this email." });
   }
 
+  // Minting the token is guarded as well as sending it: the account already
+  // exists by this point, so a failure here still needs the "created, but"
+  // answer rather than a bare 500 that reads like the signup itself failed.
+  let verificationSent = false;
   try {
     const verification = await createEmailVerificationToken(user.email);
-    await sendTransactionalEmail({
+    verificationSent = await trySendTransactionalEmail(request.log, "register", {
       to: verification.email,
       subject: "Verify your Option Decode account",
       text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
     });
   } catch (error) {
-    request.log.warn({ err: error, email: user.email }, "Verification email delivery failed");
+    request.log.error({ err: error, flow: "register", to: user.email }, "Verification token could not be created");
+  }
+  if (!verificationSent) {
     return reply.status(503).send({ message: "Account was created, but verification email could not be sent. Please contact support." });
   }
 
@@ -320,11 +327,16 @@ app.post("/api/auth/resend-verification", async (request, reply) => {
   }
 
   const verification = await createEmailVerificationToken(user.email);
-  await sendTransactionalEmail({
+  // Safe to be candid here - the caller is already authenticated as this
+  // account, so admitting the send failed leaks nothing.
+  const sent = await trySendTransactionalEmail(request.log, "resend-verification", {
     to: verification.email,
     subject: "Verify your Option Decode account",
     text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
   });
+  if (!sent) {
+    return reply.status(503).send({ message: "Verification email could not be sent right now. Please try again shortly or contact support." });
+  }
   return { ok: true };
 });
 
@@ -348,7 +360,7 @@ app.post("/api/auth/forgot-password", async (request) => {
   if (parsed.success) {
     const reset = await createPasswordResetToken(parsed.data.email);
     if (reset) {
-      await sendTransactionalEmail({
+      await trySendTransactionalEmail(request.log, "forgot-password", {
         to: reset.email,
         subject: "Reset your Option Decode password",
         text: `Reset your password: ${config.APP_PUBLIC_URL}/reset-password?token=${reset.token}`
@@ -356,6 +368,10 @@ app.post("/api/auth/forgot-password", async (request) => {
     }
   }
 
+  // Deliberately unconditional. A bad address, a disabled account and a failed
+  // send must be indistinguishable from success, or this endpoint becomes an
+  // account-enumeration oracle. The operator learns about failures from the
+  // log line above, not from the response.
   return { ok: true };
 });
 
@@ -1324,6 +1340,33 @@ async function sendTransactionalEmail(message: TransactionalEmail) {
   }
 
   await deliverSmtpEmail(message);
+}
+
+type TransactionalEmailFlow = "register" | "resend-verification" | "forgot-password";
+
+// Every caller of sendTransactionalEmail goes through here, because a
+// delivery failure used to be either invisible or actively harmful.
+// /forgot-password did not catch at all: the throw became a 500, which broke
+// the flow AND confirmed to the caller that the address exists - the exact
+// account enumeration its unconditional {ok:true} was written to prevent.
+// Nothing reached the log either, so an entirely dead mail path showed up
+// only as users reporting that links never arrived. It stayed dead for days:
+// Microsoft disabled basic auth on the sender mailbox and every send had been
+// failing "535 5.7.139 ... basic authentication is disabled" ever since.
+//
+// The SMTP reply text is the whole point of the log line - assertSmtpReply
+// puts the server's own reason in the error message, and that is what names
+// the cause. Callers decide what the user is told; they no longer decide
+// whether the failure is recorded.
+async function trySendTransactionalEmail(log: FastifyBaseLogger, flow: TransactionalEmailFlow, message: TransactionalEmail) {
+  try {
+    await sendTransactionalEmail(message);
+    log.info({ flow, to: message.to }, "Transactional email delivered");
+    return true;
+  } catch (error) {
+    log.error({ err: error, flow, to: message.to }, "Transactional email delivery failed");
+    return false;
+  }
 }
 
 async function requireAdminUser(cookieHeader: string | undefined) {
