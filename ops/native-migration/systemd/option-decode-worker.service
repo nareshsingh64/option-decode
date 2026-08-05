@@ -17,6 +17,16 @@ EnvironmentFile=/opt/option-decode-native/current/.env.production
 Environment=NODE_ENV=production
 Environment=API_PORT=4000
 Environment=REDIS_URL=redis://127.0.0.1:6379/0
+# glibc's allocator was confirmed (2026-08-05, via a live malloc_trim(0) that
+# recovered 4.6 of 4.9GB RSS in under a second, no leak) to be fragmenting
+# under this process's allocation churn rather than returning freed memory
+# to the OS - RSS climbed to 6-7GB within a single 15-minute cycle on this
+# host. jemalloc returns memory far more eagerly by default, so this avoids
+# the problem instead of needing a periodic manual trim. Package is
+# `libjemalloc2` (already present on this host); path is arch-specific
+# (aarch64 here) - confirm with `dpkg -L libjemalloc2 | grep so` before
+# reusing this unit on a different architecture.
+Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2
 
 ExecStart=/usr/bin/pnpm --filter @option-decode/worker exec tsx src/worker.ts
 
