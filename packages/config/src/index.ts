@@ -17,6 +17,15 @@ const envSchema = z.object({
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SNAPSHOT_CRON_PATTERN: z.string().trim().optional(),
   SNAPSHOT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  // How long the bare snapshot row (snapshotTime + spotPrice only, ticks and
+  // pressureScore already stripped after SNAPSHOT_RETENTION_DAYS) survives.
+  // This is what getSpotPriceHistory reads for the Elliott Wave tab's
+  // weekly/monthly horizons - a few hundred bytes/row versus the ~450 tick
+  // rows a full snapshot carries, so it's cheap to keep far longer. Defaults
+  // to 180 to match ELLIOTT_WAVE_LOOKBACK_MS.monthly in apps/api/src/server.ts.
+  // Must be >= SNAPSHOT_RETENTION_DAYS - a snapshot's detail can't outlive
+  // the snapshot itself.
+  SPOT_PRICE_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
   SNAPSHOT_RETENTION_CRON_PATTERN: z.string().trim().default("0 30 1 * * *"),
   SNAPSHOT_RETENTION_BATCH_SIZE: z.coerce.number().int().positive().default(500),
   VAPID_PUBLIC_KEY: z.string().trim().optional(),

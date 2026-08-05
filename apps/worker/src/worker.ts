@@ -451,27 +451,23 @@ async function captureStockOptionChains() {
 }
 
 async function runRetentionOnce() {
-  const cutoff = new Date(Date.now() - config.SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-  const total = {
-    snapshots: 0,
-    ticks: 0,
-    pressureScores: 0
-  };
+  const detailCutoff = new Date(Date.now() - config.SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  // Guarded rather than trusted: a snapshot's ticks can't be allowed to
+  // outlive the snapshot row itself, so if SPOT_PRICE_RETENTION_DAYS is ever
+  // misconfigured below SNAPSHOT_RETENTION_DAYS, treat it as equal instead
+  // of letting snapshotCutoff land more recent than detailCutoff.
+  const spotPriceRetentionDays = Math.max(config.SPOT_PRICE_RETENTION_DAYS, config.SNAPSHOT_RETENTION_DAYS);
+  const snapshotCutoff = new Date(Date.now() - spotPriceRetentionDays * 24 * 60 * 60 * 1000);
 
-  for (let batch = 0; batch < 50; batch += 1) {
-    const result = await pruneMarketDataBefore(cutoff, config.SNAPSHOT_RETENTION_BATCH_SIZE);
-    total.snapshots += result.snapshots;
-    total.ticks += result.ticks;
-    total.pressureScores += result.pressureScores;
-
-    if (result.snapshots < config.SNAPSHOT_RETENTION_BATCH_SIZE) {
-      break;
-    }
-  }
+  // pruneMarketDataBefore drains both phases internally (up to 50 batches
+  // each) until each cutoff's backlog is empty, so a single call is enough.
+  const total = await pruneMarketDataBefore(detailCutoff, snapshotCutoff, config.SNAPSHOT_RETENTION_BATCH_SIZE);
 
   console.log("Snapshot retention cleanup completed", {
-    cutoff: cutoff.toISOString(),
-    retentionDays: config.SNAPSHOT_RETENTION_DAYS,
+    detailCutoff: detailCutoff.toISOString(),
+    snapshotCutoff: snapshotCutoff.toISOString(),
+    detailRetentionDays: config.SNAPSHOT_RETENTION_DAYS,
+    spotPriceRetentionDays,
     ...total
   });
 }

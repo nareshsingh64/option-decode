@@ -777,10 +777,18 @@ export async function listPcrTrend(underlyingSymbol = "NIFTY", requestedExpiry?:
   }));
 }
 
-// Safety cap mirroring listReplaySnapshots - a single trading day tops out
-// around ~750 rows at the ~30s capture cadence, so this only kicks in for
-// callers that ask for an unusually long lookback window.
-const MAX_SPOT_PRICE_HISTORY_ROWS = 3_000;
+// Safety cap, not a target - callers size their own `limit` from the actual
+// lookback window they need (see ELLIOTT_WAVE_LOOKBACK_MS in
+// apps/api/src/server.ts), so this only kicks in if one asks for something
+// pathological. Raised from 3,000 -> 600,000 alongside that fix: a 3,000-row
+// ceiling was silently clipping every horizon to under a day of history
+// regardless of what it asked for (confirmed live: intraday/weekly/monthly
+// all returned the identical ~22-hour window against real NIFTY data on
+// 2026-08-05), and 600,000 comfortably covers even the monthly horizon's
+// 180-day window at a continuous 30s cadence (518,400 rows) with margin -
+// real row counts will be far below this until SPOT_PRICE_RETENTION_DAYS
+// (below) has actually had 180 days to accumulate.
+const MAX_SPOT_PRICE_HISTORY_ROWS = 600_000;
 
 /**
  * Spot-price time series for the Elliott Wave engine's ZigZag pivot
@@ -1017,58 +1025,61 @@ export async function calculateOiWeightedAverageSellPrices(underlyingSymbol: str
   return results;
 }
 
-export async function pruneMarketDataBefore(cutoff: Date, batchSize = 500, client: PrismaClient = prisma) {
-  const snapshots = await client.optionChainSnapshot.findMany({
-    where: {
-      snapshotTime: {
-        lt: cutoff
-      }
-    },
-    orderBy: {
-      snapshotTime: "asc"
-    },
-    select: {
-      id: true
-    },
-    take: batchSize
-  });
-  const snapshotIds = snapshots.map((snapshot) => snapshot.id);
+// Two independent cutoffs rather than one: `detailCutoff` strips a
+// snapshot's ticks/pressureScore (the ~450-row, storage-heavy part) but
+// leaves the bare OptionChainSnapshot row - snapshotTime + spotPrice -
+// alone. `snapshotCutoff` (expected to be the same age or older) is what
+// finally deletes that bare row. This is what makes SPOT_PRICE_RETENTION_DAYS
+// cheap: a snapshot's full tick set (~450 rows) is gone at 30 days as
+// before, but its two-column spot-price record survives until 180 days,
+// which is what getSpotPriceHistory (Elliott Wave's weekly/monthly
+// horizons) actually reads. Caller (apps/worker/src/worker.ts) is
+// responsible for keeping snapshotCutoff <= detailCutoff in time (i.e.
+// SPOT_PRICE_RETENTION_DAYS >= SNAPSHOT_RETENTION_DAYS) - passing them
+// reversed would try to delete a snapshot row while its ticks still
+// reference it, which the FK constraint would reject.
+export async function pruneMarketDataBefore(detailCutoff: Date, snapshotCutoff: Date, batchSize = 500, client: PrismaClient = prisma) {
+  const totals = { snapshots: 0, ticks: 0, pressureScores: 0 };
 
-  if (!snapshotIds.length) {
-    return {
-      snapshots: 0,
-      ticks: 0,
-      pressureScores: 0
-    };
+  for (let batch = 0; batch < 50; batch += 1) {
+    const targets = await client.optionChainSnapshot.findMany({
+      where: { snapshotTime: { lt: detailCutoff }, ticks: { some: {} } },
+      orderBy: { snapshotTime: "asc" },
+      select: { id: true },
+      take: batchSize
+    });
+    if (!targets.length) {
+      break;
+    }
+    const ids = targets.map((snapshot) => snapshot.id);
+    const [pressureScores, ticks] = await client.$transaction([
+      client.pressureScore.deleteMany({ where: { snapshotId: { in: ids } } }),
+      client.optionContractTick.deleteMany({ where: { snapshotId: { in: ids } } })
+    ]);
+    totals.ticks += ticks.count;
+    totals.pressureScores += pressureScores.count;
+    if (targets.length < batchSize) {
+      break;
+    }
   }
 
-  const [pressureScores, ticks, deletedSnapshots] = await client.$transaction([
-    client.pressureScore.deleteMany({
-      where: {
-        snapshotId: {
-          in: snapshotIds
-        }
-      }
-    }),
-    client.optionContractTick.deleteMany({
-      where: {
-        snapshotId: {
-          in: snapshotIds
-        }
-      }
-    }),
-    client.optionChainSnapshot.deleteMany({
-      where: {
-        id: {
-          in: snapshotIds
-        }
-      }
-    })
-  ]);
+  for (let batch = 0; batch < 50; batch += 1) {
+    const targets = await client.optionChainSnapshot.findMany({
+      where: { snapshotTime: { lt: snapshotCutoff } },
+      orderBy: { snapshotTime: "asc" },
+      select: { id: true },
+      take: batchSize
+    });
+    if (!targets.length) {
+      break;
+    }
+    const ids = targets.map((snapshot) => snapshot.id);
+    const deleted = await client.optionChainSnapshot.deleteMany({ where: { id: { in: ids } } });
+    totals.snapshots += deleted.count;
+    if (targets.length < batchSize) {
+      break;
+    }
+  }
 
-  return {
-    snapshots: deletedSnapshots.count,
-    ticks: ticks.count,
-    pressureScores: pressureScores.count
-  };
+  return totals;
 }

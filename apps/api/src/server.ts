@@ -684,11 +684,20 @@ app.get<{
 
   return getHotCacheValue(elliottWaveCache, `${requestedUnderlying}:${horizon}`, ELLIOTT_WAVE_CACHE_MS[horizon], async () => {
     const zigZagPercent = WAVE_ZIGZAG_PRESETS[horizon];
-    const sinceMs = Date.now() - ELLIOTT_WAVE_LOOKBACK_MS[horizon];
+    const lookbackMs = ELLIOTT_WAVE_LOOKBACK_MS[horizon];
+    const sinceMs = Date.now() - lookbackMs;
+    // getSpotPriceHistory's own default `limit` (1000) was silently clipping
+    // every horizon to the same ~1-day tail regardless of how wide a window
+    // it asked for - confirmed live on 2026-08-05: intraday, weekly and
+    // monthly all returned the identical ~22-hour span for NIFTY. Sizing the
+    // limit off the horizon's own lookback window (at the worker's capture
+    // cadence, with a small margin) lets each horizon actually reach as far
+    // back as its window and the retained data allow.
+    const limit = Math.ceil((lookbackMs / config.SNAPSHOT_INTERVAL_MS) * 1.1);
     // Not expiry-scoped - spot price is a property of the underlying, so
     // the series is continuous across expiry rollovers (see
     // getSpotPriceHistory's doc comment).
-    const points = await getSpotPriceHistory(requestedUnderlying, sinceMs);
+    const points = await getSpotPriceHistory(requestedUnderlying, sinceMs, limit);
     const analysis = calculateElliottWave(requestedUnderlying, points, zigZagPercent);
     return {
       underlying: requestedUnderlying,
