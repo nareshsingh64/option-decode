@@ -2162,3 +2162,46 @@ const address = await app.listen({
 });
 
 app.log.info(`Option Decode API listening at ${address}`);
+
+/**
+ * Nothing warmed these caches before, so whoever arrived first after a
+ * deploy paid the entire cold cost of the overview endpoint. Measured on
+ * production 2026-08-05: 3.70s cold against 4ms warm, and roughly 2.8s of
+ * that cold figure is getMarketAuxData - it downloads Dhan's 34MB scrip
+ * master to resolve MCX contracts, then makes two rate-limited Dhan calls
+ * separated by a mandatory 1.1s sleep (their LTP and OHLC endpoints share a
+ * 1 request/sec budget). None of that gets faster by asking nicely; it just
+ * shouldn't be a user's first impression of the app.
+ *
+ * getMarketAuxData already serves stale-while-revalidate once an entry
+ * exists - it only blocks when the cache is completely empty. Populating it
+ * here means that blocking path is taken by the server at startup rather
+ * than by a person waiting on a dashboard.
+ *
+ * Deliberately not awaited: the server must accept connections immediately,
+ * and a warm-up failure must never prevent it from serving. A failure here
+ * is logged and simply leaves the old behaviour in place for one request.
+ */
+async function warmOverviewCaches() {
+  const startedAt = Date.now();
+  try {
+    const underlying = normalizeUnderlying(undefined);
+    const symbols = await getTickerSymbols(underlying);
+    const [, snapshot] = await Promise.all([
+      getMarketAuxData(symbols),
+      getCachedLatestSnapshotOrDemo(underlying, undefined),
+      getCachedExpiriesOrEmpty(underlying),
+      getCachedTradableExpiriesOrEmpty(underlying)
+    ]);
+    // Cheap now that it is a single query, but it is on the same critical
+    // path and cached for 30 minutes, so there is no reason to leave it cold.
+    await getHotCacheValue(atmIvHistoryCache, snapshot.underlyingSymbol, ATM_IV_HISTORY_CACHE_MS, () =>
+      getAtmCallIvHistory(snapshot.underlyingSymbol, IV_RANK_LOOKBACK_DAYS)
+    );
+    app.log.info({ underlying, ms: Date.now() - startedAt }, "Overview cache warm-up complete");
+  } catch (error) {
+    app.log.warn({ err: error, ms: Date.now() - startedAt }, "Overview cache warm-up failed; the first request will pay cold cost");
+  }
+}
+
+void warmOverviewCaches();
