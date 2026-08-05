@@ -699,6 +699,11 @@ export async function listReplaySnapshots(underlyingSymbol = "NIFTY", requestedE
 // currently unreliable in production (reads 0 on live ticks where the CE
 // leg at the same strike/instant has a real value - a separate,
 // unrelated data-pipeline bug).
+// Kept well under the mariadb driver's default pool size of 10 so this
+// function can never consume the whole pool. See the incident note inside
+// getAtmCallIvHistory for what happened when it did.
+const ATM_IV_HISTORY_QUERY_CONCURRENCY = 4;
+
 export async function getAtmCallIvHistory(underlyingSymbol: string, days: number, client: DbClient = prisma): Promise<number[]> {
   const tradingDates = await client.optionChainSnapshot.findMany({
     where: { underlyingSymbol },
@@ -714,15 +719,31 @@ export async function getAtmCallIvHistory(underlyingSymbol: string, days: number
   // 2-minute timeout outright. Phase one selects only the id/atmStrike of
   // each day's last snapshot; phase two fetches exactly the ATM CE ticks for
   // those snapshots in a single query. Same result, a fraction of the rows.
-  const daySnapshots = await Promise.all(
-    tradingDates.map(({ tradingDate }) =>
-      client.optionChainSnapshot.findFirst({
-        where: { underlyingSymbol, tradingDate },
-        orderBy: { snapshotTime: "desc" },
-        select: { id: true, tradingDate: true, atmStrike: true }
-      })
-    )
-  );
+  //
+  // Phase one is deliberately CHUNKED, not one big Promise.all. Firing all
+  // `days` lookups at once (25 by default) asks for 2.5x the entire
+  // connection pool - the mariadb driver defaults to 10 and nothing raises
+  // it - so this one function starved every other query in the process.
+  // Measured in production 2026-08-05: four unrelated endpoints
+  // (elliott-wave, its alerts, strike-matrix and a second overview) all
+  // completed within 40ms of each other at ~10.31s, which is the 10s
+  // pool-acquire timeout plus their own work, and the overview tail reached
+  // 31s. Each lookup is a tiny indexed read, so a small concurrency window
+  // costs almost nothing in wall time while leaving the pool usable.
+  const daySnapshots: Array<{ id: string; tradingDate: Date; atmStrike: Prisma.Decimal } | null> = [];
+  for (let index = 0; index < tradingDates.length; index += ATM_IV_HISTORY_QUERY_CONCURRENCY) {
+    const chunk = tradingDates.slice(index, index + ATM_IV_HISTORY_QUERY_CONCURRENCY);
+    const resolved = await Promise.all(
+      chunk.map(({ tradingDate }) =>
+        client.optionChainSnapshot.findFirst({
+          where: { underlyingSymbol, tradingDate },
+          orderBy: { snapshotTime: "desc" },
+          select: { id: true, tradingDate: true, atmStrike: true }
+        })
+      )
+    );
+    daySnapshots.push(...resolved);
+  }
 
   const wanted = daySnapshots.filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== null);
   if (!wanted.length) {
