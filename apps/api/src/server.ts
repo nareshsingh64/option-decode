@@ -188,7 +188,13 @@ const dhan = new DhanClient({
 const app = Fastify({
   logger: {
     level: config.NODE_ENV === "production" ? "info" : "debug"
-  }
+  },
+  // Every request arrives from nginx on loopback, so without this `request.ip`
+  // is 127.0.0.1 for the entire internet and any per-IP logic silently becomes
+  // per-server. Scoped to loopback rather than `true`: nginx is the only thing
+  // that can reach this port, and trusting all proxies would let a client
+  // forge X-Forwarded-For if that ever stopped being true.
+  trustProxy: "127.0.0.1"
 });
 const redisSubscriber = new Redis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -355,8 +361,67 @@ app.post<{
   return { user };
 });
 
-app.post("/api/auth/forgot-password", async (request) => {
+// Unauthenticated endpoints that send mail need a ceiling, because every
+// request costs a real message against a real mailbox quota. Two independent
+// limits: per-address stops one victim being buried in reset mail, per-IP
+// stops one caller draining the day's send quota across many addresses and
+// locking every genuine user out of password recovery.
+const FORGOT_PASSWORD_LIMIT_PER_EMAIL = 3;
+const FORGOT_PASSWORD_LIMIT_PER_IP = 10;
+const FORGOT_PASSWORD_WINDOW_SECONDS = 60 * 60;
+
+/**
+ * INCR-and-expire counter in Redis rather than in-process: the count has to
+ * survive an API restart, or anyone rate-limited could just wait for a deploy.
+ *
+ * Fails OPEN. If Redis is unreachable this is a safety valve that has stopped
+ * working, not a security boundary that has been breached - refusing every
+ * password reset during a Redis blip would be the worse outcome. The failure
+ * is logged so it doesn't pass silently.
+ */
+async function consumeRateLimit(log: FastifyBaseLogger, bucket: string, limit: number, windowSeconds: number) {
+  const key = `ratelimit:${bucket}`;
+  try {
+    const count = await redisCache.incr(key);
+    if (count === 1) {
+      await redisCache.expire(key, windowSeconds);
+    }
+    if (count > limit) {
+      const ttl = await redisCache.ttl(key);
+      return { allowed: false, retryAfterSeconds: ttl > 0 ? ttl : windowSeconds };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+  } catch (error) {
+    log.error({ err: error, bucket }, "Rate limit check failed, allowing request");
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+}
+
+app.post("/api/auth/forgot-password", async (request, reply) => {
   const parsed = emailSchema.safeParse(request.body);
+
+  // Deliberately BEFORE any account lookup, and applied to well-formed
+  // addresses whether or not they exist. A limit that only kicked in for real
+  // accounts would hand an attacker the enumeration oracle that the
+  // unconditional {ok:true} below exists to deny them.
+  const limits = parsed.success
+    ? [
+        { bucket: `forgot-password:email:${parsed.data.email.toLowerCase()}`, limit: FORGOT_PASSWORD_LIMIT_PER_EMAIL },
+        { bucket: `forgot-password:ip:${request.ip}`, limit: FORGOT_PASSWORD_LIMIT_PER_IP }
+      ]
+    : [{ bucket: `forgot-password:ip:${request.ip}`, limit: FORGOT_PASSWORD_LIMIT_PER_IP }];
+
+  for (const { bucket, limit } of limits) {
+    const result = await consumeRateLimit(request.log, bucket, limit, FORGOT_PASSWORD_WINDOW_SECONDS);
+    if (!result.allowed) {
+      request.log.warn({ bucket, limit, ip: request.ip }, "Password reset rate limit hit");
+      return reply
+        .status(429)
+        .header("retry-after", String(result.retryAfterSeconds))
+        .send({ message: "Too many password reset requests. Please try again later." });
+    }
+  }
+
   if (parsed.success) {
     const reset = await createPasswordResetToken(parsed.data.email);
     if (reset) {
