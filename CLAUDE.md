@@ -46,6 +46,14 @@ for it.
   (`dotenv -e ../../.env.local`). `.claude/launch.json` must point there too.
 - API on **4000**, web on **3000**. Start them with the preview/launch tooling,
   never a bare `pnpm dev` in Bash.
+- **MySQL and Redis run natively via Homebrew** (`brew services`), not
+  Docker — matches production exactly, standard ports (MySQL `3306`, Redis
+  `6379`). `docker-compose.yml` was removed; if you see a stale reference to
+  it, that's the pre-migration setup. The app's MySQL user needs
+  `mysql_native_password` active server-side (`/opt/homebrew/etc/my.cnf`,
+  `mysql-native-password = ON`) for the `mariadb` driver, and a grant scoped
+  to `` `prisma_migrate_shadow_db_%`.* `` for `prisma migrate dev`'s shadow
+  database — both already set up on this machine.
 - `/api/market/overview` is **not** auth-gated — curl it directly for real
   payloads. Everything behind `/app` is.
 - **The app is auth-gated and Claude does not log in.** If a change needs
@@ -79,13 +87,61 @@ MySQL: database name is **`option_decode`**. `$MYSQL_DATABASE` is **not set** on
 that host — `sudo mysql "$MYSQL_DATABASE"` fails with "No database selected".
 Always name it: `sudo mysql option_decode -e "..."`.
 
-A `curl` to `https://pytrade.co.in` returns **403 from Cloudflare** on curl's
-default user-agent (`cf-mitigated: challenge`). That is not an outage. Pass a
-browser UA, or hit `http://localhost:3000` on the host.
-
 Prisma uses the **driver adapter** (`PrismaMariaDb`, pure JS) with
 `engineType = "client"` — there is no Rust query engine in a release. Don't
 diagnose against one.
+
+### Edge and TLS — Cloudflare is gone (2026-08-05)
+
+Nameservers moved from Cloudflare to **GoDaddy** (`ns57/ns58.domaincontrol.com`).
+There is **no proxy in front of the origin any more**: DNS resolves straight to
+the EC2 elastic IP `13.127.247.201`, and nginx on that host terminates TLS
+itself with a **Let's Encrypt** certificate (`certbot --nginx`, auto-renewing
+via `certbot.timer`, renewal dry-run verified). The old self-signed cert at
+`/etc/nginx/certs/selfsigned.crt` is no longer served for these hostnames.
+
+Consequences worth knowing before diagnosing anything edge-related:
+
+- A `curl` to `https://pytrade.co.in` now returns the **real response**. An
+  earlier version of this file said a 403 was Cloudflare's bot challenge and
+  could be ignored — that is no longer true, and a 403 today means something
+  is genuinely wrong.
+- No Cloudflare DDoS filtering or CDN caching, and the origin IP is public.
+  nginx's own bot-blocking `location` rules in
+  `/etc/nginx/sites-enabled/option-decode` are the only filter now.
+- **Never write backup files into `/etc/nginx/sites-enabled/`** — nginx globs
+  that directory, so a `.bak` loads as a second config and `nginx -t` fails on
+  duplicate directives. Keep them somewhere else entirely.
+- If the site is unreachable, check the apex A record first. GoDaddy's zone
+  defaults to parking IPs (`3.33.130.190` / `15.197.148.33`,
+  `awsglobalaccelerator.com`), and enabling domain Forwarding silently
+  re-adds them.
+- Your own resolver cache will lie to you after a DNS change. `dig @1.1.1.1`
+  bypasses it; `curl` does not. Use `curl --resolve host:443:13.127.247.201`
+  to test the origin deliberately.
+
+### Transactional email
+
+Sends via **GoDaddy SMTP** (`smtpout.secureserver.net:465`, implicit SSL, so
+`SMTP_SECURE=true`) authenticating as `support@pytrade.co.in`, which is also
+`EMAIL_FROM`. The mailbox password is an ordinary password — no App Password,
+no OAuth. `deliverSmtpEmail`'s `secure: true` branch handles 465 correctly
+(`tls.connect` does emit `connect`, which is what it waits on).
+
+This combination passes DMARC, which matters: the domain publishes
+`p=quarantine`, and SPF is `v=spf1 include:secureserver.net -all`. Because the
+envelope sender and the From header are both `@pytrade.co.in` and GoDaddy is
+SPF-authorised, alignment holds. **Any new sender must be added to that SPF
+record first** — the `-all` is a hard fail, so e.g. SES mail would be
+quarantined until `include:amazonses.com` is added.
+
+Inbound mail for the domain is GoDaddy's (`MX smtp.secureserver.net`), not the
+Cloudflare Email Routing that used to forward to Outlook.
+
+**The API does not log to journald.** `journalctl -u option-decode-api` shows
+only systemd's own lines; the application's pino output goes to
+`/opt/option-decode-native/logs/api/api.log`. Reading the journal and seeing
+nothing is not evidence that nothing was logged.
 
 ## Verify against live data, not fixtures
 
