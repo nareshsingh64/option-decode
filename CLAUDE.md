@@ -189,6 +189,58 @@ claim turns out wrong, retract it plainly.
 - India VIX is often absent locally; the range builder falls back to a 15%
   default and says so in the UI.
 
+## Performance: the API is round-trip-bound, not compute-bound
+
+Profiled against production on 2026-08-05, a cold `/api/market/overview`:
+
+| Stage | Cost |
+|---|---|
+| `getMarketAuxData` (cold) | ~2,800 ms |
+| `getLatestOptionChainSnapshot` | 766 ms |
+| `getAtmCallIvHistory` (before its rewrite) | 2,373 ms |
+| **every analytics function combined** | **~12 ms** |
+
+`calculatePressureScore`, `generateMarketAlerts`, `calculateStrikeMovement`,
+`calculateMarketBias`, `calculateTradeRecommendations` — all of it, over 462
+ticks — is single-digit milliseconds. **Optimising the maths is wasted
+effort.** Query count and external calls are where the time goes.
+
+### The connection pool is 10, and nothing says so
+
+`PrismaMariaDb` is constructed with host/port/user/password/database only
+(`packages/db/src/index.ts`), so the pool size is the `mariadb` driver's
+*undocumented default of 10*. It is not in the schema, the env, or the
+config.
+
+**Any `Promise.all` over more than a few queries will starve every other
+request in the process.** `getAtmCallIvHistory` fanned out one query per
+trading day — 25 at once — and the symptom looked nothing like the cause:
+four unrelated endpoints (`elliott-wave`, its alerts, `strike-matrix`, a
+second `overview`) all completed *within 40ms of each other at ~10.31s*,
+which is the 10s pool-acquire timeout plus their own work. The overview tail
+hit 31.5s against a 1.3s median. Logins showed
+`pool timeout ... (active=0 idle=0 limit=10)`.
+
+Unrelated endpoints finishing simultaneously at a suspiciously round number
+is the signature of pool exhaustion, not of slow endpoints. Prefer one query
+over N; if a fan-out is genuinely needed, chunk it well below 10.
+
+### Two costs that cannot be optimised away, only relocated
+
+- **Dhan's scrip master** is 34MB / ~203k rows, downloaded to resolve MCX
+  contracts. ~0.4s from EC2 plus parsing.
+- **Dhan rate-limits LTP and OHLC to 1 request/sec *combined***, so
+  `getFreshMarketAuxData` sleeps 1.1s between them by design. Removing that
+  sleep breaches the limit on every refresh.
+
+`getMarketAuxData` serves stale-while-revalidate *only once an entry exists*
+— the cold path blocks. Hence `warmOverviewCaches()` after `app.listen()`:
+the server pays this at boot rather than the first user. It is deliberately
+not awaited, and a failure only logs.
+
+Net effect of the three fixes: first request after a deploy went 3,702ms →
+107ms, steady state ~1,373ms median → 4ms.
+
 ## Conventions that bite
 
 - **Runtime values crossing into `apps/web`**: `next.config.ts` carries
@@ -213,11 +265,25 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
 
 ## Open threads
 
-- **Worker memory growth** — episodic, stepwise, bounded only by the 15-minute
-  restart timer; peaks ~1.1–1.4 G. Heap, page cache, Prisma engine and glibc
-  malloc arenas are all ruled out. Untested leads: the Elliott Wave screener
-  scan (~221 instruments) and the session-open/last-price reference maps in
-  `market-repository.ts`.
+- **Worker memory growth — mitigated 2026-08-05, root cause still unknown.**
+  It was never a leak: a live `malloc_trim(0)` (via `gdb -p`, safe on the
+  running process) returned 4.58 G of a 4.92 G RSS in under a second, so
+  glibc was hoarding freed pages rather than anything retaining objects.
+  The worker unit now sets
+  `Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2`
+  (`libjemalloc2`, already installed; path is arch-specific), which returns
+  memory eagerly and holds steady around 570–600 MB across cycles.
+  **Reading the fix as failed is easy:** systemd's `memory peak` line is a
+  cgroup high-water mark and still reports ~6 G, because it catches the
+  transient spike before jemalloc gives the memory back. Check mid-cycle RSS
+  or `free -m` instead. Which allocation site churns is still unidentified —
+  the Dhan feed's per-message `ArrayBuffer`s remain the leading suspect.
+- **First-login latency** — server side is done (see the performance section
+  above; 3,702 ms → 107 ms cold, 4 ms warm). Users originally reported 20–25 s
+  and nothing measurable on the API ever accounted for that, so the remainder
+  is presumed browser-side: first-visit asset download plus hydration on top
+  of a ~215 KB overview payload, with `/app` server-rendered `cache: "no-store"`.
+  Never confirmed with a DevTools trace.
 - **Option Chain intents #3 and #4** — monitoring support/resistance *shifting*
   between snapshots, and predicting whether a level breaks or moves. Both need
   snapshot-over-snapshot history and are not built.
