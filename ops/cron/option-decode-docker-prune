@@ -1,8 +1,0 @@
-# Runs daily, 30 minutes after NSE market close (16:00 IST = 10:30 UTC), to
-# clear Docker BuildKit build cache accumulated from repeated
-# `docker compose ... build` runs - observed growing to 20GB+ with 90%+
-# reclaimable after a day of rebuilds (2026-07-29). No-op (fast, nothing to
-# reclaim) on days without a rebuild. See ops/scripts/docker-build-cache-prune.sh.
-# Staggered 30 min after the mysql-safe-restart cron (10:00 UTC) to avoid
-# overlapping host I/O during the post-close maintenance window.
-30 10 * * * root /opt/option-decode/scripts/docker-build-cache-prune.sh

@@ -1,5 +1,11 @@
 #!/bin/bash
 # Native (non-Docker) deploy script for Option Decode on the EC2 host.
+#
+# NOTE: the comments below refer to the Dockerfile and docker-compose files
+# this script was ported from. Those were deleted on 2026-08-05 once Docker
+# was removed from the host - the references explain WHY steps look the way
+# they do, they are not files you can still go and read.
+#
 # Ports the Dockerfile's build steps (install/generate/build) plus a
 # release-dir + symlink pattern so a bad deploy can be rolled back
 # instantly by flipping the symlink back, without a rebuild.

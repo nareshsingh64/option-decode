@@ -1,7 +1,16 @@
 # Option Decode: Docker → Native EC2 Migration Scope
 
+> **Historical record — the migration is complete.** Docker was removed from
+> the EC2 host and the `Dockerfile` / `docker-compose*.yml` files deleted from
+> this repo on 2026-08-05. This document is kept for *why* the migration
+> happened and what was decided; the container files it describes below no
+> longer exist, so treat every reference to them as describing the old world,
+> not something you can go and read. Current production is documented in
+> `docs/ec2-production-deploy.md` and `CLAUDE.md`.
+
 Grounded in the actual `docker-compose.prod.yml`, `Dockerfile`, and
-`nginx/default.conf` as they exist today, not a generic template.
+`nginx/default.conf` as they existed at the time of writing, not a generic
+template.
 
 ## What's currently containerized vs. already native
 
