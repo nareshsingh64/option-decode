@@ -117,7 +117,14 @@ export async function fetchAuthUser(): Promise<{ user: AuthUser | null }> {
   return response.json() as Promise<{ user: AuthUser | null }>;
 }
 
-export async function submitAuth(mode: "login" | "register", payload: { email: string; password: string; displayName?: string }): Promise<{ user: AuthUser }> {
+// Registration returns no user and sets no cookie - the account is inert
+// until the email is verified - so the two modes no longer share a response
+// shape. Callers must handle `verificationRequired` rather than assuming a
+// signed-in user comes back.
+export async function submitAuth(
+  mode: "login" | "register",
+  payload: { email: string; password: string; displayName?: string; mobile?: string }
+): Promise<{ user?: AuthUser; verificationRequired?: boolean; message?: string; email?: string }> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/auth/${mode}`, {
     method: "POST",
@@ -128,7 +135,8 @@ export async function submitAuth(mode: "login" | "register", payload: { email: s
     body: JSON.stringify({
       email: payload.email,
       password: payload.password,
-      displayName: payload.displayName?.trim() || undefined
+      displayName: payload.displayName?.trim() || undefined,
+      mobile: payload.mobile?.trim() || undefined
     })
   });
 
@@ -137,7 +145,7 @@ export async function submitAuth(mode: "login" | "register", payload: { email: s
     throw new Error(errorBody?.message ?? `Account request failed with HTTP ${response.status}`);
   }
 
-  return response.json() as Promise<{ user: AuthUser }>;
+  return response.json() as Promise<{ user?: AuthUser; verificationRequired?: boolean; message?: string; email?: string }>;
 }
 
 export async function logoutAuthUser(): Promise<void> {

@@ -520,6 +520,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const [authMode, setAuthMode] = useState<"login" | "register">(initialParams?.auth === "register" ? "register" : "login");
   const [authEmail, setAuthEmail] = useState("");
   const [authDisplayName, setAuthDisplayName] = useState("");
+  const [authMobile, setAuthMobile] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
@@ -1581,12 +1582,20 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       const payload = await submitAuth(authMode, {
         email: authEmail,
         password: authPassword,
-        displayName: authDisplayName
+        displayName: authDisplayName,
+        mobile: authMobile
       });
+      setAuthPassword("");
+      // Registering no longer signs anyone in - the account stays inert until
+      // the emailed link is opened - so there is no user to adopt here, only
+      // an instruction. Logging in is unchanged.
+      if (!payload.user) {
+        setAuthMessage(payload.message ?? "Account created. Check your email for the verification link, then sign in.");
+        return;
+      }
       setAuthUser(payload.user);
       onAuthUserChange?.(payload.user);
-      setAuthPassword("");
-      setAuthMessage(authMode === "register" ? "Trial account created." : "Signed in.");
+      setAuthMessage("Signed in.");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Account request failed");
     } finally {
@@ -1815,6 +1824,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       {initialView === "account" ? (
         <AccountPanel
           authDisplayName={authDisplayName}
+          authMobile={authMobile}
+          setAuthMobile={setAuthMobile}
           authEmail={authEmail}
           authError={authError}
           authMessage={authMessage}

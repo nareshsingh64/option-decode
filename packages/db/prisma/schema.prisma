@@ -43,6 +43,11 @@ model User {
   email          String    @unique
   passwordHash   String
   displayName    String?
+  // Nullable in the database on purpose: accounts created before this column
+  // existed have no number, and backfilling a fake one would be worse than an
+  // honest null. Registration requires it (see registerSchema in
+  // apps/api/src/server.ts), so every NEW account has one.
+  mobile         String?   @db.VarChar(20)
   role           UserRole  @default(FREE)
   emailVerified  Boolean   @default(false)
   disabled       Boolean   @default(false)

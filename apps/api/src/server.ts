@@ -239,6 +239,27 @@ const authSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional()
 });
 
+// Registration demands more than login does: a real name and a reachable
+// mobile number, both mandatory. Login still uses authSchema.pick(), so
+// existing accounts - which predate the mobile column and have none - can
+// still sign in.
+//
+// Stored as bare 10 digits. Indian mobile numbers start 6-9, and callers
+// variously send "+91 98765 43210", "091-9876543210" or "9876543210"; if
+// those were stored verbatim the same person would look like three
+// different users the first time anyone tries to match on this column.
+const registerSchema = authSchema.extend({
+  displayName: z.string().trim().min(1).max(80),
+  mobile: z
+    .string()
+    .trim()
+    .transform((value) => value.replace(/[\s()-]/g, ""))
+    .refine((value) => /^(\+?91)?[6-9]\d{9}$/.test(value), {
+      message: "Enter a valid 10-digit Indian mobile number."
+    })
+    .transform((value) => value.replace(/^\+?91/, ""))
+});
+
 const emailSchema = z.object({
   email: z.string().trim().email()
 });
@@ -249,9 +270,12 @@ const resetPasswordSchema = z.object({
 });
 
 app.post("/api/auth/register", async (request, reply) => {
-  const parsed = authSchema.safeParse(request.body);
+  const parsed = registerSchema.safeParse(request.body);
   if (!parsed.success) {
-    return reply.status(400).send({ message: "Invalid registration details" });
+    // Surface the field-level reason - "Invalid registration details" gives a
+    // user no way to tell a malformed mobile number from a short password.
+    const detail = parsed.error.issues[0]?.message;
+    return reply.status(400).send({ message: detail ?? "Invalid registration details" });
   }
 
   let user: Awaited<ReturnType<typeof createUser>>;
@@ -259,7 +283,8 @@ app.post("/api/auth/register", async (request, reply) => {
     user = await createUser({
       email: parsed.data.email,
       passwordHash: hashPassword(parsed.data.password),
-      displayName: parsed.data.displayName
+      displayName: parsed.data.displayName,
+      mobile: parsed.data.mobile
     });
   } catch (error) {
     request.log.warn({ error }, "User registration failed");
@@ -284,8 +309,17 @@ app.post("/api/auth/register", async (request, reply) => {
     return reply.status(503).send({ message: "Account was created, but verification email could not be sent. Please contact support." });
   }
 
-  reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
-  return { user };
+  // Deliberately NO session cookie. Registration used to sign the account in
+  // immediately, which made the verification email decorative - nothing ever
+  // checked it, and /api/auth/login did not either. An account is now inert
+  // until the address behind it is proven, so the only thing this returns is
+  // an instruction to go and read the email.
+  return {
+    ok: true,
+    verificationRequired: true,
+    email: user.email,
+    message: "Account created. Check your email for a verification link, then sign in."
+  };
 });
 
 app.post("/api/auth/login", async (request, reply) => {
@@ -300,6 +334,17 @@ app.post("/api/auth/login", async (request, reply) => {
   }
   if (credentials.disabled) {
     return reply.status(403).send({ message: "This account is disabled. Please contact support." });
+  }
+  // The gate that makes verification mean something. Registration no longer
+  // issues a session, but without this an unverified account could simply go
+  // to the login page and get one anyway - which is exactly what it did
+  // before. Checked AFTER the password, so an attacker cannot use this
+  // response to discover which addresses are registered.
+  if (!credentials.emailVerified) {
+    return reply.status(403).send({
+      message: "Please verify your email address first. Check your inbox for the verification link.",
+      verificationRequired: true
+    });
   }
 
   const user = await getAuthUserById(credentials.id);

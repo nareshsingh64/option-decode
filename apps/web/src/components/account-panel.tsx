@@ -4,6 +4,7 @@ import type { AuthUser } from "./live-dashboard";
 
 interface AccountPanelProps {
   authDisplayName: string;
+  authMobile: string;
   authEmail: string;
   authError: string | null;
   authMessage: string | null;
@@ -16,6 +17,7 @@ interface AccountPanelProps {
   handleResendVerification: () => void;
   isAuthSubmitting: boolean;
   setAuthDisplayName: (value: string) => void;
+  setAuthMobile: (value: string) => void;
   setAuthEmail: (value: string) => void;
   setAuthError: (value: string | null) => void;
   setAuthMessage: (value: string | null) => void;
@@ -25,6 +27,7 @@ interface AccountPanelProps {
 
 export function AccountPanel({
   authDisplayName,
+  authMobile,
   authEmail,
   authError,
   authMessage,
@@ -37,6 +40,7 @@ export function AccountPanel({
   handleResendVerification,
   isAuthSubmitting,
   setAuthDisplayName,
+  setAuthMobile,
   setAuthEmail,
   setAuthError,
   setAuthMessage,
@@ -127,10 +131,16 @@ export function AccountPanel({
             </button>
           </div>
           {authMode === "register" ? (
-            <label className="grid gap-1 text-xs uppercase text-terminal-muted">
-              Name
-              <input value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} className="h-10 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none transition focus:border-terminal-blue" placeholder="Your name" />
-            </label>
+            <>
+              <label className="grid gap-1 text-xs uppercase text-terminal-muted">
+                Name
+                <input value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} className="h-10 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none transition focus:border-terminal-blue" maxLength={80} placeholder="Your name" required />
+              </label>
+              <label className="grid gap-1 text-xs uppercase text-terminal-muted">
+                Mobile
+                <input value={authMobile} onChange={(event) => setAuthMobile(event.target.value)} className="h-10 rounded border border-terminal-line bg-terminal-input px-3 text-sm normal-case text-terminal-text outline-none transition focus:border-terminal-blue" inputMode="tel" placeholder="9876543210" title="10-digit Indian mobile number, optionally with +91" type="tel" required />
+              </label>
+            </>
           ) : null}
           <label className="grid gap-1 text-xs uppercase text-terminal-muted">
             Email

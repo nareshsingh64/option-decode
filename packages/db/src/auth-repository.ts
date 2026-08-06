@@ -8,6 +8,7 @@ export interface AuthUserDto {
   id: string;
   email: string;
   displayName?: string;
+  mobile?: string;
   role: UserRole;
   emailVerified: boolean;
   disabled: boolean;
@@ -29,7 +30,8 @@ export interface AuthUserDto {
 export interface RegisterUserInput {
   email: string;
   passwordHash: string;
-  displayName?: string;
+  displayName: string;
+  mobile: string;
 }
 
 export async function createUser(input: RegisterUserInput, client: PrismaClient = prisma): Promise<AuthUserDto> {
@@ -38,6 +40,7 @@ export async function createUser(input: RegisterUserInput, client: PrismaClient 
       email: input.email.toLowerCase(),
       passwordHash: input.passwordHash,
       displayName: input.displayName,
+      mobile: input.mobile,
       role: "TRIAL",
       emailVerified: false
     },
@@ -244,6 +247,7 @@ function mapAuthUser(user: {
   id: string;
   email: string;
   displayName: string | null;
+  mobile: string | null;
   role: UserRole;
   emailVerified: boolean;
   disabled: boolean;
@@ -266,6 +270,7 @@ function mapAuthUser(user: {
     id: user.id,
     email: user.email,
     displayName: user.displayName ?? undefined,
+    mobile: user.mobile ?? undefined,
     role: user.role,
     emailVerified: user.emailVerified,
     disabled: user.disabled,
