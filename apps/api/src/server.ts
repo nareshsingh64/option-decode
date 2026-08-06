@@ -2,12 +2,14 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import type { FastifyBaseLogger } from "fastify";
 import Redis from "ioredis";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import tls from "node:tls";
 import { z } from "zod";
 import { calculateAtmIvPercentile, calculateAtmStraddleExpectedMove, calculateElliottWave, calculateMarketBias, calculateMarketPulse, calculatePressureScore, calculateStrikeMatrix, calculateStrikeMovement, calculateTradeInterpretation, generateMarketAlerts, isTradingHorizon, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
+import { buildPasswordResetEmail, buildVerificationEmail } from "./email-templates.js";
 import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAtmCallIvHistory, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, validatePaperOrderCapacity, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
@@ -297,11 +299,8 @@ app.post("/api/auth/register", async (request, reply) => {
   let verificationSent = false;
   try {
     const verification = await createEmailVerificationToken(user.email);
-    verificationSent = await trySendTransactionalEmail(request.log, "register", {
-      to: verification.email,
-      subject: "Verify your Option Decode account",
-      text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
-    });
+    const email = buildVerificationEmail(user.displayName, `${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`);
+    verificationSent = await trySendTransactionalEmail(request.log, "register", { to: verification.email, ...email });
   } catch (error) {
     request.log.error({ err: error, flow: "register", to: user.email }, "Verification token could not be created");
   }
@@ -380,11 +379,8 @@ app.post("/api/auth/resend-verification", async (request, reply) => {
   const verification = await createEmailVerificationToken(user.email);
   // Safe to be candid here - the caller is already authenticated as this
   // account, so admitting the send failed leaks nothing.
-  const sent = await trySendTransactionalEmail(request.log, "resend-verification", {
-    to: verification.email,
-    subject: "Verify your Option Decode account",
-    text: `Verify your account: ${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`
-  });
+  const email = buildVerificationEmail(user.displayName, `${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`);
+  const sent = await trySendTransactionalEmail(request.log, "resend-verification", { to: verification.email, ...email });
   if (!sent) {
     return reply.status(503).send({ message: "Verification email could not be sent right now. Please try again shortly or contact support." });
   }
@@ -470,11 +466,8 @@ app.post("/api/auth/forgot-password", async (request, reply) => {
   if (parsed.success) {
     const reset = await createPasswordResetToken(parsed.data.email);
     if (reset) {
-      await trySendTransactionalEmail(request.log, "forgot-password", {
-        to: reset.email,
-        subject: "Reset your Option Decode password",
-        text: `Reset your password: ${config.APP_PUBLIC_URL}/reset-password?token=${reset.token}`
-      });
+      const email = buildPasswordResetEmail(reset.displayName, `${config.APP_PUBLIC_URL}/reset-password?token=${reset.token}`);
+      await trySendTransactionalEmail(request.log, "forgot-password", { to: reset.email, ...email });
     }
   }
 
@@ -1451,6 +1444,10 @@ interface TransactionalEmail {
   to: string;
   subject: string;
   text: string;
+  // Optional: when present the message goes out as multipart/alternative and
+  // the client picks. The text part is never optional - it is what text-only
+  // clients render and what filters score when HTML is stripped.
+  html?: string;
 }
 
 async function sendTransactionalEmail(message: TransactionalEmail) {
@@ -1657,16 +1654,50 @@ function sanitizeSmtpReply(reply: string) {
     .slice(0, 500);
 }
 
+// Both bodies are base64-encoded rather than sent as 8bit. Three reasons, all
+// of which bite in practice: SMTP lines must stay under 998 octets and a
+// single long HTML line would breach that; a body line beginning with "." has
+// to be dot-stuffed or it terminates DATA early; and base64 sidesteps any
+// charset mangling by an intermediate relay. The base64 alphabet contains
+// neither "." nor long runs, so both problems disappear rather than needing
+// to be handled.
+function encodeEmailBody(value: string) {
+  return (
+    Buffer.from(value, "utf8")
+      .toString("base64")
+      .match(/.{1,76}/g) ?? []
+  ).join("\r\n");
+}
+
 function formatEmailMessage(message: TransactionalEmail) {
-  const headers = [
-    `From: ${config.EMAIL_FROM}`,
-    `To: ${message.to}`,
-    `Subject: ${sanitizeEmailHeader(message.subject)}`,
-    "MIME-Version: 1.0",
+  const baseHeaders = [`From: ${config.EMAIL_FROM}`, `To: ${message.to}`, `Subject: ${sanitizeEmailHeader(message.subject)}`, "MIME-Version: 1.0"];
+
+  if (!message.html) {
+    const headers = [...baseHeaders, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64"];
+    return `${headers.join("\r\n")}\r\n\r\n${encodeEmailBody(message.text)}\r\n.`;
+  }
+
+  // Random boundary so it cannot collide with anything in the bodies.
+  const boundary = `----=_OptionDecode_${randomBytes(16).toString("hex")}`;
+  const headers = [...baseHeaders, `Content-Type: multipart/alternative; boundary="${boundary}"`];
+
+  // Plain text first: multipart/alternative is ordered least-to-most
+  // preferred, so the HTML part must come last to be the one clients choose.
+  const parts = [
+    `--${boundary}`,
     "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit"
+    "Content-Transfer-Encoding: base64",
+    "",
+    encodeEmailBody(message.text),
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    encodeEmailBody(message.html),
+    `--${boundary}--`
   ];
-  return `${headers.join("\r\n")}\r\n\r\n${message.text.replace(/\r?\n/g, "\r\n")}\r\n.`;
+
+  return `${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}\r\n.`;
 }
 
 function sanitizeEmailHeader(value: string) {

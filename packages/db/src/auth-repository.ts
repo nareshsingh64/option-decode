@@ -121,14 +121,17 @@ export async function verifyEmailToken(token: string, client: PrismaClient = pri
 export async function createPasswordResetToken(email: string, client: PrismaClient = prisma) {
   const user = await client.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { email: true, disabled: true }
+    // displayName so the reset email can address the person by name rather
+    // than opening with a bare URL.
+    select: { email: true, displayName: true, disabled: true }
   });
 
   if (!user || user.disabled) {
     return null;
   }
 
-  return createOneTimeToken("password", user.email, 60 * 60 * 1000, client);
+  const token = await createOneTimeToken("password", user.email, 60 * 60 * 1000, client);
+  return { ...token, displayName: user.displayName ?? undefined };
 }
 
 export async function resetPasswordWithToken(token: string, passwordHash: string, client: PrismaClient = prisma) {
