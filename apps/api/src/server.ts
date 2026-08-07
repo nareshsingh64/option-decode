@@ -489,6 +489,35 @@ app.post("/api/auth/reset-password", async (request, reply) => {
     return reply.status(400).send({ message: "Reset link is invalid or expired." });
   }
 
+  // A valid reset token proves control of the mailbox, but that is not the
+  // proof the login gate checks for - emailVerified. Without this, an
+  // unverified signup could skip "verify email" entirely by going straight
+  // to "forgot password": createUser leaves the account emailVerified=false,
+  // /api/auth/forgot-password sends a reset link to any address whether or
+  // not it is verified, and this route came out the other end setting a
+  // session cookie unconditionally. Confirmed live: an unverified account
+  // could reset its password and land inside the app having never proven
+  // the address was real.
+  //
+  // Since they DID just prove mailbox control - just not via the
+  // verification link specifically - a fresh one is sent here rather than
+  // leaving them stuck. Without this they would have no way back in at all:
+  // resend-verification requires being logged in, which an unverified
+  // account cannot do.
+  if (!user.emailVerified) {
+    const verification = await createEmailVerificationToken(user.email);
+    const email = buildVerificationEmail(user.displayName, `${config.APP_PUBLIC_URL}/verify-email?token=${verification.token}`);
+    // Best-effort and not reflected in the response either way: the password
+    // is already changed regardless of whether this send succeeds, and a 503
+    // here would read as the password change having failed when it did not.
+    await trySendTransactionalEmail(request.log, "reset-password-unverified", { to: verification.email, ...email });
+    return {
+      ok: true,
+      verificationRequired: true,
+      message: "Password updated. We've also sent a new verification link to your email - verify your address, then sign in."
+    };
+  }
+
   reply.header("set-cookie", createSessionCookie(user, config.SESSION_SECRET));
   return { user };
 });
@@ -1458,7 +1487,7 @@ async function sendTransactionalEmail(message: TransactionalEmail) {
   await deliverSmtpEmail(message);
 }
 
-type TransactionalEmailFlow = "register" | "resend-verification" | "forgot-password";
+type TransactionalEmailFlow = "register" | "resend-verification" | "forgot-password" | "reset-password-unverified";
 
 // Every caller of sendTransactionalEmail goes through here, because a
 // delivery failure used to be either invisible or actively harmful.

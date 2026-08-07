@@ -88,7 +88,17 @@ function ResetPasswordForm() {
     }
 
     try {
-      await resetPassword(token, password);
+      const result = await resetPassword(token, password);
+      // The API declines to sign in an unverified account even with a valid
+      // reset token - it only proves mailbox control, not the specific
+      // verification the login gate checks for - and sends a fresh
+      // verification link instead. Route to login rather than the app in
+      // that case; there is no session to land on.
+      if (result.verificationRequired) {
+        setMessage(result.message ?? "Password updated. Check your email to verify your account, then sign in.");
+        window.setTimeout(() => router.replace("/login"), 2500);
+        return;
+      }
       setMessage("Password has been reset. Redirecting to the app...");
       router.replace("/app?view=dashboard");
     } catch (resetError) {
@@ -154,7 +164,7 @@ async function requestPasswordReset(email: string) {
   }
 }
 
-async function resetPassword(token: string, password: string) {
+async function resetPassword(token: string, password: string): Promise<{ verificationRequired?: boolean; message?: string }> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/auth/reset-password`, {
     method: "POST",
@@ -165,10 +175,11 @@ async function resetPassword(token: string, password: string) {
     body: JSON.stringify({ token, password })
   });
 
+  const body = (await response.json().catch(() => null)) as { message?: string; verificationRequired?: boolean } | null;
   if (!response.ok) {
-    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(errorBody?.message ?? `Password reset failed with HTTP ${response.status}`);
+    throw new Error(body?.message ?? `Password reset failed with HTTP ${response.status}`);
   }
+  return body ?? {};
 }
 
 export function VerifyEmailFormShell() {
