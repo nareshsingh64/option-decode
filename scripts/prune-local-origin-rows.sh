@@ -113,7 +113,16 @@ restore_settings() {
     SET GLOBAL innodb_redo_log_capacity=$ORIG_REDO;
     SET GLOBAL innodb_flush_log_at_trx_commit=$ORIG_FLUSH;" 2>/dev/null || true
 }
-trap restore_settings EXIT
+# Single EXIT trap for the whole script - bash REPLACES an EXIT trap rather
+# than stacking it, so a second `trap ... EXIT` further down would silently
+# drop the settings restore. IDS_FILE is declared here so the trap can clean it
+# up whether or not it was ever created.
+IDS_FILE=""
+cleanup() {
+  [ -n "$IDS_FILE" ] && rm -f "$IDS_FILE"
+  restore_settings
+}
+trap cleanup EXIT
 log "raising buffer pool to 4G for the delete"
 mysql -u "$LOCAL_MYSQL_USER" -e "
   SET GLOBAL innodb_buffer_pool_size=4294967296;
@@ -134,26 +143,38 @@ Q -e "DROP TABLE IF EXISTS _local_snap;
       WHERE s.tradingDate IN ($DAY_LIST) AND p.id IS NULL;"
 log "local-origin snapshot ids staged: $(QN 'SELECT COUNT(*) FROM _local_snap;')"
 
-# Batched so no single statement holds a multi-million-row transaction open.
-del_batched() {
-  local label=$1 stmt=$2 total=0 n
-  while :; do
-    n=$(Q -N -B -e "$stmt SELECT ROW_COUNT();" | tail -1)
-    [ "$n" -gt 0 ] || break
+# Delete by explicit lists of snapshot ids rather than `WHERE snapshotId IN
+# (SELECT id FROM _local_snap) LIMIT n`.
+#
+# That subquery form looks natural and is pathologically slow here. EXPLAIN on
+# it gives type=ALL, key=NULL, rows=50,826,293: MySQL full-scans
+# OptionContractTick and probes the subquery once per row as a DEPENDENT
+# SUBQUERY, ignoring the snapshotId index entirely. Measured at ~14,500
+# rows/minute, which put the 3.9M deletion at over four hours.
+#
+# A literal IN list lets the optimiser use the snapshotId index directly. The
+# chunk size keeps each statement to roughly 25k rows so no single transaction
+# grows unbounded.
+IDS_FILE=$(mktemp)
+QN "SELECT id FROM _local_snap;" > "$IDS_FILE"
+
+del_by_ids() {
+  local label=$1 table=$2 col=$3 chunk=${4:-50}
+  local total=0 n
+  while IFS= read -r list; do
+    [ -n "$list" ] || continue
+    n=$(Q -N -B -e "DELETE FROM $table WHERE $col IN ($list); SELECT ROW_COUNT();" | tail -1)
     total=$((total + n))
     printf '\r    %s: %s' "$label" "$total"
-  done
+  done < <(awk -v c="$chunk" 'BEGIN{n=0;s=""}
+             {s = s (n?",":"") "\"" $0 "\""; n++; if(n==c){print s; s=""; n=0}}
+             END{if(n)print s}' "$IDS_FILE")
   printf '\r    %s: %s (done)\n' "$label" "$total"
 }
 
-del_batched "pressure scores" \
-  "DELETE FROM PressureScore WHERE snapshotId IN (SELECT id FROM _local_snap) LIMIT 20000;"
-
-del_batched "ticks" \
-  "DELETE FROM OptionContractTick WHERE snapshotId IN (SELECT id FROM _local_snap) LIMIT 20000;"
-
-del_batched "snapshots" \
-  "DELETE FROM OptionChainSnapshot WHERE id IN (SELECT id FROM _local_snap) LIMIT 20000;"
+del_by_ids "pressure scores" PressureScore       snapshotId 200
+del_by_ids "ticks"           OptionContractTick  snapshotId 50
+del_by_ids "snapshots"       OptionChainSnapshot id         200
 
 Q -e "DROP TABLE _local_snap;"
 
