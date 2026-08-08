@@ -274,8 +274,13 @@ model WavePricePoint {
   volume           BigInt?
   createdAt        DateTime @default(now())
 
+  // No @@index([underlyingSymbol, time]) here: @@unique already creates a
+  // btree on exactly those columns in that order, so declaring both produced
+  // two identical 52.8MB indexes (sys.schema_redundant_indexes flagged
+  // WavePricePoint_underlyingSymbol_time_idx as redundant against
+  // ..._time_key). Every insert was maintaining both. Range scans and the
+  // ORDER BY in the wave screener use the unique index just as well.
   @@unique([underlyingSymbol, time])
-  @@index([underlyingSymbol, time])
 }
 
 enum WaveAlertType {

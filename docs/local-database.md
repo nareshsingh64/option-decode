@@ -443,6 +443,91 @@ deliberate, so local login and the auth-gated `/app` routes behave exactly as
 they do live. Be aware it is real PII sitting on a laptop, and that the
 `MUTABLE_TABLES` list in the script is where to trim it if that changes.
 
+## Auditing index usage
+
+`performance_schema` answers "is this index ever read?" — but **its counters
+live in memory and reset on every MySQL restart**, and production is stopped
+and started daily by EventBridge. So the counters there never accumulate past
+one day, and reading them shortly after a start shows almost nothing: an audit
+on 2026-08-08 found the server 316 seconds old, at which point every index
+looks unused.
+
+`ops/scripts/capture-index-usage.sh` solves that by snapshotting the counters
+into a separate `option_decode_ops` database every 30 minutes
+(`ops/native-migration/systemd/option-decode-index-capture.timer`), tagging each
+row with the boot session it came from, and summing **one peak per session** in
+`--report`. Summing raw counters would multiply every total by the number of
+captures, because they are cumulative-since-boot.
+
+It writes to its own database on purpose. A stray table inside `option_decode`
+registers as drift in `prisma migrate` and would eventually be dropped.
+
+Boot sessions are identified by `captured_at - uptime`, snapped to the previous
+capture's value when within 60 seconds. Uptime has one-second resolution while
+`NOW(3)` has milliseconds, so the derived instant jitters between captures —
+storing it raw made every capture look like a fresh boot and double-counted
+everything.
+
+```bash
+ops/scripts/capture-index-usage.sh --report --table OptionContractTick
+```
+
+### What the first audit found (2026-08-08)
+
+`OptionContractTick` carries **20.61 GB of secondary indexes against 12.29 GB
+of clustered data**. Only two of the five are read:
+
+| Index | Size | Used by |
+|---|---|---|
+| `underlyingSymbol_expiryLabel_optionType_s` | 4.16 GB | The hot path — every `WHERE us, el, ot, sp ORDER BY tickTime DESC` |
+| `snapshotId` | 4.64 GB | Snapshot reads, `getAtmCallIvHistory`, retention deletes. **FK-mandatory** |
+| `tickTime` | 3.41 GB | No caller found |
+| `underlyingSymbol_expiryLabel_tradingDate_…` | 4.21 GB | No caller found |
+| `tradingDate_underlyingSymbol_expiryLabel_…` | 4.19 GB | **`sync-prod-db.sh` only**, not the app |
+
+That last row is a coupling worth remembering: the sync's
+`mysqldump --where='tradingDate=…'` is the sole consumer of a 4.19 GB index. If
+it is ever dropped, per-day dumps become full scans of an 80M+ row table —
+slice by `snapshotId` instead.
+
+**Do not drop any of these on the strength of a short window.** A weekly or
+monthly report could be the only caller and would never appear in it. Let the
+capture timer accumulate a full trading week first, per CLAUDE.md's
+"don't over-claim from a short sample".
+
+Note the case trap: `mysql.innodb_index_stats` stores table names **lowercased
+locally** (`lower_case_table_names=2`) and with real casing on production. A
+query written with correct casing silently returns nothing here.
+
+### Repairing a `_prisma_migrations` checksum mismatch
+
+`prisma migrate dev` will refuse to run and offer to **reset the database** —
+dropping everything — if a migration file's SHA-256 differs from the checksum
+recorded when it was applied:
+
+```
+The migration `X` was modified after it was applied.
+We need to reset the MySQL database
+```
+
+**Do not accept that on a database holding synced history.** The cause is
+usually that a migration was applied locally from a draft and the file was
+edited before being committed; production, which applied the final file, is
+then correct and local is the outlier. That is exactly what happened with
+`20260801103054_add_sim_mtm_snapshot_source` on 2026-08-08 — 1 of 21
+migrations mismatched, and prod's stored value already matched the file.
+
+Verify the schema really does match the final migration, then repair the
+ledger rather than resetting:
+
+```sql
+UPDATE _prisma_migrations SET checksum = '<sha256 of migration.sql>'
+WHERE migration_name = '<name>';
+```
+
+Prisma's checksum is a plain `shasum -a 256` of `migration.sql`, so the whole
+set can be verified in a loop against the files.
+
 ## First-time setup
 
 See `docs/getting-started.md` — it carries the install + `CREATE DATABASE` /

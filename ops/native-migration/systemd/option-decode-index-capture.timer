@@ -1,0 +1,22 @@
+[Unit]
+Description=Periodically capture MySQL index-usage counters
+
+[Timer]
+# Every 30 minutes rather than once before the nightly stop. The counters are
+# cumulative-since-boot and the report takes each boot session's MAXIMUM, so a
+# capture taken at any point is never wrong - only potentially stale. Frequent
+# captures mean an unclean shutdown, an OOM kill, or a crash loses at most half
+# an hour of attribution instead of a whole trading day.
+#
+# Cost is negligible: performance_schema.table_io_waits_summary_by_index_usage
+# is an in-memory table of a few hundred rows.
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=option-decode-index-capture.service
+
+# Persistent so a capture still happens after the instance comes back from its
+# scheduled overnight stop, rather than waiting a full interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

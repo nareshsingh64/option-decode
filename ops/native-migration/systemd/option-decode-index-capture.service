@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot MySQL index-usage counters before they are lost to a restart
+After=mysql.service
+Requires=mysql.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/option-decode/ops/scripts/capture-index-usage.sh
+# Runs as root because the script uses `sudo mysql`, i.e. socket auth as the
+# MySQL root user. Nothing here writes to the application schema - captures go
+# to the separate option_decode_ops database.
+User=root
