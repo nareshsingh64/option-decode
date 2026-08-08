@@ -268,6 +268,45 @@ automatically. That was not hypothetical: the first baseline found 2026-07-22
 holding 4,736 of 13,080 snapshots and 2026-08-03 holding 624 of 10,996, left
 over from the partial `restore-current-expiry.sh` restore.
 
+### Local-origin rows: why local can hold MORE than production
+
+Four trading dates — 2026-07-22, 07-27, 08-03, 08-04 — carry rows this database
+ingested **itself**, from when the local worker was running, on top of the rows
+pulled from production. They are not duplicates in any sense the database can
+detect: same market data, different cuid primary keys, so `--insert-ignore` has
+nothing to merge on and correctly keeps both.
+
+The surpluses are exactly the partial counts the first dry run reported
+(4,736 / 2,068 / 624 / 558 snapshots), which is what identifies them.
+
+**This is normal and must not be read as corruption.** Verified by loading
+production's snapshot ids for 2026-07-22 into a scratch table and counting the
+local ticks descending from them: **5,021,970 — precisely production's own
+figure** for that day, against a local total of 7,389,368. Everything arrived;
+the surplus is purely local-origin.
+
+Two consequences worth carrying:
+
+- **`local == prod` is the wrong success criterion**, and the first baseline
+  failed on it. `local < prod` is the real failure — that is what a truncated
+  stream looks like. Both the verification and the day-selection logic compare
+  with `-lt` for this reason; selecting on `!=` re-pulled four complete days on
+  every run.
+- **Those four dates have a denser, irregular snapshot cadence** than the rest.
+  Local's captures interleave with production's rather than landing on the same
+  instants — across 17,816 snapshots on 2026-07-22 there is exactly **one**
+  same-timestamp collision. So nothing is double-counted at a given moment, but
+  anything assuming a uniform interval between snapshots will see those days
+  sampled roughly twice as often. Relevant to backtests over that window.
+
+`scripts/sync-prod-db.sh --deep-verify` runs the containment check above for
+every synced day. It is opt-in because it walks each day's ticks through the
+`snapshotId` index, but it is cheap in transfer terms — it moves the day's
+~13k snapshot ids, not its millions of tick ids. Note the scratch table must be
+created `COLLATE utf8mb4_unicode_ci` to match the app's id columns; the server
+default is `utf8mb4_0900_ai_ci` and the join otherwise dies with
+`ERROR 1267 Illegal mix of collations`.
+
 ### Measured costs (2026-08-08)
 
 | | |

@@ -24,6 +24,7 @@ set -euo pipefail
 #   scripts/sync-prod-db.sh --dry-run       # show the plan, touch nothing
 #   scripts/sync-prod-db.sh --from 2026-07-14
 #   scripts/sync-prod-db.sh --force         # override the market-hours guard
+#   scripts/sync-prod-db.sh --deep-verify   # prove every prod row arrived (slow)
 
 SSH_HOST="${SSH_HOST:-dhan-ec2}"
 REMOTE_DB="${REMOTE_DB:-option_decode}"
@@ -52,13 +53,15 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o Ser
 
 DRY_RUN=0
 FORCE=0
+DEEP_VERIFY=0
 FROM_DATE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run) DRY_RUN=1 ;;
-    --force)   FORCE=1 ;;
-    --from)    FROM_DATE="${2:?--from needs a YYYY-MM-DD date}"; shift ;;
+    --dry-run)     DRY_RUN=1 ;;
+    --force)       FORCE=1 ;;
+    --deep-verify) DEEP_VERIFY=1 ;;
+    --from)        FROM_DATE="${2:?--from needs a YYYY-MM-DD date}"; shift ;;
     -h|--help) sed -n '3,28p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -226,9 +229,17 @@ while IFS=$'\t' read -r day remote_count; do
   # Re-pull any day whose counts disagree. That covers both "never synced" and
   # "synced while the market was still writing to it" - --insert-ignore makes
   # re-pulling a partially-present day cheap and non-destructive.
-  if [ "$local_count" != "$remote_count" ]; then
+  # Strictly fewer, not merely different. Days this database ingested itself
+  # legitimately hold MORE snapshots than production does for the same date -
+  # separate cuids for the same market data, which --insert-ignore cannot merge
+  # - and treating that as "needs syncing" re-pulled four complete days on
+  # every run. Wasted rather than harmful, since the re-pull is idempotent, but
+  # it is ~10 minutes of pointless dumping on the origin each time.
+  if [ "$local_count" -lt "$remote_count" ]; then
     DAYS_TO_SYNC="$DAYS_TO_SYNC $day"
-    printf '  %s  prod=%-7s local=%-7s  SYNC\n' "$day" "$remote_count" "$local_count"
+    printf '  %s  prod=%-7s local=%-7s  SYNC (short by %s)\n' "$day" "$remote_count" "$local_count" "$((remote_count - local_count))"
+  elif [ "$local_count" -gt "$remote_count" ]; then
+    printf '  %s  prod=%-7s local=%-7s  ok (+%s local-origin)\n' "$day" "$remote_count" "$local_count" "$((local_count - remote_count))"
   else
     printf '  %s  prod=%-7s local=%-7s  ok\n' "$day" "$remote_count" "$local_count"
   fi
@@ -352,11 +363,51 @@ FAILURES=0
 for day in $DAYS_TO_SYNC; do
   r=$(remote_sql "SELECT COUNT(*) FROM OptionContractTick WHERE tradingDate='$day';")
   l=$(local_sql  "SELECT COUNT(*) FROM OptionContractTick WHERE tradingDate='$day';")
-  if [ "$r" = "$l" ]; then
-    printf '  %s  ticks prod=%-9s local=%-9s  ok\n' "$day" "$r" "$l"
-  else
-    printf '  %s  ticks prod=%-9s local=%-9s  MISMATCH\n' "$day" "$r" "$l"
+  # local > prod is NORMAL here and must not be treated as a failure. This
+  # database has rows for some trading dates that its own worker ingested
+  # locally; those carry different cuid primary keys from production's rows for
+  # the same market data, so --insert-ignore cannot and should not merge them.
+  # The first baseline hit exactly this on four days - e.g. 2026-07-22 came out
+  # 7,389,368 local against 5,021,970 on prod, the surplus being precisely the
+  # 4,736 locally-ingested snapshots the dry run had already reported.
+  #
+  # Confirmed by loading production's snapshot ids for that day and counting
+  # local ticks descending from them: exactly 5,021,970, production's own
+  # figure. Everything arrived; only the criterion was wrong.
+  #
+  # The failure that matters is local < prod, which is what a truncated stream
+  # actually looks like.
+  if [ "$l" -lt "$r" ]; then
+    printf '  %s  ticks prod=%-9s local=%-9s  SHORT by %s\n' "$day" "$r" "$l" "$((r - l))"
     FAILURES=$((FAILURES + 1))
+  elif [ "$l" -gt "$r" ]; then
+    printf '  %s  ticks prod=%-9s local=%-9s  ok (+%s local-origin)\n' "$day" "$r" "$l" "$((l - r))"
+  else
+    printf '  %s  ticks prod=%-9s local=%-9s  ok\n' "$day" "$r" "$l"
+  fi
+
+  # Exact containment, opt-in because it is slow: it walks every tick for the
+  # day through the snapshotId index. Cheap in transfer terms though - it moves
+  # the day's ~13k snapshot ids, not its millions of tick ids - and it is the
+  # only check that distinguishes "production's rows all arrived" from "the
+  # totals happen to add up".
+  if [ "$DEEP_VERIFY" -eq 1 ]; then
+    local_sql "DROP TABLE IF EXISTS _sync_verify_snap;
+      CREATE TABLE _sync_verify_snap (id VARCHAR(30) COLLATE utf8mb4_unicode_ci PRIMARY KEY);" >/dev/null
+    # The COLLATE is load-bearing: the app's id columns are utf8mb4_unicode_ci
+    # while the server default is utf8mb4_0900_ai_ci, and a scratch table built
+    # without it fails the join with "Illegal mix of collations" (ERROR 1267).
+    remote_sql "SELECT id FROM OptionChainSnapshot WHERE tradingDate='$day';" \
+      | awk 'BEGIN{ORS=""} NR==1{print "INSERT INTO _sync_verify_snap VALUES"} {printf "%s(\"%s\")",(NR==1?"":","),$1} END{print ";"}' \
+      | mysql -u "$LOCAL_MYSQL_USER" "$LOCAL_DB"
+    fromprod=$(local_sql "SELECT COUNT(*) FROM OptionContractTick t JOIN _sync_verify_snap v ON v.id = t.snapshotId WHERE t.tradingDate='$day';")
+    local_sql "DROP TABLE _sync_verify_snap;" >/dev/null
+    if [ "$fromprod" = "$r" ]; then
+      printf '  %s  deep: %s of prod rows present  ok\n' "$day" "$fromprod"
+    else
+      printf '  %s  deep: %s present vs %s on prod  MISSING %s\n' "$day" "$fromprod" "$r" "$((r - fromprod))"
+      FAILURES=$((FAILURES + 1))
+    fi
   fi
 done
 
