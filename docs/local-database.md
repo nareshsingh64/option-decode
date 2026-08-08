@@ -324,6 +324,59 @@ If a run is killed hard enough to skip the trap, check these before drawing any
 performance conclusion — a 4 G pool left behind will make local look much faster
 than prod for reasons that have nothing to do with the code.
 
+### What happens when the connection breaks
+
+Tested, not assumed. A drop mid-day plays out like this:
+
+1. The stream truncates mid-`INSERT` and the `mysql` client exits **1**
+   (verified: a cut-off statement gives `ERROR 1064`).
+2. `set -e` with `pipefail` fails that attempt — but **does not abort the
+   run**; the day is retried up to `DAY_ATTEMPTS` (3) with a 40 s / 60 s
+   backoff, then skipped so the remaining days still go.
+3. Complete statements that arrived before the cut **stay committed** — this
+   is fine, because `--insert-ignore` means a retry re-sends the whole day and
+   skips what is already there.
+4. The `cleanup` trap restores the MySQL settings and releases the lock. It
+   runs on SIGTERM too, so a `launchd` shutdown mid-run is clean.
+5. Anything still missing is repaired by the next run's count comparison.
+
+The layered timeouts matter because they catch different failures:
+
+| Mechanism | Catches |
+|---|---|
+| `ConnectTimeout=15` | Host down at connect time |
+| `ServerAliveInterval=30` × `6` | Peer vanished — dead in ~3 min |
+| `DAY_TIMEOUT` (900 s) wall clock | **A stalled remote `mysqldump`** |
+
+That last one is the non-obvious case: a `mysqldump` blocked on a metadata
+lock keeps the TCP connection perfectly healthy, so `ServerAlive*` never fires
+and without a wall-clock bound the run would block until the next scheduled
+fire. macOS ships no `timeout(1)`, so it is hand-rolled — and `set -m` is
+load-bearing there, because it gives the background job its own process group.
+Without it `kill` reaches only the wrapping subshell and the `ssh`/`mysqldump`
+children are orphaned and keep running.
+
+The `ssh` options are set **in the script**, not taken from `~/.ssh/config`.
+That file is not in the repo, and the safety net should travel with the script.
+
+### Knowing when it silently stops working
+
+This is the failure that actually costs data. A weekly job that fails
+unattended is invisible, and past 30 days the missed trading days are gone from
+production for good.
+
+- Every run writes `~/.option-decode-last-sync` **only on full success**, and
+  each run reports how long ago that was — warning past 21 days, while there is
+  still margin against the 30-day cliff.
+- Failures raise a desktop notification via `osascript`, and the run exits
+  non-zero.
+- The `launchd` log is `~/Library/Logs/option-decode-dbsync.log`.
+
+`caffeinate -i` wraps the scheduled run so idle sleep doesn't kill a 30-minute
+job. Be honest about its limit: `-i` does **not** prevent sleep from a closed
+lid or an explicit Sleep. Those still end the run — survivable, since the next
+run repairs it, but the week is wasted.
+
 ### The `--where` quoting trap
 
 Slicing by day looks like it should be `--where='tradingDate=$day'`. It is

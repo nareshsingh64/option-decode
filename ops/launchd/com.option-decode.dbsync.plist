@@ -33,8 +33,20 @@
     <key>Label</key>
     <string>com.option-decode.dbsync</string>
 
+    <!--
+      caffeinate -i holds off IDLE sleep for the ~30 minutes the sync runs.
+      Without it a Saturday-evening run on an untouched laptop dies partway,
+      which is survivable (the next run repairs it) but wastes the week.
+
+      Note the limit honestly: -i does NOT prevent sleep from closing the lid
+      or from an explicit Sleep. Those still kill the run. -s would cover the
+      lid, but only while on AC power, and forcing a laptop to stay awake on
+      battery is worse than a retried sync.
+    -->
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/bin/bash</string>
         <string>/Users/naresh.singh/option-decode-dev/scripts/sync-prod-db.sh</string>
     </array>

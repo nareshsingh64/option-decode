@@ -39,6 +39,17 @@ LOCAL_MYSQL_USER="${LOCAL_MYSQL_USER:-root}"
 IMPORT_BUFFER_POOL="${IMPORT_BUFFER_POOL:-4294967296}"   # 4G
 IMPORT_REDO_CAPACITY="${IMPORT_REDO_CAPACITY:-2147483648}" # 2G
 
+# Resilience. These matter mainly for the unattended weekly launchd run, where
+# nobody is watching and a failure means the week is silently skipped.
+DAY_ATTEMPTS="${DAY_ATTEMPTS:-3}"        # retries per trading day
+DAY_TIMEOUT="${DAY_TIMEOUT:-900}"        # wall-clock seconds per attempt
+STATE_FILE="${STATE_FILE:-$HOME/.option-decode-last-sync}"
+
+# ssh options set here rather than relying on ~/.ssh/config, which is not in
+# the repo - without ServerAlive* a vanished peer hangs the run indefinitely,
+# and that safety net should travel with the script.
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
+
 DRY_RUN=0
 FORCE=0
 FROM_DATE=""
@@ -55,7 +66,47 @@ while [ $# -gt 0 ]; do
 done
 
 log()  { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*"; }
-fail() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
+
+# A desktop notification, because the weekly run is unattended and its log is
+# not something anyone reads unprompted. Silently a no-op over ssh or wherever
+# osascript is unavailable.
+notify() {
+  command -v osascript >/dev/null 2>&1 || return 0
+  osascript -e "display notification \"$1\" with title \"Option Decode DB sync\"" >/dev/null 2>&1 || true
+}
+
+fail() {
+  printf '\nFAILED: %s\n' "$*" >&2
+  notify "Sync failed - see ~/Library/Logs/option-decode-dbsync.log"
+  exit 1
+}
+
+# Wall-clock limit for a single command. macOS ships no timeout(1) and
+# coreutils' gtimeout is not installed here, so this is hand-rolled.
+#
+# `set -m` is the load-bearing part: it puts each background job in its own
+# process group, which is what makes `kill -TERM -$pid` reach the whole
+# pipeline. Without it only the wrapping subshell dies and the ssh/mysqldump
+# children are orphaned and keep running.
+#
+# This exists because ServerAlive* only detects a *dead peer*. A remote
+# mysqldump that stalls on a metadata lock keeps the connection perfectly
+# healthy, and without a wall-clock bound the run would block until the next
+# scheduled fire.
+run_with_timeout() {
+  local secs=$1; shift
+  set -m
+  "$@" &
+  local pid=$!
+  set +m
+  ( sleep "$secs"; kill -TERM -"$pid" 2>/dev/null ) &
+  local watchdog=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill -TERM "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
 
 # Single-instance lock. Matters because there are now two ways in: the weekly
 # launchd agent (ops/launchd/com.option-decode.dbsync.plist) and whatever you
@@ -82,7 +133,7 @@ restore_settings() { :; }   # replaced once the originals have been captured
 trap cleanup EXIT
 
 local_sql()  { mysql -u "$LOCAL_MYSQL_USER" "$LOCAL_DB" -N -B -e "$1"; }
-remote_sql() { ssh "$SSH_HOST" "sudo mysql $REMOTE_DB -N -B -e \"$1\""; }
+remote_sql() { ssh "${SSH_OPTS[@]}" "$SSH_HOST" "sudo mysql $REMOTE_DB -N -B -e \"$1\""; }
 
 # --replace for tables production mutates in place (a Subscription going
 # active, User.lastLoginAt, FnoStock.lastSyncedAt): prod is authoritative and
@@ -106,8 +157,24 @@ DUMP_COMMON="--single-transaction --no-tablespaces --no-create-info --skip-set-c
 
 log "preflight"
 
-ssh -o ConnectTimeout=15 -o BatchMode=yes "$SSH_HOST" true 2>/dev/null \
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" true 2>/dev/null \
   || fail "cannot reach $SSH_HOST over ssh. The EC2 instance is on an EventBridge start/stop schedule (8:55 AM / 11:55 PM IST) - it may simply be stopped."
+
+# Production prunes at SNAPSHOT_RETENTION_DAYS=30, so the gap since the last
+# successful sync is a countdown to permanent data loss, not just staleness.
+if [ -f "$STATE_FILE" ]; then
+  LAST_SYNC=$(cat "$STATE_FILE" 2>/dev/null || echo "")
+  if [ -n "$LAST_SYNC" ]; then
+    LAST_EPOCH=$(date -j -f "%Y-%m-%d" "$LAST_SYNC" "+%s" 2>/dev/null || echo 0)
+    if [ "$LAST_EPOCH" != "0" ]; then
+      DAYS_SINCE=$(( ( $(date +%s) - LAST_EPOCH ) / 86400 ))
+      log "  last successful sync: $LAST_SYNC (${DAYS_SINCE} days ago)"
+      [ "$DAYS_SINCE" -lt 21 ] || log "  WARNING: ${DAYS_SINCE} days since the last successful sync - production only retains 30. Days beyond that window are already gone."
+    fi
+  fi
+else
+  log "  no previous successful sync recorded"
+fi
 
 local_sql "SELECT 1" >/dev/null 2>&1 \
   || fail "cannot reach local MySQL as $LOCAL_MYSQL_USER. Is 'brew services' running mysql@8.4?"
@@ -209,7 +276,7 @@ mysql -u "$LOCAL_MYSQL_USER" -e "
 pull() {
   local mode=$1; shift
   local tables="$*"
-  ssh "$SSH_HOST" "sudo mysqldump $DUMP_COMMON $mode $REMOTE_DB $tables | zstd -3 -q" \
+  ssh "${SSH_OPTS[@]}" "$SSH_HOST" "sudo mysqldump $DUMP_COMMON $mode $REMOTE_DB $tables | zstd -3 -q" \
     | zstd -dc | mysql -u "$LOCAL_MYSQL_USER" "$LOCAL_DB"
 }
 
@@ -222,8 +289,15 @@ pull() {
 # string literal (no ANSI_QUOTES in sql_mode on either side).
 pull_day() {
   local table=$1 day=$2
-  ssh "$SSH_HOST" "sudo mysqldump $DUMP_COMMON --insert-ignore $REMOTE_DB $table --where='tradingDate=\"$day\"' | zstd -3 -q" \
+  ssh "${SSH_OPTS[@]}" "$SSH_HOST" "sudo mysqldump $DUMP_COMMON --insert-ignore $REMOTE_DB $table --where='tradingDate=\"$day\"' | zstd -3 -q" \
     | zstd -dc | mysql -u "$LOCAL_MYSQL_USER" "$LOCAL_DB"
+}
+
+# Parent before child, always: a tick whose snapshot is missing becomes a
+# silent orphan, because mysqldump's preamble has foreign key checks off.
+pull_one_day() {
+  local day=$1
+  pull_day OptionChainSnapshot "$day" && pull_day OptionContractTick "$day"
 }
 
 log "reference + account tables (--replace)"
@@ -234,13 +308,39 @@ pull --insert-ignore $APPEND_TABLES
 
 # --------------------------------------------------------------- the days
 
+# A dropped connection truncates the stream mid-INSERT; the mysql client exits
+# non-zero and whatever complete statements arrived stay committed. That is
+# safe - --insert-ignore means a retry re-sends the whole day and skips the
+# rows already there - but WITHOUT a retry a single blip would abandon every
+# remaining day. On an unattended weekly run that silently costs a week, and
+# production only retains 30 days.
+FAILED_DAYS=""
 for day in $DAYS_TO_SYNC; do
   started=$(date +%s)
-  # Parent before child, always: a tick whose snapshot is missing becomes a
-  # silent orphan, because mysqldump's preamble has foreign key checks off.
-  pull_day OptionChainSnapshot "$day"
-  pull_day OptionContractTick  "$day"
-  log "  $day done in $(( $(date +%s) - started ))s"
+  attempt=1
+  ok=0
+  while [ "$attempt" -le "$DAY_ATTEMPTS" ]; do
+    rc=0
+    run_with_timeout "$DAY_TIMEOUT" pull_one_day "$day" || rc=$?
+    if [ "$rc" -eq 0 ]; then ok=1; break; fi
+    if [ "$rc" -eq 143 ]; then
+      log "  $day attempt $attempt timed out after ${DAY_TIMEOUT}s"
+    else
+      log "  $day attempt $attempt failed (rc=$rc)"
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$DAY_ATTEMPTS" ] && sleep $(( attempt * 20 ))
+  done
+
+  if [ "$ok" -eq 1 ]; then
+    log "  $day done in $(( $(date +%s) - started ))s"
+  else
+    # Carry on to the next day rather than aborting the run. The remaining days
+    # are independent, and a day left partial is repaired by the next run's
+    # count comparison.
+    log "  $day GAVE UP after $DAY_ATTEMPTS attempts - continuing with the remaining days"
+    FAILED_DAYS="$FAILED_DAYS $day"
+  fi
 done
 
 # ---------------------------------------------------------------- verify
@@ -268,5 +368,20 @@ TOTAL=$(local_sql "SELECT COUNT(*) FROM OptionContractTick;")
 SPAN=$(local_sql "SELECT CONCAT(MIN(tradingDate),' .. ',MAX(tradingDate),'  (',COUNT(DISTINCT tradingDate),' days)') FROM OptionChainSnapshot;")
 log "local now holds $TOTAL ticks across $SPAN"
 
-[ "$FAILURES" -eq 0 ] || fail "$FAILURES verification check(s) failed - re-run to repair (the sync is idempotent)."
+FAILED_DAYS=$(echo "$FAILED_DAYS" | xargs || true)
+if [ -n "$FAILED_DAYS" ]; then
+  log "days that exhausted their retries: $FAILED_DAYS"
+  FAILURES=$((FAILURES + 1))
+fi
+
+if [ "$FAILURES" -ne 0 ]; then
+  # Deliberately NOT updating the state file: the next run's "days since last
+  # successful sync" warning is the thing that surfaces a repeatedly failing
+  # weekly job before production's 30-day retention swallows the gap.
+  notify "Sync incomplete - $FAILURES check(s) failed. Re-run to repair."
+  fail "$FAILURES verification check(s) failed - re-run to repair (the sync is idempotent)."
+fi
+
+date +%F > "$STATE_FILE"
 log "sync complete"
+notify "Sync complete - local holds $TOTAL ticks."
