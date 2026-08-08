@@ -27,9 +27,11 @@ system.
 
 ## Local Start
 
+Requires MySQL and Redis running natively (Homebrew: `brew install mysql@8.4
+redis`) — see `docs/getting-started.md` for the one-time setup.
+
 ```bash
 cp .env.example .env.local
-docker compose up -d mysql redis
 pnpm install
 pnpm db:generate
 pnpm db:migrate

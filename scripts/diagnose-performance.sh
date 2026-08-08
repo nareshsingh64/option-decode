@@ -1,22 +1,21 @@
 #!/usr/bin/env sh
 set -eu
 
-COMPOSE_PROFILE="${COMPOSE_PROFILE:-app}"
-MYSQL_USER="${MYSQL_USER:-root}"
-MYSQL_PASSWORD="${MYSQL_PASSWORD:-root}"
+# Local-dev version, native MySQL (Homebrew, no Docker) - see
+# scripts/diagnose-performance-prod.sh for the native-production variant.
+
+MYSQL_USER="${MYSQL_USER:-option_decode}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-option_decode}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-option_decode}"
+MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
 
 run_mysql() {
-  docker compose --profile "$COMPOSE_PROFILE" exec -T mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "$1"
+  mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "$1"
 }
 
 echo "== Option Decode performance snapshot =="
 date
-
-echo
-echo "== Container CPU / memory =="
-docker compose --profile "$COMPOSE_PROFILE" ps
-docker compose --profile "$COMPOSE_PROFILE" stats --no-stream
 
 echo
 echo "== MySQL process list =="
@@ -55,9 +54,5 @@ echo "== Slow query configuration =="
 run_mysql "SHOW VARIABLES WHERE Variable_name IN ('slow_query_log','long_query_time','log_queries_not_using_indexes');"
 
 echo
-echo "== Recent API logs =="
-docker compose --profile "$COMPOSE_PROFILE" logs --tail=80 api
-
-echo
-echo "== Recent worker logs =="
-docker compose --profile "$COMPOSE_PROFILE" logs --tail=80 worker
+echo "== api/worker logs =="
+echo "No log file - api/worker run in the foreground of your 'pnpm dev' terminal locally. Check that terminal directly."

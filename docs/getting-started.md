@@ -6,56 +6,66 @@ existing Flask trading app.
 ## Prerequisites
 
 - Node.js 22 LTS or newer
-- pnpm 9 or newer
-- Docker Desktop
+- pnpm 9 or newer (`corepack enable && corepack prepare pnpm@11.8.0 --activate`
+  to match the pinned version)
+- MySQL and Redis, run natively via Homebrew — matches how production runs
+  them (see `docs/ec2-production-deploy.md`), no Docker involved:
+
+  ```bash
+  brew install mysql@8.4 redis
+  brew services start mysql@8.4
+  brew services start redis
+  ```
 
 ## Local Setup
 
-### Option A: Docker-only
-
-Use this if Node.js and pnpm are not installed on your Mac yet.
-
 ```bash
 cd option-decode
 cp .env.example .env.local
-docker compose up -d mysql redis
-docker compose --profile app up web api worker
 ```
 
-Default local services:
-
-- Web app: http://localhost:3000
-- API: http://localhost:4000
-- MySQL: 127.0.0.1:3308
-- Redis: 127.0.0.1:6380
-
-### Option B: Host Node.js
-
-Use this after installing Node.js 22 LTS or newer and pnpm 9 or newer.
+Create the app database and user (first time only):
 
 ```bash
-cd option-decode
-cp .env.example .env.local
-docker compose up -d mysql redis
+mysql -u root -e "
+CREATE DATABASE IF NOT EXISTS option_decode;
+CREATE USER IF NOT EXISTS 'option_decode'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY 'option_decode';
+CREATE USER IF NOT EXISTS 'option_decode'@'localhost' IDENTIFIED WITH mysql_native_password BY 'option_decode';
+GRANT ALL PRIVILEGES ON option_decode.* TO 'option_decode'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON option_decode.* TO 'option_decode'@'localhost';
+GRANT ALL PRIVILEGES ON \`prisma_migrate_shadow_db_%\`.* TO 'option_decode'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON \`prisma_migrate_shadow_db_%\`.* TO 'option_decode'@'localhost';
+FLUSH PRIVILEGES;
+"
+```
+
+`mysql_native_password` must be active for the `mariadb` npm driver
+(`@prisma/adapter-mariadb`) — enable it once via
+`/opt/homebrew/etc/my.cnf`'s `[mysqld]` section: `mysql-native-password = ON`,
+then `brew services restart mysql@8.4`. The shadow-db grant (wildcard-scoped
+to Prisma's `prisma_migrate_shadow_db_*` naming pattern, not a blanket global
+grant) is required for `prisma migrate dev`, which diffs against a
+disposable shadow database on every run.
+
+```bash
 pnpm install
 pnpm db:generate
 pnpm db:migrate
 pnpm dev
 ```
 
-## First Production Shape
+Default local services:
 
-For the first EC2 version, run the same services with Docker Compose:
+- Web app: http://localhost:3000
+- API: http://localhost:4000
+- MySQL: 127.0.0.1:3306
+- Redis: 127.0.0.1:6379
 
-- web
-- api
-- worker
-- mysql
-- redis
-- nginx
+## Production Shape
 
-Before onboarding real users, add automated MySQL backups and move secrets into
-server-only environment files.
+Production runs natively on a single EC2 host — no Docker. See
+`docs/ec2-production-deploy.md` for the full systemd/nginx setup and deploy
+flow.
 
 ## Dhan Feed Mode
 
@@ -73,12 +83,8 @@ DHAN_ACCESS_TOKEN=your_real_access_token
 MOCK_MARKET_FEED_ENABLED=false
 ```
 
-Then restart the worker:
-
-```bash
-docker compose --profile app up -d --force-recreate worker
-docker compose logs --tail=120 worker
-```
+Then restart your `pnpm dev` process so the worker picks up the new env
+values.
 
 Live mode fetches the nearest expiry for each configured underlying and persists
 the normalized option-chain snapshot to MySQL.
