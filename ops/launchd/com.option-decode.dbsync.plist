@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly production -> local database sync. See docs/local-database.md.
+
+  Saturday 18:00 IST is chosen, not arbitrary:
+    - market is closed, so the long --single-transaction dump does not
+      compete with live ingest on the 2-vCPU origin;
+    - well clear of the 23:55 IST EventBridge instance stop;
+    - outside the script's own 09:00-15:45 IST weekday refusal, so a
+      scheduled run never trips the guard.
+
+  launchd reads this in the Mac's local timezone. That machine is on
+  Asia/Kolkata, so Hour 18 is 18:00 IST. If the laptop's timezone ever
+  changes, this drifts relative to Indian market hours - re-check it.
+
+  If the Mac is asleep at the fire time, launchd runs the job on next wake
+  rather than skipping it, which is the whole reason for using launchd over
+  cron here.
+
+  Install (paths are absolute and machine-specific by design):
+    cp ops/launchd/com.option-decode.dbsync.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.option-decode.dbsync.plist
+
+  Run it now without waiting for Saturday:
+    launchctl kickstart -p gui/$(id -u)/com.option-decode.dbsync
+
+  Remove:
+    launchctl bootout gui/$(id -u)/com.option-decode.dbsync
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.option-decode.dbsync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/naresh.singh/option-decode-dev/scripts/sync-prod-db.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/naresh.singh/option-decode-dev</string>
+
+    <!--
+      launchd starts jobs with a near-empty environment. Without /opt/homebrew/bin
+      the mysql, mysqldump and zstd binaries are simply not found and the job
+      fails instantly. ssh is in /usr/bin. The ssh key (~/.ssh/dhan-ec2.pem) has
+      no passphrase, so no agent forwarding or SSH_AUTH_SOCK is required.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>6</integer>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Not at load: bootstrapping this should not kick off a 30-minute pull. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/naresh.singh/Library/Logs/option-decode-dbsync.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/naresh.singh/Library/Logs/option-decode-dbsync.log</string>
+</dict>
+</plist>

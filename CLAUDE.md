@@ -54,6 +54,16 @@ for it.
   `mysql-native-password = ON`) for the `mariadb` driver, and a grant scoped
   to `` `prisma_migrate_shadow_db_%`.* `` for `prisma migrate dev`'s shadow
   database — both already set up on this machine.
+  **`docs/local-database.md` is the full reference** — config, users/grants,
+  the five drifting `.env` files, tuning state, and restore gotchas. Read it
+  before touching the local DB; update it when the setup changes.
+- **`scripts/sync-prod-db.sh` pulls production data down** for local testing
+  and backtesting. It **appends and never deletes**, because prod prunes at
+  `SNAPSHOT_RETENTION_DAYS=30` — once a trading day ages out there, local is
+  the only copy that exists. Refuses to run during market hours (a long
+  `--single-transaction` dump on a 2-vCPU box competes with live ingest);
+  window is 16:00–23:30 IST. Idempotent, so re-run freely. Costs and the
+  `--where` quoting trap are in `docs/local-database.md`.
 - `/api/market/overview` is **not** auth-gated — curl it directly for real
   payloads. Everything behind `/app` is.
 - **The app is auth-gated and Claude does not log in.** If a change needs
