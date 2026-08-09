@@ -216,6 +216,21 @@ Production's own backup routine is in `docs/ec2-production-deploy.md` (needs
 `--single-transaction --no-tablespaces`). For pulling prod data *down* into
 this database, see the next section.
 
+### The DuckDB history tier is not a backup
+
+`~/option-decode-data/history-tier/` holds a DuckDB + Parquet copy of
+**`OptionContractTick` and `OptionChainSnapshot` only** — 2 of the 31 tables,
+verified row-exact (82,020,434 ticks / 221,560 snapshots) and column-faithful
+on 2026-08-09. See the README there, and `docs/database-engine-evaluation.md`
+for why it exists. The other 29 tables — including `User` and everything under
+`Sim*`/`Paper*` — exist **only** in this MySQL.
+
+It was moved out of a `/private/tmp` Claude session scratchpad on 2026-08-09,
+where the next reboot or temp purge would have deleted it. Both copies still
+sit on the same laptop and volume, so neither survives a disk failure: there is
+**no off-machine backup** of the pre-retention history, and production cannot
+supply it again once a trading day ages past `SNAPSHOT_RETENTION_DAYS=30`.
+
 ## Syncing production data down
 
 ```bash
