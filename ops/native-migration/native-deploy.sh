@@ -96,6 +96,26 @@ fi
 echo "Switching current -> $RELEASE_DIR"
 ln -sfn "$RELEASE_DIR" "$BASE/current"
 
+# Install the logrotate policy as a REAL root-owned 0644 file.
+#
+# /etc/logrotate.d/option-decode used to be a symlink into the repo checkout,
+# which logrotate silently refuses to load twice over: it rejects a config
+# that is group/other-writable (git checks out 0664 under the default umask)
+# AND one not owned by uid 0 (repo files are owned by ubuntu). Both checks
+# only surface under `logrotate -d`, so the policy looked installed while
+# never running - which is how api.log reached 26MB unrotated with
+# "rotate 14" retaining nothing. Copying on each deploy keeps the repo as the
+# single source of truth without tripping either check.
+if [ -f "$RELEASE_DIR/ops/logrotate/option-decode" ]; then
+  install -o root -g root -m 0644 \
+    "$RELEASE_DIR/ops/logrotate/option-decode" /etc/logrotate.d/option-decode
+  if logrotate -d /etc/logrotate.d/option-decode >/dev/null 2>&1; then
+    echo "logrotate policy installed and parses cleanly"
+  else
+    echo "WARNING: logrotate policy installed but failed to parse - run 'logrotate -d /etc/logrotate.d/option-decode'" >&2
+  fi
+fi
+
 # api/worker first (shorter restart, migrate deploy runs via ExecStartPre),
 # then web - same ordering as the existing Docker deploy runbook, to keep
 # the bad-gateway window as short as possible.

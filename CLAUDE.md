@@ -153,23 +153,34 @@ only systemd's own lines; the application's pino output goes to
 `/opt/option-decode-native/logs/api/api.log`. Reading the journal and seeing
 nothing is not evidence that nothing was logged.
 
-**`/etc/logrotate.d/option-decode` is a symlink into the repo** —
-`ops/logrotate/option-decode`. Editing that file in git *is* editing the live
-policy; there is no second copy to sync, and a `git pull` on the host rewrites
-it. Two things this cost real time:
+**Logrotate had never run in production until 2026-08-11**, and it failed
+three different ways at once. Source of truth is `ops/logrotate/option-decode`
+in the repo; `native-deploy.sh` now `install`s it to
+`/etc/logrotate.d/option-decode` as a real **root:root 0644** file on every
+deploy. It used to be a *symlink into the checkout*, which cannot work:
 
-- Its paths pointed at `/opt/option-decode/logs/` (the pre-migration Docker
-  checkout) while systemd writes to `/opt/option-decode-**native**/logs/`, so
-  **rotation silently never ran** — `api.log` reached 26 MB unrotated and
-  `rotate 14` retained nothing. A glob that matches nothing is only reported
-  under `logrotate -d`, never in normal operation. Fixed 2026-08-11; the
-  upside of the bug is that full history survived, which is what made the
-  5-trading-day API error-rate analysis possible at all.
-- **Don't `sudo tee` the `/etc/logrotate.d/` path** to edit it: the write
-  follows the symlink into the git checkout, and `sudo chown` on a symlink
-  follows too, leaving a root-owned tracked file that the next `git pull`
-  cannot overwrite. Edit `ops/logrotate/option-decode` in the repo, commit,
-  and pull.
+- **The paths were wrong.** They globbed `/opt/option-decode/logs/` (the
+  pre-migration Docker checkout) while systemd writes to
+  `/opt/option-decode-**native**/logs/`, so nothing matched — `api.log`
+  reached 26 MB unrotated and `rotate 14` retained no history. `apps/web` was
+  never listed under either path.
+- **Logrotate rejects the repo file on two separate safety checks**: it
+  refuses a config that is group/other-writable (git checks out `0664` under
+  the default umask) *and* one not owned by uid 0 (repo files are `ubuntu`).
+  Fixing only the mode leaves the ownership error, and vice versa — hence the
+  copy-on-deploy rather than a symlink.
+- **All three failures are invisible in normal operation.** A non-matching
+  glob and both safety refusals are reported only by
+  `logrotate -d /etc/logrotate.d/option-decode`. Run that after touching it;
+  the deploy script now does, and warns if it stops parsing.
+- **Never `sudo tee` the `/etc/logrotate.d/` path** while it is still a
+  symlink anywhere: the write follows into the git checkout, and `sudo chown`
+  on a symlink follows too, leaving a root-owned tracked file the next
+  `git pull` cannot overwrite.
+
+Silver lining worth knowing: because rotation never ran, `api.log` holds
+unbroken history back to 30 Jul 2026, which is what made the 5-trading-day
+API error-rate analysis possible at all.
 
 Log parsing note: `api.log` interleaves pino JSON with plain-text Prisma and
 pnpm output from each unit's `ExecStartPre`, so roughly **46% of its lines are
