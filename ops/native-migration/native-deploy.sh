@@ -116,6 +116,22 @@ if [ -f "$RELEASE_DIR/ops/logrotate/option-decode" ]; then
   fi
 fi
 
+# Same treatment for cron.d, and for the same reason: these used to be
+# hand-copied, so the repo copy and the installed copy could disagree with
+# nothing to catch it. cron.d additionally refuses any file that is
+# group/other-writable or not root-owned, exactly like logrotate.
+#
+# Note cron.d ignores filenames containing a dot, so ops/cron/* must stay
+# extensionless - a rename to option-decode-memory-report.cron would install
+# cleanly and then never run.
+if [ -d "$RELEASE_DIR/ops/cron" ]; then
+  for cronfile in "$RELEASE_DIR"/ops/cron/*; do
+    [ -f "$cronfile" ] || continue
+    install -o root -g root -m 0644 "$cronfile" "/etc/cron.d/$(basename "$cronfile")"
+    echo "cron installed: $(basename "$cronfile")"
+  done
+fi
+
 # api/worker first (shorter restart, migrate deploy runs via ExecStartPre),
 # then web - same ordering as the existing Docker deploy runbook, to keep
 # the bad-gateway window as short as possible.

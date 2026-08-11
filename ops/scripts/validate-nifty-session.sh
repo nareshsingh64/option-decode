@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validates today's captured NIFTY option-chain data quality (9:15-15:30 IST session).
+# Validates today's captured NIFTY option-chain data quality (9:14-15:41 IST session).
 # Run from /opt/option-decode on EC2.
 
 set -euo pipefail

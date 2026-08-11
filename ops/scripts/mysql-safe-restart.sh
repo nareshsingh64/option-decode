@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs daily after market close (15:30 IST) via cron.
+# Runs daily after market close (15:41 IST since 2026-08-11) via cron.
 # Only restarts MySQL if needrestart still has it flagged as running against
 # upgraded/deleted libraries (e.g. from an unattended-upgrades libc patch
 # earlier in the day). Restart is skipped entirely on days nothing was

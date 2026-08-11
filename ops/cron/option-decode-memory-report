@@ -1,0 +1,14 @@
+# Worker memory report, 04:15 UTC = 09:45 IST on weekdays - about 30 minutes
+# after the 09:14 NSE open, so the window it summarises is real market-hours
+# load rather than the near-idle out-of-hours captures.
+#
+# Exists because the interesting number only appears under load: the worker
+# allocates a large TRANSIENT native burst inside captureOnce() (~964MB
+# measured out-of-hours, ~2.5GB during the session) which is invisible to
+# process.memoryUsage()'s heap figures. See CLAUDE.md's worker-memory entry.
+#
+# Writes one dated file per day; read the newest with
+#   ssh dhan-ec2 'cat /opt/option-decode-native/logs/memory-reports/$(date +%F).txt'
+# Not rotated by ops/logrotate/option-decode (that covers *.log only) - these
+# are small, one per weekday.
+15 4 * * 1-5 root mkdir -p /opt/option-decode-native/logs/memory-reports && /opt/option-decode/ops/scripts/worker-memory-report.sh >> /opt/option-decode-native/logs/memory-reports/$(date +\%F).txt 2>&1
