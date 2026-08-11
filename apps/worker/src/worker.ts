@@ -226,7 +226,7 @@ async function getCachedExpiryList(underlying: UnderlyingDefinition, caller: str
 async function captureOnce() {
   if (config.MOCK_MARKET_FEED_ENABLED) {
     if (!isMarketSessionOpen("IDX_I")) {
-      console.log("Skipping mock market snapshot outside 09:15-15:30 IST storage window", {
+      console.log("Skipping mock market snapshot outside the NSE 09:14-15:41 IST storage window", {
         checkedAt: new Date().toISOString()
       });
       return;

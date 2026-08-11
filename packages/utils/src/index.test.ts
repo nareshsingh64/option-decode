@@ -39,12 +39,17 @@ test("isExpiryInPast uses the IST calendar day, not the UTC one, at the day boun
   assert.equal(isExpiryInPast("2026-08-02", now), false);
 });
 
-test("isMarketSessionOpen (equity/index segment) is open 09:15-15:30 IST on a weekday", () => {
+// NSE session moved to 09:14-15:41 IST (from 09:15-15:30). Both edges are
+// asserted inclusive, and the minute either side exclusive, so a future
+// timing change cannot quietly widen or narrow the window unnoticed.
+test("isMarketSessionOpen (equity/index segment) is open 09:14-15:41 IST on a weekday", () => {
   // 2026-08-03 is a Monday.
-  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T03:44:00Z")), false); // 09:14 IST
+  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T03:43:00Z")), false); // 09:13 IST
+  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T03:44:00Z")), true); // 09:14 IST - new open
   assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T03:45:00Z")), true); // 09:15 IST
-  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T10:00:00Z")), true); // 15:30 IST
-  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T10:01:00Z")), false); // 15:31 IST
+  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T10:00:00Z")), true); // 15:30 IST - old close, now mid-session
+  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T10:11:00Z")), true); // 15:41 IST - new close
+  assert.equal(isMarketSessionOpen("NSE_FNO", new Date("2026-08-03T10:12:00Z")), false); // 15:42 IST
 });
 
 test("isMarketSessionOpen is closed on a weekend regardless of time of day", () => {

@@ -17,7 +17,7 @@
 // ALL activity, opening or closing) demonstrably misread live data - see
 // classifyDrcr's call site below for the specifics and live evidence.
 
-import { DRCR_BANDS } from "@option-decode/types";
+import { DRCR_BANDS, NSE_CLOSE_UTC_HOUR, NSE_CLOSE_UTC_MINUTE } from "@option-decode/types";
 import type {
   OptionChainSnapshot,
   OptionContractTick,
@@ -363,10 +363,13 @@ const WEEKEND_DECAY_MONDAY_END_HOUR_IST = 11;
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
 // Calendar days from `now` to the chain's own expiry. NSE/BSE index options
-// expire at market close (15:30 IST = 10:00 UTC), matching the convention
-// getCalendarDaysToExpiry uses for the gamma-risk alert in this package.
+// expire at market close - now 15:41 IST = 10:11 UTC - matching the
+// convention getCalendarDaysToExpiry uses for the gamma-risk alert in this
+// package. Both read the same constants from @option-decode/types; this was
+// the fifth independent copy of the close time in the repo.
 function calendarDaysToExpiry(expiry: string, now: Date): number {
-  const expiryMs = Date.parse(`${expiry}T10:00:00.000Z`);
+  const closeUtc = `${String(NSE_CLOSE_UTC_HOUR).padStart(2, "0")}:${String(NSE_CLOSE_UTC_MINUTE).padStart(2, "0")}`;
+  const expiryMs = Date.parse(`${expiry}T${closeUtc}:00.000Z`);
   if (!Number.isFinite(expiryMs)) {
     return Number.POSITIVE_INFINITY;
   }

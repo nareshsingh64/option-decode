@@ -1,3 +1,4 @@
+import { NSE_CLOSE_UTC_HOUR, NSE_CLOSE_UTC_MINUTE } from "@option-decode/types";
 import type {
   AlertThresholdConfig,
   AtmIvPercentile,
@@ -318,8 +319,10 @@ const GAMMA_RISK_DAYS_TO_EXPIRY = 1;
  * again in the future.
  */
 function getCalendarDaysToExpiry(expiry: string, asOfMs: number): number {
-  // NSE/BSE index options expire at market close (15:30 IST = 10:00 UTC).
-  const expiryMs = Date.parse(`${expiry}T10:00:00.000Z`);
+  // NSE/BSE index options expire at market close, now 15:41 IST = 10:11 UTC
+  // (constants in @option-decode/types so a timing change lands everywhere).
+  const closeUtc = `${String(NSE_CLOSE_UTC_HOUR).padStart(2, "0")}:${String(NSE_CLOSE_UTC_MINUTE).padStart(2, "0")}`;
+  const expiryMs = Date.parse(`${expiry}T${closeUtc}:00.000Z`);
   if (!Number.isFinite(expiryMs)) {
     return Number.POSITIVE_INFINITY;
   }

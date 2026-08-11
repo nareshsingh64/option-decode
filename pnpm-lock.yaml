@@ -234,6 +234,10 @@ importers:
         version: 5.9.3
 
   packages/utils:
+    dependencies:
+      '@option-decode/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       tsx:
         specifier: ^4.19.2

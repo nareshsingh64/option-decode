@@ -1,4 +1,5 @@
 import { MIN_RECOMMENDATION_OPEN_INTEREST, OI_BREADTH_DOMINANCE_RATIO, pressureValue } from "@option-decode/analytics";
+import { NSE_SESSION_CLOSE_IST_MINUTES } from "@option-decode/types";
 import type { OptionContractTick } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
@@ -70,7 +71,10 @@ export function buildAtmStrikeRange(overview: MarketOverview): VixStrikeRange {
 }
 
 function getDaysToExpiry(expiry: string, snapshotTime: string) {
-  const expiryTime = Date.parse(`${expiry}T15:30:00+05:30`);
+  // Market close, from the shared constants rather than retyped - NSE moved
+  // to 15:41 IST, and this used to hardcode 15:30 independently.
+  const closeIst = `${String(Math.floor(NSE_SESSION_CLOSE_IST_MINUTES / 60)).padStart(2, "0")}:${String(NSE_SESSION_CLOSE_IST_MINUTES % 60).padStart(2, "0")}`;
+  const expiryTime = Date.parse(`${expiry}T${closeIst}:00+05:30`);
   const snapshotDate = Date.parse(snapshotTime);
   if (!Number.isFinite(expiryTime) || !Number.isFinite(snapshotDate)) {
     return 1;

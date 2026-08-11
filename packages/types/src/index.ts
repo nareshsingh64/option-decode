@@ -373,6 +373,31 @@ export type StrikeMatrixBias = "Bullish" | "Neutral" | "Bearish" | "Transitional
 // consumer, and is a single file with no internal imports, so it bundles
 // cleanly. Use classifyDrcr from @option-decode/analytics to CLASSIFY a
 // value; these constants are for rendering the boundaries themselves.
+// Market session windows, as IST minutes since midnight. Single source of
+// truth for "is the market open" and for "when does a contract expire" -
+// both were previously retyped in five places (isMarketSessionOpen in
+// @option-decode/utils, getYearsToExpiry in @option-decode/trading,
+// getCalendarDaysToExpiry in @option-decode/analytics, the option-chain
+// builders in apps/web, and a log string in the worker), so a timing change
+// could be applied to some and missed in others.
+//
+// NSE moved to **09:14-15:41 IST** (from 09:15-15:30); MCX is unchanged.
+// Lives here rather than in @option-decode/utils because utils has no
+// dependencies at all and apps/web already imports runtime constants from
+// this package - see the DRCR_BANDS comment below for the same reasoning.
+export const NSE_SESSION_OPEN_IST_MINUTES = 9 * 60 + 14;
+export const NSE_SESSION_CLOSE_IST_MINUTES = 15 * 60 + 41;
+export const MCX_SESSION_OPEN_IST_MINUTES = 9 * 60;
+export const MCX_SESSION_CLOSE_IST_MINUTES = 23 * 60 + 30;
+
+// The same NSE close expressed in UTC, for expiry-moment math: contracts
+// expire at the close, not at midnight, and using midnight overstates time
+// value by up to a full trading day on expiry day itself. IST is UTC+5:30,
+// so 15:41 IST = 10:11 UTC. Note this is no longer a whole hour - anything
+// building an expiry timestamp must carry the minutes too.
+export const NSE_CLOSE_UTC_HOUR = 10;
+export const NSE_CLOSE_UTC_MINUTE = 11;
+
 export const DRCR_BANDS = {
   bullishAbove: 1.5,
   bearishBelow: 0.6,

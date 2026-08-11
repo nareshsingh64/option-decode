@@ -1,3 +1,4 @@
+import { NSE_CLOSE_UTC_HOUR, NSE_CLOSE_UTC_MINUTE } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 
 /**
@@ -30,13 +31,14 @@ const MIN_YEARS_TO_EXPIRY = 1 / (365 * 24);
 
 const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000;
 
-// NSE index options expire at market close (15:30 IST = 10:00 UTC) on the
-// expiry date, not at midnight — using midnight would overstate time value
-// by up to a full trading day on the expiry date itself.
-const MARKET_CLOSE_UTC_HOUR = 10;
+// NSE index options expire at market close on the expiry date, not at
+// midnight — using midnight would overstate time value by up to a full
+// trading day on the expiry date itself. The close moved to 15:41 IST
+// (= 10:11 UTC), so this is no longer a whole hour; both parts come from
+// @option-decode/types so a future timing change lands here automatically.
 
 /**
- * Years remaining until expiry, measured from `asOfMs` to 15:30 IST on the
+ * Years remaining until expiry, measured from `asOfMs` to the NSE close
  * expiry date. `expiryLabel` is the ISO date string ("2026-07-31") used
  * throughout this codebase as OptionChainSnapshot.expiry — see
  * expiryLabelToContractMonth() in @option-decode/db for the same parsing
@@ -50,7 +52,7 @@ export function getYearsToExpiry(expiryLabel: string, asOfMs: number): number {
     return MIN_YEARS_TO_EXPIRY;
   }
 
-  const expiryMoment = Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate(), MARKET_CLOSE_UTC_HOUR, 0, 0);
+  const expiryMoment = Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate(), NSE_CLOSE_UTC_HOUR, NSE_CLOSE_UTC_MINUTE, 0);
   const years = (expiryMoment - asOfMs) / MS_PER_YEAR;
   return Math.max(years, MIN_YEARS_TO_EXPIRY);
 }

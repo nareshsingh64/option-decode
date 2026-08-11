@@ -27,7 +27,7 @@ import { getLiveTicks } from "./live-tick-cache.js";
 const UNIVERSE_SYNC_QUEUE = "wave-fno-universe-sync";
 const UNIVERSE_SYNC_JOB_NAME = "sync";
 const UNIVERSE_SYNC_SCHEDULER_ID = "wave-fno-universe-sync:sync";
-// 07:30 IST, weekdays - ahead of the 09:15 NSE open, so the day's F&O
+// 07:30 IST, weekdays - ahead of the 09:14 NSE open, so the day's F&O
 // universe and security-id resolution are settled before quote capture and
 // the screener need them.
 const UNIVERSE_SYNC_CRON_PATTERN = "30 7 * * 1-5";
@@ -190,7 +190,7 @@ export async function startWaveScreener(
     async (_job: Job) => {
       // Unlike quote capture (NSE_EQ only - stocks only trade NSE hours),
       // the universe here also includes MCX commodities, which trade
-      // 09:00-23:30 IST - well past NSE's 15:30 close. Gating this on
+      // 09:00-23:30 IST - well past NSE's 15:41 close. Gating this on
       // NSE_EQ alone silently stopped screening CRUDEOIL/NATURALGAS/COPPER/
       // SILVER for the back half of every trading day even though fresh
       // data kept arriving for them the whole time.

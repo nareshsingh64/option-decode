@@ -1,3 +1,10 @@
+import {
+  MCX_SESSION_CLOSE_IST_MINUTES,
+  MCX_SESSION_OPEN_IST_MINUTES,
+  NSE_SESSION_CLOSE_IST_MINUTES,
+  NSE_SESSION_OPEN_IST_MINUTES
+} from "@option-decode/types";
+
 /**
  * Today's calendar date in IST as YYYY-MM-DD - for comparing against
  * expiry strings (always calendar dates, not instants), not for display.
@@ -36,8 +43,8 @@ export function isMarketSessionOpen(segment: string, now = new Date()) {
   const minutesSinceMidnight = hour * 60 + minute;
 
   if (segment === "MCX_COMM") {
-    return minutesSinceMidnight >= 9 * 60 && minutesSinceMidnight <= 23 * 60 + 30;
+    return minutesSinceMidnight >= MCX_SESSION_OPEN_IST_MINUTES && minutesSinceMidnight <= MCX_SESSION_CLOSE_IST_MINUTES;
   }
 
-  return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
+  return minutesSinceMidnight >= NSE_SESSION_OPEN_IST_MINUTES && minutesSinceMidnight <= NSE_SESSION_CLOSE_IST_MINUTES;
 }
