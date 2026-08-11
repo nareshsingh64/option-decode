@@ -38,8 +38,17 @@ const REFRESH_MS: Record<TradingHorizon, number> = {
 
 // Map a recommendation onto a Paper Trading Pro strategy from which side(s)
 // the structure writes: put-only -> bull put spread, call-only -> bear call
-// spread, both -> iron condor. Defined-risk defaults on purpose - the sim
-// ticket lets the trader switch to the naked variant deliberately.
+// spread. Defined-risk defaults on purpose - the sim ticket lets the trader
+// switch to the naked variant deliberately.
+//
+// Both sides written is IRON_CONDOR everywhere in STRIKE_MATRIX_HORIZONS
+// (packages/analytics/src/strike-matrix.ts) except one specific cell:
+// intraday+Neutral, whose own structure text is "Sell short strangle" (no
+// condor mentioned at all - unlike weekly/monthly Neutral, which list
+// "iron condor(s)" as the primary structure and strangle only as a
+// secondary alternative). SHORT_STRANGLE exists as a Paper Trade Pro
+// strategy specifically to make that one cell buildable; if that matrix
+// table's text ever changes, this condition needs to move with it.
 function buildSimDraft(underlying: string, expiry: string, horizon: TradingHorizon, data: StrikeMatrixResponse): SimTicketDraft | null {
   const { analysis } = data;
   const recommendation = analysis.recommendation;
@@ -51,7 +60,15 @@ function buildSimDraft(underlying: string, expiry: string, horizon: TradingHoriz
   if (!hasPut && !hasCall) {
     return null;
   }
-  const strategyType: SimTicketDraft["strategyType"] = hasPut && hasCall ? "IRON_CONDOR" : hasPut ? "BULL_PUT_SPREAD" : "BEAR_CALL_SPREAD";
+  const writesBothSides = hasPut && hasCall;
+  const isIntradayNeutralStrangle = writesBothSides && horizon === "intraday" && analysis.bias === "Neutral";
+  const strategyType: SimTicketDraft["strategyType"] = isIntradayNeutralStrangle
+    ? "SHORT_STRANGLE"
+    : writesBothSides
+      ? "IRON_CONDOR"
+      : hasPut
+        ? "BULL_PUT_SPREAD"
+        : "BEAR_CALL_SPREAD";
   // Only a wall that actually clears the conviction bar (meetsThreshold)
   // counts as institutional backing - a strongly negative (unwinding) WCI
   // used to win here via Math.abs() and get stamped onto the trade as
@@ -68,7 +85,6 @@ function buildSimDraft(underlying: string, expiry: string, horizon: TradingHoriz
   const wallWcis = [hasCall ? analysis.callWall : undefined, hasPut ? analysis.putWall : undefined]
     .filter((wall): wall is NonNullable<typeof wall> => wall?.meetsThreshold === true)
     .map((wall) => wall.wci);
-  const writesBothSides = hasCall && hasPut;
   const backedOnEveryWrittenSide = wallWcis.length === (writesBothSides ? 2 : 1);
   return {
     underlyingSymbol: underlying,

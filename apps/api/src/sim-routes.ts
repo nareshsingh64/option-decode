@@ -17,7 +17,7 @@ const simLegSchema = z.object({
 const simTradeSchema = z.object({
   underlyingSymbol: z.string().trim().min(1),
   expiry: z.string().trim().min(1),
-  strategyType: z.enum(["SHORT_STRADDLE", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "IRON_CONDOR", "NAKED_CALL", "NAKED_PUT"]),
+  strategyType: z.enum(["SHORT_STRADDLE", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "IRON_CONDOR", "NAKED_CALL", "NAKED_PUT", "SHORT_STRANGLE", "IRON_BUTTERFLY"]),
   horizon: z.enum(["INTRADAY", "WEEKLY", "MONTHLY"]),
   lots: z.coerce.number().int().positive().max(100),
   legs: z.array(simLegSchema).min(1).max(4),

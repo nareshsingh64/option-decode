@@ -556,6 +556,8 @@ enum SimStrategyType {
   IRON_CONDOR
   NAKED_CALL
   NAKED_PUT
+  SHORT_STRANGLE
+  IRON_BUTTERFLY
 }
 
 enum SimHorizon {

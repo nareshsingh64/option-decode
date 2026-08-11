@@ -52,7 +52,15 @@ function isIndexUnderlying(underlyingSymbol: string): boolean {
   return INDEX_UNDERLYINGS.has(underlyingSymbol.toUpperCase());
 }
 
-export type SimStrategyTypeName = "SHORT_STRADDLE" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "NAKED_CALL" | "NAKED_PUT";
+export type SimStrategyTypeName =
+  | "SHORT_STRADDLE"
+  | "BULL_PUT_SPREAD"
+  | "BEAR_CALL_SPREAD"
+  | "IRON_CONDOR"
+  | "NAKED_CALL"
+  | "NAKED_PUT"
+  | "SHORT_STRANGLE"
+  | "IRON_BUTTERFLY";
 export type SimHorizonName = "INTRADAY" | "WEEKLY" | "MONTHLY";
 
 export interface SimLegInput {
@@ -347,7 +355,7 @@ function daysToExpiry(expiryDate: Date, asOf = new Date()): number {
 }
 
 function isDefinedRisk(strategyType: SimStrategyTypeName): boolean {
-  return strategyType === "BULL_PUT_SPREAD" || strategyType === "BEAR_CALL_SPREAD" || strategyType === "IRON_CONDOR";
+  return strategyType === "BULL_PUT_SPREAD" || strategyType === "BEAR_CALL_SPREAD" || strategyType === "IRON_CONDOR" || strategyType === "IRON_BUTTERFLY";
 }
 
 // Max loss per unit for defined-risk structures: widest wing width minus the

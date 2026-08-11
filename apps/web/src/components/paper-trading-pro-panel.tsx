@@ -14,7 +14,15 @@ import type { MarketOverview } from "./live-dashboard";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
-type SimStrategyType = "SHORT_STRADDLE" | "BULL_PUT_SPREAD" | "BEAR_CALL_SPREAD" | "IRON_CONDOR" | "NAKED_CALL" | "NAKED_PUT";
+type SimStrategyType =
+  | "SHORT_STRADDLE"
+  | "BULL_PUT_SPREAD"
+  | "BEAR_CALL_SPREAD"
+  | "IRON_CONDOR"
+  | "NAKED_CALL"
+  | "NAKED_PUT"
+  | "SHORT_STRANGLE"
+  | "IRON_BUTTERFLY";
 type SimHorizon = "INTRADAY" | "WEEKLY" | "MONTHLY";
 
 // --- Signal handoff from the Strike Matrix tab ("Paper Trade This") ---
@@ -174,7 +182,9 @@ const STRATEGY_LABELS: Record<SimStrategyType, string> = {
   BEAR_CALL_SPREAD: "Bear Call Spread",
   IRON_CONDOR: "Iron Condor",
   NAKED_CALL: "Naked Call",
-  NAKED_PUT: "Naked Put"
+  NAKED_PUT: "Naked Put",
+  SHORT_STRANGLE: "Short Strangle",
+  IRON_BUTTERFLY: "Iron Butterfly"
 };
 
 const EXIT_FLAG_LABELS: Record<string, string> = {
@@ -229,6 +239,24 @@ function buildLegsForStrategy(strategy: SimStrategyType, mainStrike: number, win
       return [{ side: "SELL", optionType: "CE", strikePrice: mainStrike }];
     case "NAKED_PUT":
       return [{ side: "SELL", optionType: "PE", strikePrice: mainStrike }];
+    case "SHORT_STRANGLE":
+      // condorOffset doubles as the strangle's own strike offset from
+      // center - same "distance of the short legs from ATM" meaning it
+      // already has for Iron Condor, just without the protective wings.
+      return [
+        { side: "SELL", optionType: "PE", strikePrice: mainStrike - condorOffset },
+        { side: "SELL", optionType: "CE", strikePrice: mainStrike + condorOffset }
+      ];
+    case "IRON_BUTTERFLY":
+      // Iron Condor's own shape with the short legs pulled in to ATM
+      // (mainStrike) instead of sitting condorOffset away - same wings,
+      // same computeDefinedRiskMaxLossPerUnit math, tighter shorts.
+      return [
+        { side: "SELL", optionType: "PE", strikePrice: mainStrike },
+        { side: "BUY", optionType: "PE", strikePrice: mainStrike - wingWidth },
+        { side: "SELL", optionType: "CE", strikePrice: mainStrike },
+        { side: "BUY", optionType: "CE", strikePrice: mainStrike + wingWidth }
+      ];
   }
 }
 
@@ -328,6 +356,13 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
         { side: "BUY", optionType: "PE", strikePrice: draft.shortPutStrike - wing },
         { side: "SELL", optionType: "CE", strikePrice: draft.shortCallStrike },
         { side: "BUY", optionType: "CE", strikePrice: draft.shortCallStrike + wing }
+      ]);
+    } else if (draft.strategyType === "SHORT_STRANGLE" && draft.shortPutStrike !== undefined && draft.shortCallStrike !== undefined) {
+      // Same reasoning as Iron Condor above, just two legs - no wings to
+      // buy for an undefined-risk strangle.
+      setLegsOverride([
+        { side: "SELL", optionType: "PE", strikePrice: draft.shortPutStrike },
+        { side: "SELL", optionType: "CE", strikePrice: draft.shortCallStrike }
       ]);
     } else if (draft.shortPutStrike !== undefined) {
       setMainStrike(draft.shortPutStrike);
@@ -475,8 +510,9 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
   const greeks = summary?.portfolioGreeks;
   const analytics = summary?.analytics;
   const needsMainStrike = true;
-  const showWingWidth = strategy === "BULL_PUT_SPREAD" || strategy === "BEAR_CALL_SPREAD" || strategy === "IRON_CONDOR";
-  const showCondorOffset = strategy === "IRON_CONDOR";
+  const showWingWidth = strategy === "BULL_PUT_SPREAD" || strategy === "BEAR_CALL_SPREAD" || strategy === "IRON_CONDOR" || strategy === "IRON_BUTTERFLY";
+  const showCondorOffset = strategy === "IRON_CONDOR" || strategy === "SHORT_STRANGLE";
+  const usesCenterStrike = strategy === "IRON_CONDOR" || strategy === "IRON_BUTTERFLY" || strategy === "SHORT_STRANGLE";
 
   return (
     <section aria-label="Paper Trading Pro">
@@ -695,7 +731,7 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
           <div className="mt-2 grid grid-cols-2 gap-2">
             {needsMainStrike ? (
               <div>
-                <label className="block text-[0.65rem] uppercase text-terminal-muted">{strategy === "IRON_CONDOR" ? "Center Strike" : "Strike"}</label>
+                <label className="block text-[0.65rem] uppercase text-terminal-muted">{usesCenterStrike ? "Center Strike" : "Strike"}</label>
                 <select className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" value={mainStrike} onChange={(event) => { setMainStrike(Number(event.target.value)); setQuote(null); clearSignal(); }}>
                   {strikeChoices.map((strike) => (
                     <option key={strike} value={strike}>{strike === overview.snapshot.atmStrike ? `${strike} (ATM)` : strike}</option>
@@ -709,12 +745,14 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
             </div>
           </div>
 
-          {showWingWidth ? (
+          {showWingWidth || showCondorOffset ? (
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[0.65rem] uppercase text-terminal-muted">Wing Width</label>
-                <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={wingWidth} onChange={(event) => { setWingWidth(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); }} />
-              </div>
+              {showWingWidth ? (
+                <div>
+                  <label className="block text-[0.65rem] uppercase text-terminal-muted">Wing Width</label>
+                  <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={wingWidth} onChange={(event) => { setWingWidth(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); }} />
+                </div>
+              ) : null}
               {showCondorOffset ? (
                 <div>
                   <label className="block text-[0.65rem] uppercase text-terminal-muted">Short Offset</label>
