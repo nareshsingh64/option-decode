@@ -184,11 +184,25 @@ claim turns out wrong, retract it plainly.
 
 ## Feed gotchas (Dhan)
 
-- **Greeks are zeroed for ITM calls.** `delta`, `impliedVolatility`, `theta`,
-  `gamma` all come back as literal `0` for ~47 CE strikes on a normal NIFTY day,
-  including highly liquid ones (24,450 CE with 70M traded, 24 lakh OI). Any
-  delta-based selection on the call side is limited to roughly ATM and one strike
-  ITM. Treat `0` as missing, never as a real value.
+- **Greeks are zeroed far more widely than "ITM calls".** `delta`,
+  `impliedVolatility`, `theta`, `gamma` all come back as literal `0` —
+  originally recorded here as "~47 CE strikes", which **understates it
+  badly**. Measured on production 2026-08-11 (NIFTY, 462 ticks):
+  **358 of 462 zeroed on the 0-DTE expiry (167 CE + 191 PE)** and
+  **287 of 462 on the next expiry** — so puts are hit too, not just calls,
+  and only 104 / 175 ticks respectively carry a usable delta. Expiry day
+  inflates it (deltas genuinely collapse at 0 DTE) but does not explain it.
+  Treat `0` as missing, never as a real value.
+- **That zeroing is what starves the Strike Matrix delta bands.** Those
+  bands are narrow (intraday 0.15–0.25, weekly 0.12–0.20, monthly
+  0.08–0.15), so once ~three-quarters of the chain has no usable delta,
+  almost nothing qualifies. Same 2026-08-11 snapshot: the intraday band
+  held **exactly 2 strikes** (1 CE + 1 PE) and the **weekly band held 0**.
+  A DRCR "bias" there is a ratio of one strike against one strike, and a
+  weekly "Transitional" was *no data at all* rather than a market read.
+  The UI now says which of the two it is and prints the sample size —
+  don't undo that by treating DRCR bias as comparable in weight to the
+  Dashboard's whole-chain bias.
 - **Put-call parity does not rescue those deltas.** The feed's own CE and PE
   deltas at the same strike disagree by up to 0.11, so a reconstructed delta is
   not trustworthy enough to gate a recommendation on.
@@ -263,6 +277,19 @@ Net effect of the three fixes: first request after a deploy went 3,702ms →
   is needed in a second place, export it — do not retype it.
 - Any strike the app *names as tradeable* passes the same liquidity gate
   (`MIN_RECOMMENDATION_OPEN_INTEREST`, volume > 0). Two standards is a bug.
+- **There are two "bias" signals and they are not the same thing.** The
+  user reported them disagreeing; they are *supposed* to.
+  `calculateMarketBias` (analytics/index.ts) is **Chain Bias** — whole-chain
+  PE-vs-CE pressure over every tick, both directions of OI change,
+  Bullish/Bearish at a ±6 gap, labels `Bullish | Bearish | Balanced`.
+  `calculateStrikeMatrix`'s bias is **Writer flow (DRCR)** — put-vs-call
+  *opening*-OI conviction inside one horizon's narrow delta band only,
+  labels `Bullish | Neutral | Bearish | Transitional`. Different inputs,
+  different universes, different label sets, and independent poll cadences
+  (30s SSE vs 60s/5min/15min) against a 10s snapshot cache, so they can
+  also be reading different captures. "Balanced" and "Neutral" are *not*
+  synonyms across the two. The UI names the universe in each label for
+  exactly this reason — don't rename either back to a bare "Bias".
 - Comments here explain **why**, especially where a fix encodes a real incident
   ("live NIFTY gave 24500 against a spot of 24367"). Match that: a comment that
   restates the code is noise; one that records the failure it prevents is not.

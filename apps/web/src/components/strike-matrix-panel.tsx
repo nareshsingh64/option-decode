@@ -221,7 +221,17 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
           ) : null}
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="DRCR (Put ΣDRC / Call ΣDRC)" value={analysis.drcr === undefined ? "--" : analysis.drcr.toFixed(2)} sub={`Put ${formatCompact(analysis.putDrcTotal)} / Call ${formatCompact(analysis.callDrcTotal)}`} tone={biasTone(analysis.bias)} />
-            <MetricCard label="Market bias" value={analysis.bias} sub={biasBandText(analysis.bias)} tone={biasTone(analysis.bias)} />
+            {/* Deliberately NOT called "Market bias" any more. The Dashboard's
+                own "Chain Bias" chip is a different signal over a different
+                universe (whole chain, both OI directions) and users read the
+                shared word as a promise the two agree - they routinely don't,
+                by design. This one is writer flow in the far-OTM band only. */}
+            <MetricCard
+              label="Writer flow bias (DRCR)"
+              value={hasWriterFlow(analysis) ? analysis.bias : "No data"}
+              sub={biasBandText(analysis)}
+              tone={hasWriterFlow(analysis) ? biasTone(analysis.bias) : undefined}
+            />
             <MetricCard label="Active universe" value={`${analysis.universe.length} strikes`} sub={`|Δ| ${analysis.deltaMin.toFixed(2)}–${analysis.deltaMax.toFixed(2)} · target Δ ±${analysis.targetDelta.toFixed(2)}`} />
             <MetricCard label="WCI threshold" value={`> ${analysis.wciThreshold.toFixed(2)}`} sub={horizon === "intraday" ? "Intraday bar" : "Overnight/weekend bar"} />
           </div>
@@ -460,20 +470,37 @@ function biasTone(bias: StrikeMatrixAnalysis["bias"]): "emerald" | "red" | "ambe
   return undefined;
 }
 
+// "Transitional" covers two states that mean opposite things to a trader:
+// an ambiguous-but-real reading (DRCR landed in a gap band), and no reading
+// at all (nothing in the delta band opened OI, so there was nothing to
+// measure). Showing one word for both let an empty chain look like a market
+// call - confirmed live on NIFTY 2026-08-11, where the weekly band had ZERO
+// qualifying strikes and still rendered as a bias.
+function hasWriterFlow(analysis: StrikeMatrixAnalysis): boolean {
+  return analysis.putDrcCount > 0 || analysis.callDrcCount > 0;
+}
+
 // Band numbers come from DRCR_BANDS in @option-decode/types, the same
 // constant classifyDrcr itself reads, so this caption can never quote a
-// boundary the engine no longer uses.
-function biasBandText(bias: StrikeMatrixAnalysis["bias"]): string {
+// boundary the engine no longer uses. The sample size is appended because
+// this band is narrow enough that a "bias" is frequently a one-strike-per-
+// side ratio, which deserves to be visible rather than implied.
+function biasBandText(analysis: StrikeMatrixAnalysis): string {
+  const { bias, putDrcCount, callDrcCount } = analysis;
+  if (!hasWriterFlow(analysis)) {
+    return "No strikes in the delta band opened OI — nothing to measure";
+  }
+  const sample = `from ${putDrcCount} put / ${callDrcCount} call ${putDrcCount + callDrcCount === 1 ? "strike" : "strikes"}`;
   if (bias === "Bullish") {
-    return `DRCR > ${DRCR_BANDS.bullishAbove} — put-side writer flow dominates`;
+    return `DRCR > ${DRCR_BANDS.bullishAbove} — put-side writer flow dominates · ${sample}`;
   }
   if (bias === "Bearish") {
-    return `DRCR < ${DRCR_BANDS.bearishBelow} — call-side writer flow dominates`;
+    return `DRCR < ${DRCR_BANDS.bearishBelow} — call-side writer flow dominates · ${sample}`;
   }
   if (bias === "Neutral") {
-    return `DRCR ${DRCR_BANDS.neutralFrom}–${DRCR_BANDS.neutralTo} — balanced writer flow`;
+    return `DRCR ${DRCR_BANDS.neutralFrom}–${DRCR_BANDS.neutralTo} — balanced writer flow · ${sample}`;
   }
-  return "DRCR between defined bands — no tradable skew";
+  return `DRCR between defined bands — no tradable skew · ${sample}`;
 }
 
 function formatCompact(value: number): string {

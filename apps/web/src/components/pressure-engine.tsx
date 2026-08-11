@@ -40,7 +40,10 @@ export function PressureEngine({
             <PressureGauge label="Bearish Pressure" value={overview.pressure.bearishPressure} tone="red" detail="CE resistance dominance" />
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <SignalCell label="Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone="blue" />
+            {/* Same whole-chain signal as the Dashboard's "Chain Bias" chip,
+                so it carries the same name - distinct from Strike Matrix's
+                writer-flow bias, which reads a narrow far-OTM band instead. */}
+            <SignalCell label="Chain Bias" value={pressureSummary.bias} detail={pressureSummary.biasDetail} tone="blue" />
             <SignalCell label="Readiness" value={pressureSummary.readiness} detail={pressureSummary.readinessDetail} tone="green" />
             <SignalCell label="PCR Context" value={overview.pressure.pcr?.toFixed(2) ?? "--"} detail={chainStats.breadth} tone="blue" />
             {overview.atmStraddle ? (

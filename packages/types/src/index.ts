@@ -465,6 +465,16 @@ export interface StrikeMatrixAnalysis {
   universe: StrikeMatrixRow[];
   putDrcTotal: number;
   callDrcTotal: number;
+  // How many strikes on each side actually CONTRIBUTED to drcr/bias, i.e.
+  // survived both the delta band and the opening-OI (oiChange > 0) filter.
+  // Always <= the per-side count in `universe`, and routinely far smaller:
+  // measured live on NIFTY (2026-08-11, 462 ticks) the intraday band left
+  // exactly ONE put and ONE call, so `bias` there was a ratio of two
+  // strikes - while the Dashboard's own bias read all 462. Exposed so the
+  // UI can show that sample size instead of presenting a two-strike read
+  // with the same visual weight as a whole-chain one.
+  putDrcCount: number;
+  callDrcCount: number;
   // undefined when the call side has zero aggregate |DRC| (division guard)
   drcr?: number;
   bias: StrikeMatrixBias;

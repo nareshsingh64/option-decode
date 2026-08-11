@@ -1734,7 +1734,13 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       <section className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded border border-terminal-line bg-terminal-panel/95 px-3 py-2 shadow-sm">
         <KpiChip label={`${overview.snapshot.underlyingSymbol}`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" />
         <KpiChip label="ATM" value={formatStrike(overview.snapshot.atmStrike)} />
-        <KpiChip label="Bias" value={pressureSummary.bias} tone={pressureSummary.bias === "Bullish" ? "emerald" : pressureSummary.bias === "Bearish" ? "red" : "default"} />
+        {/* "Chain Bias", not plain "Bias": the Strike Matrix tab shows its own
+            bias (DRCR writer flow, far-OTM delta band, opening OI only) and
+            the two legitimately disagree - measured live on NIFTY 2026-08-11,
+            this read Bearish off all 462 ticks while Strike Matrix read
+            Neutral off 2. Naming the universe in each label is what stops
+            that difference reading as a bug. */}
+        <KpiChip label="Chain Bias" value={pressureSummary.bias} tone={pressureSummary.bias === "Bullish" ? "emerald" : pressureSummary.bias === "Bearish" ? "red" : "default"} />
         <KpiChip label="Bull %" value={`${overview.pressure.bullishPressure}%`} tone="emerald" />
         <KpiChip label="Bear %" value={`${overview.pressure.bearishPressure}%`} tone="amber" />
         <KpiChip label="PCR" value={overview.pressure.pcr?.toFixed(2) ?? "--"} />

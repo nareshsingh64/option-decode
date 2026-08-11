@@ -620,6 +620,8 @@ export function calculateStrikeMatrix(
     universe,
     putDrcTotal,
     callDrcTotal,
+    putDrcCount,
+    callDrcCount,
     drcr,
     bias,
     callWall,
