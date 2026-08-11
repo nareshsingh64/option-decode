@@ -1,4 +1,23 @@
-/opt/option-decode/logs/api/*.log /opt/option-decode/logs/worker/*.log {
+# Symlinked into /etc/logrotate.d/option-decode on the EC2 host, so editing
+# this file IS editing the live policy - there is no separate copy to sync.
+#
+# These paths pointed at /opt/option-decode/logs/ until 2026-08-11, which was
+# the pre-migration Docker checkout's log directory. systemd has been
+# appending to /opt/option-decode-native/logs/ since the native cutover
+# (StandardOutput=append: in each unit), so logrotate matched nothing and
+# silently never ran: api.log reached 26MB unrotated and "rotate 14" was
+# retaining zero history. logrotate reports a missing glob only under -d,
+# so nothing surfaced in normal operation.
+#
+# copytruncate is required, not stylistic: the units hold these files open
+# via append:, so a plain rename would leave every service writing to an
+# unlinked inode until its next restart - losing all logs in between.
+#
+# Web is included as well; it was absent before, so apps/web's output was
+# never rotated under either path.
+/opt/option-decode-native/logs/api/*.log
+/opt/option-decode-native/logs/worker/*.log
+/opt/option-decode-native/logs/web/*.log {
   daily
   rotate 14
   compress

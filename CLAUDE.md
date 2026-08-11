@@ -153,6 +153,32 @@ only systemd's own lines; the application's pino output goes to
 `/opt/option-decode-native/logs/api/api.log`. Reading the journal and seeing
 nothing is not evidence that nothing was logged.
 
+**`/etc/logrotate.d/option-decode` is a symlink into the repo** —
+`ops/logrotate/option-decode`. Editing that file in git *is* editing the live
+policy; there is no second copy to sync, and a `git pull` on the host rewrites
+it. Two things this cost real time:
+
+- Its paths pointed at `/opt/option-decode/logs/` (the pre-migration Docker
+  checkout) while systemd writes to `/opt/option-decode-**native**/logs/`, so
+  **rotation silently never ran** — `api.log` reached 26 MB unrotated and
+  `rotate 14` retained nothing. A glob that matches nothing is only reported
+  under `logrotate -d`, never in normal operation. Fixed 2026-08-11; the
+  upside of the bug is that full history survived, which is what made the
+  5-trading-day API error-rate analysis possible at all.
+- **Don't `sudo tee` the `/etc/logrotate.d/` path** to edit it: the write
+  follows the symlink into the git checkout, and `sudo chown` on a symlink
+  follows too, leaving a root-owned tracked file that the next `git pull`
+  cannot overwrite. Edit `ops/logrotate/option-decode` in the repo, commit,
+  and pull.
+
+Log parsing note: `api.log` interleaves pino JSON with plain-text Prisma and
+pnpm output from each unit's `ExecStartPre`, so roughly **46% of its lines are
+not JSON**. They carry no `statusCode`, so request-rate analysis is unaffected
+— but a naive `json.loads` per line will look alarming. The Docker-era
+`172.18.0.1` MySQL errors in there are historical (last seen 30 Jul 2026),
+not live; `DATABASE_URL` is `127.0.0.1` now.
+
+
 ## Verify against live data, not fixtures
 
 This is the standing expectation for anything that computes a number a trader
@@ -302,19 +328,43 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
 
 ## Open threads
 
-- **Worker memory growth — mitigated 2026-08-05, root cause still unknown.**
-  It was never a leak: a live `malloc_trim(0)` (via `gdb -p`, safe on the
-  running process) returned 4.58 G of a 4.92 G RSS in under a second, so
-  glibc was hoarding freed pages rather than anything retaining objects.
-  The worker unit now sets
-  `Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2`
-  (`libjemalloc2`, already installed; path is arch-specific), which returns
-  memory eagerly and holds steady around 570–600 MB across cycles.
-  **Reading the fix as failed is easy:** systemd's `memory peak` line is a
-  cgroup high-water mark and still reports ~6 G, because it catches the
-  transient spike before jemalloc gives the memory back. Check mid-cycle RSS
-  or `free -m` instead. Which allocation site churns is still unidentified —
-  the Dhan feed's per-message `ArrayBuffer`s remain the leading suspect.
+- **Worker memory growth — the "570–600 MB" claim below was WRONG; measured
+  again 2026-08-11 and it is the V8 heap, not glibc.** Keeping the history
+  because the retraction is the useful part.
+  - *What was believed (2026-08-05):* a live `malloc_trim(0)` (via `gdb -p`)
+    returned 4.58 G of a 4.92 G RSS, so glibc was blamed for hoarding freed
+    pages. The unit got
+    `Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2`
+    and this file recorded it as "holds steady around 570–600 MB across
+    cycles". **That number is not reproducible today.**
+  - *What is actually true (2026-08-11, live production):* jemalloc **is**
+    still loaded (4 mappings in `/proc/<pid>/maps` — check that before
+    assuming it was dropped). The worker nonetheless reaches **1.4 G RSS in
+    under 5 minutes** and **3.1 G cgroup peak per 15-minute cycle**, three
+    cycles running. `smaps_rollup` shows 2.07 G anonymous, and `smaps`
+    attributes **1,902 MB of it to a single anonymous mapping** — one
+    contiguous region, which is the shape of the V8 heap, not of scattered
+    native `ArrayBuffer`s.
+  - *The ceiling explains it.* `v8.getHeapStatistics().heap_size_limit` on
+    this host is **1,960 MB** — V8 sized its default old space from total
+    RAM, not knowing api + worker + web + MySQL + Redis share a 3.8 G box.
+    The heap sits at ~97% of that limit, and the unit passes **no**
+    `--max-old-space-size`. Sustained CPU is ~33% of a core (5 min CPU per
+    15 min wall), consistent with GC thrashing against the cap.
+  - *Nothing is fixed — it is contained.* `option-decode-worker-restart.timer`
+    kills and restarts the worker every 15 minutes; that timer is the only
+    reason the box survives. Host sits at ~120 MB available with 1.37 G
+    swapped. Do not read "no OOM in the logs" as health.
+  - **Before diagnosing further, add instrumentation: the worker logs no
+    memory at all today.** `process.memoryUsage()` +
+    `v8.getHeapStatistics()` per cycle is the missing first step, and would
+    settle "collectable garbage vs genuine retention" — which a heap
+    snapshot under `--max-old-space-size` can then localise. The Dhan feed's
+    per-message `ArrayBuffer`s are still a suspect but are no longer the
+    leading one; a single 1.9 G mapping points at retained JS objects.
+  - Still true and still a trap: systemd's `memory peak` is a cgroup
+    high-water mark, so it overstates a moment rather than describing the
+    steady state. Use mid-cycle RSS, `smaps_rollup`, or `free -m`.
 - **First-login latency** — server side is done (see the performance section
   above; 3,702 ms → 107 ms cold, 4 ms warm). Users originally reported 20–25 s
   and nothing measurable on the API ever accounted for that, so the remainder
