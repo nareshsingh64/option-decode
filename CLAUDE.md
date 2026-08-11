@@ -339,43 +339,73 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
 
 ## Open threads
 
-- **Worker memory growth — the "570–600 MB" claim below was WRONG; measured
-  again 2026-08-11 and it is the V8 heap, not glibc.** Keeping the history
-  because the retraction is the useful part.
+- **Worker memory — it is a transient NATIVE burst, not a leak and not the
+  V8 heap.** Two earlier diagnoses in this file were wrong; both retractions
+  are below, because the way each was reached is the reusable part.
   - *What was believed (2026-08-05):* a live `malloc_trim(0)` (via `gdb -p`)
     returned 4.58 G of a 4.92 G RSS, so glibc was blamed for hoarding freed
     pages. The unit got
     `Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2`
     and this file recorded it as "holds steady around 570–600 MB across
     cycles". **That number is not reproducible today.**
-  - *What is actually true (2026-08-11, live production):* jemalloc **is**
-    still loaded (4 mappings in `/proc/<pid>/maps` — check that before
-    assuming it was dropped). The worker nonetheless reaches **1.4 G RSS in
-    under 5 minutes** and **3.1 G cgroup peak per 15-minute cycle**, three
-    cycles running. `smaps_rollup` shows 2.07 G anonymous, and `smaps`
-    attributes **1,902 MB of it to a single anonymous mapping** — one
-    contiguous region, which is the shape of the V8 heap, not of scattered
-    native `ArrayBuffer`s.
-  - *The ceiling explains it.* `v8.getHeapStatistics().heap_size_limit` on
-    this host is **1,960 MB** — V8 sized its default old space from total
-    RAM, not knowing api + worker + web + MySQL + Redis share a 3.8 G box.
-    The heap sits at ~97% of that limit, and the unit passes **no**
-    `--max-old-space-size`. Sustained CPU is ~33% of a core (5 min CPU per
-    15 min wall), consistent with GC thrashing against the cap.
-  - *Nothing is fixed — it is contained.* `option-decode-worker-restart.timer`
-    kills and restarts the worker every 15 minutes; that timer is the only
-    reason the box survives. Host sits at ~120 MB available with 1.37 G
-    swapped. Do not read "no OOM in the logs" as health.
-  - **Before diagnosing further, add instrumentation: the worker logs no
-    memory at all today.** `process.memoryUsage()` +
-    `v8.getHeapStatistics()` per cycle is the missing first step, and would
-    settle "collectable garbage vs genuine retention" — which a heap
-    snapshot under `--max-old-space-size` can then localise. The Dhan feed's
-    per-message `ArrayBuffer`s are still a suspect but are no longer the
-    leading one; a single 1.9 G mapping points at retained JS objects.
+  - *Also wrong, same day, mine:* `smaps` shows **1,902 MB in a single
+    anonymous mapping**, and I read that shape as "must be the V8 heap",
+    then nearly set `--max-old-space-size` on the strength of it. **Don't.**
+    The worker was already logging the numbers that disprove it. One
+    contiguous mapping is not evidence of a heap; check it against
+    `process.memoryUsage()` before concluding anything.
+  - *What the measurements actually say (2026-08-11, production, 20s
+    sampling across full cycles):*
+
+    ```
+    RSS=2907MB  heapUsed=133MB  heapTotal=163MB  external=9.4MB  arrayBuffers=2.3MB
+    RSS= 225MB  heapUsed= 82MB  heapTotal=115MB  external=7.9MB  arrayBuffers=0.7MB
+    ```
+
+    - **Not the JS heap.** `heapTotal` never passes ~165 MB while RSS reaches
+      2.9 G, so `--max-old-space-size` would never bind — it is a no-op here,
+      not a fix.
+    - **Not a leak.** RSS falls back to ~225 MB on its own, repeatedly. The
+      memory *is* released. What a 3.8 G host shared with api/web/MySQL/Redis
+      cannot absorb is the transient **peak**, which is a different problem
+      with a different fix than the ratchet everyone assumed.
+    - **Not `ArrayBuffer`s either.** `external` + `arrayBuffers` stay under
+      10 MB throughout, which retires the DhanLiveFeedClient theory that
+      motivated the original logging.
+    - It is **native memory outside V8's accounting** — `nativeGapMb` in the
+      log (RSS minus heapTotal/external/arrayBuffers) swings ~100 MB → ~2.7 G.
+  - *Attributed to the capture job, first cycle after instrumenting:*
+
+    ```
+    capture:before  RSS= 169MB  nativeGap= 106MB
+    capture:after   RSS=1206MB  nativeGap=1070MB   (one captureOnce)
+    ```
+
+    ~964 MB of native allocation inside a **single** `captureOnce()` — and
+    that sample was taken *after market close, on a job that was skipping
+    storage*, so the burst is not proportional to ticks processed. That
+    points at the query/setup path rather than tick volume.
+  - *Leading suspect, untested:* Prisma's WASM query compiler
+    (`engineType = "client"`). WASM linear memory is a native mmap invisible
+    to `process.memoryUsage()`, which fits this signature exactly — and
+    `schema.prisma`'s own comment records the *previous* engine holding
+    "multiple GB completely invisible to Node's own memory APIs, on a process
+    that otherwise sits under 100MB of V8 heap". Same fingerprint, new
+    engine. Both `createMany` call sites already route through
+    `insertInFixedShapes`, so the known prepared-statement-cache vector is
+    already guarded — this is something else.
+  - *Contained, not fixed.* `option-decode-worker-restart.timer` restarts the
+    worker every 15 minutes and is the only reason the box survives; host sits
+    at ~120 MB available with 1.37 G swapped. Keep it until the peak is
+    actually reduced. Do not read "no OOM in the logs" as health.
   - Still true and still a trap: systemd's `memory peak` is a cgroup
     high-water mark, so it overstates a moment rather than describing the
     steady state. Use mid-cycle RSS, `smaps_rollup`, or `free -m`.
+  - **The instrumentation is in `apps/worker/src/worker.ts` and is the point
+    of it — read the log before theorising.** It samples every 20s (2-minute
+    sampling caught the burst in ~1 sample in 3 and missed the rise and fall,
+    which is how "grows unboundedly" survived as a description) and brackets
+    each capture job.
 - **First-login latency** — server side is done (see the performance section
   above; 3,702 ms → 107 ms cold, 4 ms warm). Users originally reported 20–25 s
   and nothing measurable on the API ever accounted for that, so the remainder
