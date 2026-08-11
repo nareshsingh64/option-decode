@@ -9,4 +9,10 @@
 # so that slot had become SIX MINUTES BEFORE the close, i.e. a MySQL restart
 # in the middle of live ingest. Any future change to the session window has
 # to be checked against this line.
-20 10 * * * root /opt/option-decode/scripts/mysql-safe-restart.sh
+#
+# Points at ops/scripts/, not scripts/. There is an UNTRACKED copy of this
+# script at /opt/option-decode/scripts/mysql-safe-restart.sh on the host
+# which this cron used to run - so every edit to the tracked ops/scripts/
+# copy was landing somewhere cron never looked. Same class of bug as the
+# logrotate paths. The untracked copy is now unreferenced; don't edit it.
+20 10 * * * root /opt/option-decode/ops/scripts/mysql-safe-restart.sh
