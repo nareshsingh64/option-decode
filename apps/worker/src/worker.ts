@@ -56,29 +56,56 @@ if (pushNotificationsEnabled) {
   webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY as string, config.VAPID_PRIVATE_KEY as string);
 }
 
-const MEMORY_LOG_INTERVAL_MS = 2 * 60 * 1000;
+// 20s, not the 2 minutes this used to sample at. The thing being measured is
+// a BURST, and 2-minute sampling could not resolve it: it caught the spike in
+// roughly one sample in three and missed the rise and fall entirely, which is
+// how "RSS grows unboundedly" survived as a description for so long.
+const MEMORY_LOG_INTERVAL_MS = 20 * 1000;
 
-// Temporary diagnostic instrumentation (2026-07-31) - RSS was observed
-// growing from ~3GB to ~6.9GB within under an hour on a freshly-booted,
-// otherwise-idle-at-boot instance, refilling swap even on the newly-resized
-// (8GB) host. Logging the Node/V8 memory breakdown on an interval lets us
-// tell apart a genuine JS object leak (heapUsed climbing) from off-heap
-// growth (arrayBuffers/external climbing - a likely candidate given
-// DhanLiveFeedClient parses raw WebSocket ArrayBuffers directly in
-// handleBinaryMessage) without needing a full heap snapshot, which would be
-// slow and disruptive to capture/move off a live production box mid-trading
-// day. Remove once the root cause is confirmed and fixed.
-setInterval(() => {
+/**
+ * Node/V8 memory breakdown, plus the number that actually matters here.
+ *
+ * What this instrumentation established (production, 2026-08-11, samples
+ * across a full 15-minute cycle):
+ *
+ *   RSS=2907MB  heapUsed=133MB  heapTotal=163MB  external=9.4MB  arrayBuffers=2.3MB
+ *   RSS= 225MB  heapUsed= 82MB  heapTotal=115MB  external=7.9MB  arrayBuffers=0.7MB
+ *
+ * Two conclusions follow, and both contradict earlier theories in CLAUDE.md:
+ *
+ * 1. **It is not a JS heap problem.** heapTotal never exceeds ~165MB while
+ *    RSS reaches 2.9GB. `--max-old-space-size` therefore does nothing here -
+ *    the cap would never bind. Don't reach for it.
+ * 2. **It is not a leak.** RSS returns to ~225MB on its own, repeatedly. The
+ *    memory IS released. What the box cannot survive is the transient PEAK
+ *    (~2.9GB on a 3.8GB host shared with api/web/MySQL/Redis), not a ratchet.
+ *
+ * `nativeGapMb` is RSS minus everything Node can account for, so the split
+ * above is visible directly in the log instead of having to be recomputed by
+ * hand each time. It is the quantity to watch: it swings ~100MB -> ~2.7GB.
+ * `external`/`arrayBuffers` stay under 10MB throughout, which also rules out
+ * the DhanLiveFeedClient ArrayBuffer theory that motivated the original
+ * version of this logging - those would show up there, and they don't.
+ */
+function logWorkerMemory(label: string, extra?: Record<string, unknown>): void {
   const mem = process.memoryUsage();
   const toMb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+  // Everything RSS holds that Node cannot attribute to the JS heap or to
+  // its own external/ArrayBuffer accounting - i.e. native allocations.
+  const nativeGapMb = toMb(mem.rss - mem.heapTotal - mem.external - mem.arrayBuffers);
   console.log("Worker memory usage", {
+    at: label,
     rssMb: toMb(mem.rss),
     heapUsedMb: toMb(mem.heapUsed),
     heapTotalMb: toMb(mem.heapTotal),
     externalMb: toMb(mem.external),
-    arrayBuffersMb: toMb(mem.arrayBuffers)
+    arrayBuffersMb: toMb(mem.arrayBuffers),
+    nativeGapMb,
+    ...extra
   });
-}, MEMORY_LOG_INTERVAL_MS).unref();
+}
+
+setInterval(() => logWorkerMemory("interval"), MEMORY_LOG_INTERVAL_MS).unref();
 
 const dhan = new DhanClient({
   baseUrl: config.DHAN_API_BASE_URL,
@@ -803,7 +830,20 @@ async function startWorker() {
         trigger: job.data.trigger,
         attempt: job.attemptsMade + 1
       });
-      await captureOnce();
+      // Sampled either side of the job, not just on the 20s interval: the
+      // interval says a ~2.5GB native burst happens, but cannot say which
+      // work caused it. A before/after pair per job does, and the capture
+      // job is the first suspect simply because it is what runs on this
+      // cadence. If the delta lands here, the search narrows to captureOnce;
+      // if it doesn't, the burst belongs to the wave screener or the live
+      // feed and this rules the capture path out - which is worth as much.
+      logWorkerMemory("capture:before", { jobId: job.id });
+      const startedAt = Date.now();
+      try {
+        await captureOnce();
+      } finally {
+        logWorkerMemory("capture:after", { jobId: job.id, tookMs: Date.now() - startedAt });
+      }
     },
     {
       connection: redisConnection,
