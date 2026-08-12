@@ -78,3 +78,37 @@ awk '
     if (!pairs) print "  no complete capture:before/after pairs yet (worker restarts every 15 min; wait for a cycle)"
   }
 ' "$LOG"
+
+# The screener scan is the actual allocator (measured 2026-08-12: one scan
+# drives RSS 276MB -> 2,134MB across ~216 sequential per-symbol history
+# queries, even out of market hours on static data). The capture pairs above
+# no longer show it, so trace each scan explicitly.
+#
+# NOTE: "ts:" is printed BEFORE "at:", so `grep -A` around the label loses
+# the timestamp. Parse whole records.
+echo
+echo "=== screener scans (start -> per-40-symbol RSS -> peak) ==="
+awk '
+  /Worker memory usage \{/ { inrec=1; ts=""; at=""; rss=0; s=-1; next }
+  inrec && /ts:/      { v=$2; gsub(/[",'"'"']/,"",v); ts=v }
+  inrec && /at:/      { v=$2; gsub(/[",'"'"']/,"",v); at=v }
+  inrec && /rssMb:/   { v=$2; gsub(/,/,"",v); rss=v+0 }
+  inrec && /scanned:/ { v=$2; gsub(/,/,"",v); s=v+0 }
+  inrec && /^\}/ {
+    inrec=0
+    if (at != "wave:screener-scan:progress") next
+    if (s == 0) {
+      if (line != "") { print line "  PEAK=" int(peak) " MB"; n++; tot+=peak; if (peak>worst) worst=peak }
+      line=sprintf("  %s start=%-6.0f", substr(ts,12,8), rss); peak=rss; next
+    }
+    if (line == "") next
+    line = line sprintf(" %d=%-7.0f", s, rss)
+    if (rss > peak) peak = rss
+    next
+  }
+  END {
+    if (line != "") { print line "  PEAK=" int(peak) " MB"; n++; tot+=peak; if (peak>worst) worst=peak }
+    if (n) printf "\n  scans=%d  mean peak=%.0f MB  worst peak=%.0f MB\n", n, tot/n, worst
+    else print "  (no scan samples yet - the scan runs every 3 minutes)"
+  }
+' "$LOG"
