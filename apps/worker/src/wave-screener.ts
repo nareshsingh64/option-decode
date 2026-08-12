@@ -17,6 +17,8 @@
 import { calculateElliottWave, calculateRsi, calculateRvol, evaluateWaveScreener, WAVE_ZIGZAG_PRESETS } from "@option-decode/analytics";
 import { getSpotPriceHistory, getWavePriceHistory, listActiveFnoStocks, recordWaveAlertIfNew, recordWavePricePoints, syncFnoStockUniverse } from "@option-decode/db";
 import { getUnderlyingDefinition } from "@option-decode/dhan";
+import { runExclusive } from "./heavy-job-lock.js";
+import { logWorkerMemory } from "./worker-memory.js";
 import type { DhanClient } from "@option-decode/dhan";
 import type { SpotPricePoint } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
@@ -110,6 +112,14 @@ export async function startWaveScreener(
   const quoteCaptureWorker = new BullWorker(
     QUOTE_CAPTURE_QUEUE,
     async (_job: Job) => {
+      // Serialised with the option-chain capture jobs and instrumented -
+      // this path overlapped only 6.7% of captures but accounted for 54%
+      // of their >500MB bursts (production, 2026-08-12). See
+      // heavy-job-lock.ts.
+      return runExclusive("wave:quote-capture", async () => {
+        logWorkerMemory("wave:quote-capture:before");
+        const startedAt = Date.now();
+        try {
       // getEquityQuotes needs authenticated Dhan API access, unlike the
       // universe sync (that hits Dhan's public lot-size page and scrip
       // master CSV, no credentials required) - skip it the same way
@@ -166,7 +176,11 @@ export async function startWaveScreener(
       const stored = await recordWavePricePoints(points);
       if (stored > 0) {
         console.log("Captured F&O stock quotes for Elliott Wave screener", { requested: resolvable.length, viaLiveFeed: resolvable.length - stillNeeded.length, viaRest: stillNeeded.length, stored });
-      }
+        }
+        } finally {
+          logWorkerMemory("wave:quote-capture:after", { tookMs: Date.now() - startedAt });
+        }
+      });
     },
     { connection: redisConnection, concurrency: 1 }
   );
@@ -188,6 +202,14 @@ export async function startWaveScreener(
   const screenerScanWorker = new BullWorker(
     SCREENER_SCAN_QUEUE,
     async (_job: Job) => {
+      // Serialised with the option-chain capture jobs and instrumented -
+      // this path overlapped only 6.7% of captures but accounted for 54%
+      // of their >500MB bursts (production, 2026-08-12). See
+      // heavy-job-lock.ts.
+      return runExclusive("wave:screener-scan", async () => {
+        logWorkerMemory("wave:screener-scan:before");
+        const startedAt = Date.now();
+        try {
       // Unlike quote capture (NSE_EQ only - stocks only trade NSE hours),
       // the universe here also includes MCX commodities, which trade
       // 09:00-23:30 IST - well past NSE's 15:41 close. Gating this on
@@ -246,9 +268,13 @@ export async function startWaveScreener(
         }
       }
 
-      if (alertsCreated > 0) {
-        console.log("Elliott Wave screener scan created new alerts", { alertsCreated, universeSize: indexSymbols.length + stockSymbols.length });
-      }
+        if (alertsCreated > 0) {
+          console.log("Elliott Wave screener scan created new alerts", { alertsCreated, universeSize: indexSymbols.length + stockSymbols.length });
+        }
+        } finally {
+          logWorkerMemory("wave:screener-scan:after", { tookMs: Date.now() - startedAt });
+        }
+      });
     },
     { connection: redisConnection, concurrency: 1 }
   );
