@@ -385,11 +385,17 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     that sample was taken *after market close, on a job that was skipping
     storage*, so the burst is not proportional to ticks processed. That
     points at the query/setup path rather than tick volume.
+  - **Neither 2026-08-12 fix reduced the peak — retracted.** Both were
+    reported here as wins on a metric that could not show otherwise.
+    Per-15-minute-generation peak RSS: **pre-split 1,819-2,485 MB,
+    post-split 1,726-2,955 MB, post-serialise 2,870 MB.** Flat to slightly
+    worse. The celebrated "mean delta +873 MB → +18 MB" measured allocation
+    *within a job* and was then compared across a change that split one job
+    into seven — the metric fell by construction. **Measure peak RSS per
+    restart generation, never per-job deltas, when judging a partitioning
+    change.**
   - *Fix 1 — one job per underlying (2026-08-12).* `captureOnce` fanned out
-    ~14 chain writes in one 31-41s job, so all that native memory was live
-    at once. It is now a dispatcher enqueuing one job per underlying:
-    **mean delta +873 MB → +18 MB**, RSS steady ~374 MB against 1,200-1,900
-    before. Two traps this hit, both worth not repeating: the queue limiter
+    ~14 chain writes in one 31-41s job. Two traps this hit, both worth not repeating: the queue limiter
     was `max 1 per 15s` and would have throttled a 30s cycle to a single job
     (silent capture starvation), and staggering by *enqueue delay* does not
     space jobs that are already overdue — delayed jobs survive the 15-minute
@@ -403,6 +409,18 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     neighbour averaged **−43 MB**, and SENSEX's worst (1,441 MB) beat
     BANKNIFTY's (1,295 MB) on half the ticks. Per-underlying mean deltas are
     all near zero. There is no big-chain write to optimise.
+  - **The actual allocator is the screener SCAN, on a 3-minute cadence.**
+    Within one generation RSS is ~350 MB baseline with **5 spikes to
+    ~1.9 GB, returning to baseline each time** — 5 spikes per 15 minutes
+    against `SCREENER_SCAN_INTERVAL_MS = 3 * 60_000`, an exact match. The
+    scan loops ~216 symbols calling `getSpotPriceHistory`/
+    `getWavePriceHistory` per symbol. It is **already sequential and
+    `points` goes out of scope each iteration**, so nothing retains 216
+    histories at once and "batch the loading" fixes a problem that does not
+    exist — I proposed exactly that before reading the loop. The open
+    question is whether the allocator simply fails to return pages during
+    ~216 back-to-back queries (a periodic yield would help) or one step
+    dominates; `wave:screener-scan:progress` samples now answer it.
   - *Fix 2 — serialise the wave screener (2026-08-12).* What predicts a
     burst is **overlap**, not size. Across ~1,500 post-split captures the
     screener ran during 102 of them and 25 burst (**24.5%**); of the other

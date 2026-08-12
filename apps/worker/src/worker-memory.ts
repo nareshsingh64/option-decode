@@ -28,6 +28,13 @@ export function logWorkerMemory(label: string, extra?: Record<string, unknown>):
   const toMb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
   const nativeGapMb = toMb(mem.rss - mem.heapTotal - mem.external - mem.arrayBuffers);
   console.log("Worker memory usage", {
+    // console.log writes no timestamp of its own, and these lines are not
+    // pino JSON, so until this was added the only way to place a sample in
+    // time was to count lines between "Option Decode worker starting"
+    // markers. That made "did the peak move after the 10:17 deploy?" far
+    // harder to answer than it should have been - every comparison had to be
+    // per-restart-generation rather than per clock window.
+    ts: new Date().toISOString(),
     at: label,
     rssMb: toMb(mem.rss),
     heapUsedMb: toMb(mem.heapUsed),

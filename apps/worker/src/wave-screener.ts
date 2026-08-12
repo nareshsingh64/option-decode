@@ -47,6 +47,9 @@ const SCREENER_SCAN_SCHEDULER_ID = "wave-screener-scan:scan";
 // change every 60s, and this keeps Dhan/DB load down since it's re-reading
 // history for the whole universe every run, not just the latest tick.
 const SCREENER_SCAN_INTERVAL_MS = 3 * 60_000;
+// Every Nth symbol of the ~216-symbol scan universe, so one scan produces a
+// handful of samples rather than 216 log blocks.
+const SCAN_MEMORY_SAMPLE_EVERY = 40;
 // Only screening the intraday horizon today - see WAVE_ZIGZAG_PRESETS. The
 // tab's own manual analysis still lets a user pick weekly/monthly; extending
 // the background screener to those horizons is a straightforward follow-up
@@ -229,7 +232,29 @@ export async function startWaveScreener(
       const sinceMs = Date.now() - SCREENER_LOOKBACK_MS;
       let alertsCreated = 0;
 
-      for (const symbol of [...indexSymbols, ...stockSymbols]) {
+      const scanUniverse = [...indexSymbols, ...stockSymbols];
+      let scanned = 0;
+
+      for (const symbol of scanUniverse) {
+        // Sampled through the loop, not just either side of the job. This
+        // scan runs every 3 minutes and RSS spikes ~1.5GB on exactly that
+        // cadence (5 spikes per 15-minute generation, production
+        // 2026-08-12), but the loop is already one symbol at a time and
+        // `points` goes out of scope each iteration - so nothing here is
+        // retaining 216 histories at once, and "batch it" would have been
+        // fixing a problem that does not exist.
+        //
+        // What these samples decide: a steady climb across the loop means
+        // the allocator is not returning pages during ~216 back-to-back
+        // queries (a periodic yield would help), whereas a jump at one
+        // point means a single symbol or step is responsible. Those need
+        // opposite fixes, which is why this measures before anything is
+        // changed.
+        if (scanned % SCAN_MEMORY_SAMPLE_EVERY === 0) {
+          logWorkerMemory("wave:screener-scan:progress", { scanned, universeSize: scanUniverse.length });
+        }
+        scanned += 1;
+
         try {
           const isIndex = Boolean(getUnderlyingDefinition(symbol));
           const points: SpotPricePoint[] = isIndex ? await getSpotPriceHistory(symbol, sinceMs) : await getWavePriceHistory(symbol, sinceMs);
