@@ -16,6 +16,29 @@ import { startWaveScreener } from "./wave-screener.js";
 const config = loadConfig();
 const MARKET_SNAPSHOT_QUEUE = "market-snapshot";
 const CAPTURE_JOB_NAME = "capture";
+// The scheduled "capture" job used to fetch and store every underlying's
+// chains itself: 7 underlyings x (current + next expiry) = ~14 option-chain
+// writes inside one 31-41s job. Measured in production 2026-08-12, that one
+// job allocated 915-1612MB of NATIVE memory (heapTotal stayed flat at
+// ~199MB), all of it live simultaneously because it was one unit of work,
+// and all of it released once the job ended. The 2.5-2.9GB peak that has
+// been driving this box into swap is that burst, not a leak.
+//
+// So "capture" is now a dispatcher that fans out one job per underlying.
+// Same chains, same 30s cadence, same Dhan call count - but each
+// underlying's native memory is freed when its own job finishes instead of
+// accumulating across all seven.
+const CAPTURE_UNDERLYING_JOB_NAME = "capture-underlying";
+const CAPTURE_STOCKS_JOB_NAME = "capture-stocks";
+// Spacing between the fan-out jobs. Concurrency is 1, so jobs already run
+// serially and this is not what keeps them apart - it is insurance against
+// a fast cycle firing option-chain calls back to back. Today's unsplit loop
+// records gaps as short as 0.02s between Dhan calls (194 sub-second gaps in
+// one morning); Dhan answers a breach with HTTP 429 "805: Too many
+// requests. Further requests may result in the user being blocked", so
+// erring wide is cheap and erring narrow is not. Mirrors
+// STOCK_CAPTURE_STAGGER_MS, which exists for the same reason.
+const CAPTURE_UNDERLYING_STAGGER_MS = 1500;
 const SCHEDULER_ID = "market-snapshot:capture";
 const SNAPSHOT_RETENTION_QUEUE = "snapshot-retention";
 const RETENTION_JOB_NAME = "cleanup";
@@ -196,6 +219,19 @@ async function resyncLiveFeedSubscriptions() {
 
 type MarketSnapshotJobData = {
   trigger: "startup" | "scheduled";
+  // Set only on CAPTURE_UNDERLYING_JOB_NAME jobs - which underlying this
+  // job is responsible for, and the spot-price override the dispatcher
+  // already fetched for it.
+  //
+  // The override is passed DOWN rather than re-fetched per job on purpose:
+  // getSpotPriceOverrides() makes a Dhan OHLC call, and OHLC shares a
+  // 1-request/second budget with LTP (see getFreshMarketAuxData in the API).
+  // Fetching it once in the dispatcher and handing each job its own number
+  // keeps this split at exactly the same Dhan call count as the single-job
+  // version - the whole point being to move memory, not to buy it with
+  // extra API traffic.
+  underlyingKey?: string;
+  spotPriceOverride?: number;
 };
 
 // Front-month/front-week expiry lists change at most once a week (index
@@ -223,7 +259,9 @@ async function getCachedExpiryList(underlying: UnderlyingDefinition, caller: str
   return expiries;
 }
 
-async function captureOnce() {
+type EnqueueCaptureJob = (name: string, data: MarketSnapshotJobData, delayMs: number) => Promise<unknown>;
+
+async function captureOnce(enqueue: EnqueueCaptureJob) {
   if (config.MOCK_MARKET_FEED_ENABLED) {
     if (!isMarketSessionOpen("IDX_I")) {
       console.log("Skipping mock market snapshot outside the NSE 09:14-15:41 IST storage window", {
@@ -251,7 +289,11 @@ async function captureOnce() {
     .filter((underlying): underlying is UnderlyingDefinition => Boolean(underlying));
   const quoteOverrides = await getSpotPriceOverrides(underlyings.filter((underlying) => isMarketSessionOpen(underlying.segment)));
 
-  for (const configuredUnderlying of config.feedUnderlyings) {
+  // Fan out: one job per underlying, each carrying the override fetched
+  // above. The session check stays here so a closed segment costs an
+  // enqueue decision rather than a whole job.
+  const dispatched: string[] = [];
+  for (const [index, configuredUnderlying] of config.feedUnderlyings.entries()) {
     const underlyingKey = normalizeUnderlyingKey(configuredUnderlying);
     const underlying = getUnderlyingDefinition(underlyingKey);
     if (!underlying) {
@@ -268,93 +310,131 @@ async function captureOnce() {
       continue;
     }
 
-    // This primary current-expiry capture used to be unguarded, unlike
-    // every other step in this function (next-expiry below, extra
-    // expiries for paper trading, stock option chains). One Dhan failure
-    // here (e.g. a 429) would propagate all the way out of captureOnce(),
-    // failing the WHOLE BullMQ job and triggering its full retry (attempts:
-    // 3) - which re-runs captureOnce() from the top, re-fetching every
-    // underlying that had already succeeded this cycle. A single rate-limit
-    // hit on one underlying was turning into up to 3x the Dhan traffic for
-    // the entire cycle, which is what was sustaining a self-reinforcing
-    // 429 pattern in production (2026-07-29, see incident notes). Now a
-    // failure here just skips this one underlying for this one cycle, the
-    // same resilience already used everywhere else in this function.
-    let expiries: string[];
-    let expiry: string | undefined;
-    try {
-      expiries = await getCachedExpiryList(underlying, "worker:index-capture:expiry-list");
-      expiry = expiries[0];
-    } catch (error) {
-      console.warn("Unable to fetch expiry list for underlying; skipping this cycle", { underlyingKey, error });
-      continue;
-    }
-    if (!expiry) {
-      console.warn("Skipping underlying with no expiry", { underlyingKey });
-      continue;
-    }
-
-    let snapshot: OptionChainSnapshot;
-    try {
-      snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: quoteOverrides.get(underlying.key), caller: "worker:index-capture:current" });
-      const snapshotId = await saveOptionChainSnapshot(snapshot);
-      await monitorPaperTrading(snapshot);
-      await publishSnapshotSaved(snapshotId, snapshot);
-      await sendCriticalPushAlerts(snapshot);
-      console.log("Saved Dhan market snapshot", {
-        snapshotId,
-        underlying: snapshot.underlyingSymbol,
-        expiry: snapshot.expiry,
-        ticks: snapshot.ticks.length
-      });
-    } catch (error) {
-      console.warn("Unable to capture primary expiry for underlying; skipping this cycle", { underlyingKey, expiry, error });
-      continue;
-    }
-
-    const capturedExpiries = new Set([expiry]);
-
-    // The Dashboard/Strike Matrix expiry picker (getExpiriesOrEmpty in
-    // apps/api/src/server.ts) only offers expiries we've already captured
-    // snapshot history for - it doesn't fall back to Dhan's live expiry
-    // list once we have ANY stored history. Without this, the next week's
-    // expiry never becomes selectable there until the current nearest
-    // expiry rolls off and it becomes expiries[0] itself, even though Dhan
-    // already lists it as tradable well before then. Keep the next-nearest
-    // expiry's snapshot history warm too so it shows up in advance.
-    //
-    // Skipped for MCX commodities (CRUDEOIL/NATURALGAS/COPPER/SILVER):
-    // next-month contract interest is far lower than NIFTY/BANKNIFTY's
-    // next-week view, and these four are last in config.feedUnderlyings,
-    // so they're the ones that pay whenever the cycle's Dhan call budget
-    // runs out. Dropping this second call for all four frees up real
-    // headroom before COPPER/SILVER's turn (2026-07-29 incident - see
-    // captureOnce's primary-capture try/catch above for the other half of
-    // that fix).
-    const nextExpiry = underlying.segment === "MCX_COMM" ? undefined : expiries[1];
-    if (nextExpiry) {
-      try {
-        const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: quoteOverrides.get(underlying.key), caller: "worker:index-capture:next" });
-        const nextSnapshotId = await saveOptionChainSnapshot(nextSnapshot);
-        await monitorPaperTrading(nextSnapshot);
-        await publishSnapshotSaved(nextSnapshotId, nextSnapshot);
-        console.log("Saved Dhan market snapshot for next expiry", {
-          snapshotId: nextSnapshotId,
-          underlying: nextSnapshot.underlyingSymbol,
-          expiry: nextSnapshot.expiry,
-          ticks: nextSnapshot.ticks.length
-        });
-        capturedExpiries.add(nextExpiry);
-      } catch (error) {
-        console.warn("Unable to capture next expiry for dashboard availability", { underlying: underlying.key, expiry: nextExpiry, error });
-      }
-    }
-
-    await captureExtraExpiriesForPaperTrading(underlying, capturedExpiries, quoteOverrides.get(underlying.key));
+    await enqueue(
+      CAPTURE_UNDERLYING_JOB_NAME,
+      { trigger: "scheduled", underlyingKey, spotPriceOverride: quoteOverrides.get(underlying.key) },
+      index * CAPTURE_UNDERLYING_STAGGER_MS
+    );
+    dispatched.push(underlyingKey);
   }
 
-  await captureStockOptionChains();
+  await enqueue(CAPTURE_STOCKS_JOB_NAME, { trigger: "scheduled" }, dispatched.length * CAPTURE_UNDERLYING_STAGGER_MS);
+  console.log("Dispatched per-underlying capture jobs", { count: dispatched.length, underlyings: dispatched });
 }
+
+/**
+ * One underlying's chains: current expiry, next expiry where applicable,
+ * and any extra expiries paper trading has open positions on.
+ *
+ * This is the body the old captureOnce() ran seven times in a row inside a
+ * single job. Running it as its own job is the entire memory fix - the
+ * native allocation each pass makes is released when the job ends, so the
+ * peak is one underlying's worth rather than all seven at once.
+ */
+async function captureUnderlyingOnce(underlyingKey: string, spotPriceOverride?: number) {
+  const underlying = getUnderlyingDefinition(underlyingKey);
+  if (!underlying) {
+    console.warn("Skipping unsupported underlying", { underlyingKey });
+    return;
+  }
+
+  // Re-checked here, not just at dispatch: these jobs are staggered and run
+  // serially, so the last one can start after the segment has closed.
+  if (!isMarketSessionOpen(underlying.segment)) {
+    console.log("Skipping market snapshot outside segment storage window", {
+      underlying: underlyingKey,
+      segment: underlying.segment,
+      checkedAt: new Date().toISOString()
+    });
+    return;
+  }
+
+  // This primary current-expiry capture used to be unguarded, unlike
+  // every other step in this function (next-expiry below, extra
+  // expiries for paper trading, stock option chains). One Dhan failure
+  // here (e.g. a 429) would propagate all the way out of this job,
+  // failing the WHOLE BullMQ job and triggering its full retry (attempts:
+  // 3). Since the split this retry only re-runs THIS underlying, but
+  // the guard still matters: before it, one 429 re-fetched every
+  // underlying that had already succeeded that cycle, turning a single
+  // rate-limit hit into up to 3x the Dhan traffic for the whole cycle,
+  // which sustained a self-reinforcing 429 pattern in production
+  // (2026-07-29, see incident notes). Now a failure here skips only this
+  // underlying for this one cycle, the
+  // same resilience already used everywhere else in this function.
+  let expiries: string[];
+  let expiry: string | undefined;
+  try {
+    expiries = await getCachedExpiryList(underlying, "worker:index-capture:expiry-list");
+    expiry = expiries[0];
+  } catch (error) {
+    console.warn("Unable to fetch expiry list for underlying; skipping this cycle", { underlyingKey, error });
+    return;
+  }
+  if (!expiry) {
+    console.warn("Skipping underlying with no expiry", { underlyingKey });
+    return;
+  }
+
+  let snapshot: OptionChainSnapshot;
+  try {
+    snapshot = await dhan.getOptionChain({ underlying, expiry, spotPriceOverride: spotPriceOverride, caller: "worker:index-capture:current" });
+    const snapshotId = await saveOptionChainSnapshot(snapshot);
+    await monitorPaperTrading(snapshot);
+    await publishSnapshotSaved(snapshotId, snapshot);
+    await sendCriticalPushAlerts(snapshot);
+    console.log("Saved Dhan market snapshot", {
+      snapshotId,
+      underlying: snapshot.underlyingSymbol,
+      expiry: snapshot.expiry,
+      ticks: snapshot.ticks.length
+    });
+  } catch (error) {
+    console.warn("Unable to capture primary expiry for underlying; skipping this cycle", { underlyingKey, expiry, error });
+    return;
+  }
+
+  const capturedExpiries = new Set([expiry]);
+
+  // The Dashboard/Strike Matrix expiry picker (getExpiriesOrEmpty in
+  // apps/api/src/server.ts) only offers expiries we've already captured
+  // snapshot history for - it doesn't fall back to Dhan's live expiry
+  // list once we have ANY stored history. Without this, the next week's
+  // expiry never becomes selectable there until the current nearest
+  // expiry rolls off and it becomes expiries[0] itself, even though Dhan
+  // already lists it as tradable well before then. Keep the next-nearest
+  // expiry's snapshot history warm too so it shows up in advance.
+  //
+  // Skipped for MCX commodities (CRUDEOIL/NATURALGAS/COPPER/SILVER):
+  // next-month contract interest is far lower than NIFTY/BANKNIFTY's
+  // next-week view, and these four are last in config.feedUnderlyings,
+  // so they're the ones that pay whenever the cycle's Dhan call budget
+  // runs out. Dropping this second call for all four frees up real
+  // headroom before COPPER/SILVER's turn (2026-07-29 incident - see
+  // captureOnce's primary-capture try/catch above for the other half of
+  // that fix).
+  const nextExpiry = underlying.segment === "MCX_COMM" ? undefined : expiries[1];
+  if (nextExpiry) {
+    try {
+      const nextSnapshot = await dhan.getOptionChain({ underlying, expiry: nextExpiry, spotPriceOverride: spotPriceOverride, caller: "worker:index-capture:next" });
+      const nextSnapshotId = await saveOptionChainSnapshot(nextSnapshot);
+      await monitorPaperTrading(nextSnapshot);
+      await publishSnapshotSaved(nextSnapshotId, nextSnapshot);
+      console.log("Saved Dhan market snapshot for next expiry", {
+        snapshotId: nextSnapshotId,
+        underlying: nextSnapshot.underlyingSymbol,
+        expiry: nextSnapshot.expiry,
+        ticks: nextSnapshot.ticks.length
+      });
+      capturedExpiries.add(nextExpiry);
+    } catch (error) {
+      console.warn("Unable to capture next expiry for dashboard availability", { underlying: underlying.key, expiry: nextExpiry, error });
+    }
+  }
+
+  await captureExtraExpiriesForPaperTrading(underlying, capturedExpiries, spotPriceOverride);
+}
+
 
 // Paper trades can now target any expiry (see the Paper Order Ticket's
 // expiry picker), not just this underlying's nearest one - but the loop
@@ -821,6 +901,15 @@ async function startWorker() {
   });
   const queueEvents = new QueueEvents(MARKET_SNAPSHOT_QUEUE, { connection: redisConnection });
   const retentionQueueEvents = new QueueEvents(SNAPSHOT_RETENTION_QUEUE, { connection: redisConnection });
+
+  // Fan-out jobs are deliberately attempts:1, overriding the queue default
+  // of 3. A retry here would re-fetch the same option chain from Dhan, and
+  // the failures worth retrying (a 429) are precisely the ones where
+  // retrying makes it worse - the 2026-07-29 incident was a retry storm
+  // amplifying one rate-limit hit into 3x the cycle's traffic. The next
+  // 30s cycle is the retry.
+  const enqueueCaptureJob: EnqueueCaptureJob = (name, data, delayMs) =>
+    queue.add(name, data, { delay: delayMs, attempts: 1 });
   const worker = new BullWorker<MarketSnapshotJobData>(
     MARKET_SNAPSHOT_QUEUE,
     async (job: Job<MarketSnapshotJobData>) => {
@@ -830,27 +919,40 @@ async function startWorker() {
         trigger: job.data.trigger,
         attempt: job.attemptsMade + 1
       });
-      // Sampled either side of the job, not just on the 20s interval: the
-      // interval says a ~2.5GB native burst happens, but cannot say which
-      // work caused it. A before/after pair per job does, and the capture
-      // job is the first suspect simply because it is what runs on this
-      // cadence. If the delta lands here, the search narrows to captureOnce;
-      // if it doesn't, the burst belongs to the wave screener or the live
-      // feed and this rules the capture path out - which is worth as much.
-      logWorkerMemory("capture:before", { jobId: job.id });
+      // Sampled either side of every job, and labelled with the job name,
+      // so the per-underlying peak can be compared against the ~915-1612MB
+      // the single combined job used to take (production, 2026-08-12).
+      const label = job.name === CAPTURE_UNDERLYING_JOB_NAME ? `capture:${job.data.underlyingKey ?? "?"}` : job.name;
+      logWorkerMemory(`${label}:before`, { jobId: job.id });
       const startedAt = Date.now();
       try {
-        await captureOnce();
+        if (job.name === CAPTURE_UNDERLYING_JOB_NAME) {
+          if (!job.data.underlyingKey) {
+            console.warn("capture-underlying job without an underlyingKey; skipping", { jobId: job.id });
+            return;
+          }
+          await captureUnderlyingOnce(job.data.underlyingKey, job.data.spotPriceOverride);
+        } else if (job.name === CAPTURE_STOCKS_JOB_NAME) {
+          await captureStockOptionChains();
+        } else {
+          await captureOnce(enqueueCaptureJob);
+        }
       } finally {
-        logWorkerMemory("capture:after", { jobId: job.id, tookMs: Date.now() - startedAt });
+        logWorkerMemory(`${label}:after`, { jobId: job.id, tookMs: Date.now() - startedAt });
       }
     },
     {
       connection: redisConnection,
       concurrency: 1,
+      // One cycle is now a dispatcher + one job per underlying + the stock
+      // job, so the old "max 1 per 15s" would have throttled a 30s cycle
+      // down to a single job and silently starved the capture - the split's
+      // one genuine footgun. Sized to the whole fan-out with headroom,
+      // while still capping a runaway. Concurrency stays 1, so jobs remain
+      // serial regardless.
       limiter: {
-        max: 1,
-        duration: Math.max(1000, Math.floor(config.SNAPSHOT_INTERVAL_MS / 2))
+        max: config.feedUnderlyings.length + 4,
+        duration: Math.max(1000, config.SNAPSHOT_INTERVAL_MS)
       }
     }
   );
