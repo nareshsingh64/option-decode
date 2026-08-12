@@ -434,6 +434,39 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     serialises them. Job duration is what decides which capture is unlucky:
     SILVER averages 0.4s and never burst once; BANKNIFTY averages 10.1s and
     burst most.
+  - **ISOLATED (2026-08-12, controlled A/B on the host).** Four fixes had
+    been shipped on plausible mechanism and none moved the peak, so the
+    scan's per-symbol work was replayed one variable at a time over the same
+    214 symbols:
+
+    ```
+    queries only (getWavePriceHistory x214):  peak 225MB, settles to 163MB
+    indices only (getSpotPriceHistory x7):    peak 186MB
+    queries + Elliott Wave / RSI / RVOL:      peak 976MB, stays  955MB
+    ```
+
+    **The database layer is cleared outright** — Prisma, the `mariadb`
+    driver and the query volume all behave. The allocator is the **wave
+    analytics**: short-lived JS churn that V8 *does* collect (`heapTotal`
+    never leaves ~62 MB) while the freed pages stay with the allocator.
+    Every theory aimed at the DB path — WASM query compiler, prepared
+    statement cache, row volume — was aimed at the wrong half of the loop.
+  - **"Never returned" was wrong: it was "not returned YET."** Samples taken
+    5 s after the loop sit inside jemalloc's **10 s default decay window**,
+    so they read as permanent. At 30 s:
+
+    ```
+    jemalloc defaults (10s decay):  peak 938MB, 288MB after 30s idle
+    dirty_decay_ms:0 + bg thread:   peak 721MB, 136MB after 30s idle
+    ```
+
+    Hence `MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`
+    on the unit. **Always settle longer than the decay window before
+    concluding memory is held.**
+  - *Dead end, do not repeat:* `dirty_decay_ms:2000` paired with a 100 ms
+    in-loop yield. A page must sit dirty for the whole decay window to become
+    purgeable, so a 100 ms pause can never trigger a 2 s decay. Both numbers
+    shipped in one commit without being checked against each other.
   - *Leading suspect, untested:* Prisma's WASM query compiler
     (`engineType = "client"`). WASM linear memory is a native mmap invisible
     to `process.memoryUsage()`, which fits this signature exactly — and
