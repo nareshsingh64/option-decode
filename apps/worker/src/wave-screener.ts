@@ -50,6 +50,29 @@ const SCREENER_SCAN_INTERVAL_MS = 3 * 60_000;
 // Every Nth symbol of the ~216-symbol scan universe, so one scan produces a
 // handful of samples rather than 216 log blocks.
 const SCAN_MEMORY_SAMPLE_EVERY = 40;
+// Pause every Nth symbol so the allocator gets an idle moment mid-scan.
+//
+// Measured cause (production 2026-08-12): ONE scan takes RSS from 276MB to
+// 2,134MB, climbing monotonically across the ~216 per-symbol history
+// queries and falling back afterwards. No single symbol dominates - the
+// pages simply are not returned while the loop runs back to back.
+//
+// The pause alone is not expected to be sufficient, and is shipped WITH
+// MALLOC_CONF on the worker unit. jemalloc only reclaims dirty pages on a
+// decay timer (10s by default) and, without a background thread, only
+// during later allocation activity in that arena - so an idle moment gives
+// it the opportunity and background_thread + a 2s decay give it something
+// to do with it. Either alone is half a fix.
+//
+// ~8 pauses per scan at 100ms is under a second added to a job that runs
+// every 3 minutes. It does hold heavy-job-lock.ts for that extra second, so
+// if capture jobs start reporting waits, this is the first number to lower.
+const SCAN_YIELD_EVERY = 25;
+const SCAN_YIELD_MS = 100;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 // Only screening the intraday horizon today - see WAVE_ZIGZAG_PRESETS. The
 // tab's own manual analysis still lets a user pick weekly/monthly; extending
 // the background screener to those horizons is a straightforward follow-up
@@ -252,6 +275,9 @@ export async function startWaveScreener(
         // changed.
         if (scanned % SCAN_MEMORY_SAMPLE_EVERY === 0) {
           logWorkerMemory("wave:screener-scan:progress", { scanned, universeSize: scanUniverse.length });
+        }
+        if (scanned > 0 && scanned % SCAN_YIELD_EVERY === 0) {
+          await sleep(SCAN_YIELD_MS);
         }
         scanned += 1;
 

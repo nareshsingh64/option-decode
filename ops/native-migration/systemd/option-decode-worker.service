@@ -27,6 +27,28 @@ Environment=REDIS_URL=redis://127.0.0.1:6379/0
 # (aarch64 here) - confirm with `dpkg -L libjemalloc2 | grep so` before
 # reusing this unit on a different architecture.
 Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2
+# jemalloc's DEFAULTS were leaving the win on the table, which is why the
+# 2026-08-05 note claiming "570-600MB steady" never reproduced.
+#
+# Out of the box jemalloc has background_thread DISABLED and a 10s dirty
+# decay, so freed pages are returned to the OS only when later allocation
+# activity happens to touch that arena. The wave screener's scan is exactly
+# the wrong shape for that: one scan runs ~216 back-to-back per-symbol
+# history queries and drives RSS from 276MB to 2,134MB (measured
+# 2026-08-12), and nothing reclaims until well after it finishes.
+#
+# background_thread:true gives jemalloc a thread that purges on schedule
+# instead of opportunistically; the 2s decays let it act during the scan
+# rather than long after. Paired with SCAN_YIELD_MS in wave-screener.ts,
+# which supplies the idle moments this needs to use - either half alone
+# does little.
+#
+# VALIDATE BEFORE DEPLOYING. A malformed pair makes jemalloc refuse the
+# whole string ("<jemalloc>: Invalid conf pair: ...") and the worker starts
+# with default behaviour or fails outright, both silently as far as systemd
+# is concerned. Check on the host with:
+#   LD_PRELOAD=<path> MALLOC_CONF=<value> node -e 'console.log("ok")'
+Environment=MALLOC_CONF=background_thread:true,dirty_decay_ms:2000,muzzy_decay_ms:2000
 
 ExecStart=/usr/bin/pnpm --filter @option-decode/worker exec tsx src/worker.ts
 
