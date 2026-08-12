@@ -385,6 +385,37 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     that sample was taken *after market close, on a job that was skipping
     storage*, so the burst is not proportional to ticks processed. That
     points at the query/setup path rather than tick volume.
+  - *Fix 1 — one job per underlying (2026-08-12).* `captureOnce` fanned out
+    ~14 chain writes in one 31-41s job, so all that native memory was live
+    at once. It is now a dispatcher enqueuing one job per underlying:
+    **mean delta +873 MB → +18 MB**, RSS steady ~374 MB against 1,200-1,900
+    before. Two traps this hit, both worth not repeating: the queue limiter
+    was `max 1 per 15s` and would have throttled a 30s cycle to a single job
+    (silent capture starvation), and staggering by *enqueue delay* does not
+    space jobs that are already overdue — delayed jobs survive the 15-minute
+    restart in Redis, so a restart replayed the backlog back-to-back and
+    produced **five index-capture 429s in six seconds** on a path with zero
+    all day. Pacing now happens at the head of each job, and fan-out jobs
+    older than one interval are dropped.
+  - **"It is the BANKNIFTY chain write" was wrong — do not re-derive it.**
+    The remaining ~3% of bursts are *not* proportional to chain size:
+    COPPER's **138-tick** chain burst 994 MB while its 738-tick BANKNIFTY
+    neighbour averaged **−43 MB**, and SENSEX's worst (1,441 MB) beat
+    BANKNIFTY's (1,295 MB) on half the ticks. Per-underlying mean deltas are
+    all near zero. There is no big-chain write to optimise.
+  - *Fix 2 — serialise the wave screener (2026-08-12).* What predicts a
+    burst is **overlap**, not size. Across ~1,500 post-split captures the
+    screener ran during 102 of them and 25 burst (**24.5%**); of the other
+    1,412, only 21 burst (**1.5%**) — a ~16x rate from a component
+    overlapping 6.7% of jobs but causing 54% of bursts. The reason is
+    structural and easy to miss: this process runs **four** BullMQ workers
+    (market-snapshot, quote-capture, screener-scan, universe-sync), and
+    `concurrency: 1` constrains each worker against *itself only*, never
+    against the others. `heavy-job-lock.ts` (a plain in-process promise
+    chain — they share a process, so a Redis lock would be theatre) now
+    serialises them. Job duration is what decides which capture is unlucky:
+    SILVER averages 0.4s and never burst once; BANKNIFTY averages 10.1s and
+    burst most.
   - *Leading suspect, untested:* Prisma's WASM query compiler
     (`engineType = "client"`). WASM linear memory is a native mmap invisible
     to `process.memoryUsage()`, which fits this signature exactly — and
