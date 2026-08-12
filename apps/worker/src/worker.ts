@@ -338,6 +338,18 @@ async function captureUnderlyingOnce(underlyingKey: string, spotPriceOverride?: 
     return;
   }
 
+  // Paced HERE rather than only via the enqueue delay, because the delay
+  // cannot space jobs that are already overdue. Confirmed in production
+  // within minutes of shipping the split: the worker restarts every 15
+  // minutes, delayed fan-out jobs from the previous generation survive in
+  // Redis, and on restart the whole backlog became ready at once and ran
+  // back to back - five index-capture 429s inside a six-second window
+  // (04:49:18-04:49:24 UTC, 2026-08-12), on a path that had recorded zero
+  // all day. Concurrency is 1, so a sleep at the head of each job is a
+  // hard floor on the gap between one underlying's Dhan calls and the
+  // next's, backlog or not.
+  await sleep(CAPTURE_UNDERLYING_STAGGER_MS);
+
   // Re-checked here, not just at dispatch: these jobs are staggered and run
   // serially, so the last one can start after the segment has closed.
   if (!isMarketSessionOpen(underlying.segment)) {
@@ -929,6 +941,18 @@ async function startWorker() {
         if (job.name === CAPTURE_UNDERLYING_JOB_NAME) {
           if (!job.data.underlyingKey) {
             console.warn("capture-underlying job without an underlyingKey; skipping", { jobId: job.id });
+            return;
+          }
+          // Drop fan-out jobs left over from a previous cycle. Delayed jobs
+          // survive in Redis across the 15-minute restart, so without this
+          // a restart replays a whole stale cycle on top of the fresh one -
+          // the backlog that produced the 429 burst above. A capture more
+          // than one interval old is worthless anyway: it would overwrite
+          // current data with a stale chain. Longest legitimate age is the
+          // last underlying's enqueue delay, well inside one interval.
+          const ageMs = Date.now() - job.timestamp;
+          if (ageMs > config.SNAPSHOT_INTERVAL_MS) {
+            console.warn("Dropping stale capture job from a previous cycle", { jobId: job.id, underlying: job.data.underlyingKey, ageMs });
             return;
           }
           await captureUnderlyingOnce(job.data.underlyingKey, job.data.spotPriceOverride);

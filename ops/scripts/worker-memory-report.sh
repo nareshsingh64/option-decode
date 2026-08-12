@@ -51,15 +51,22 @@ awk '
     total++
     if (ng != "") { if (ng > peak) peak=ng; if (mn=="" || ng < mn) mn=ng }
     if (ht != "" && ht > peakHeap) peakHeap=ht
-    if (at == "capture:before" && job != "") { before[job]=ng; beforeRss[job]=rss }
-    if (at == "capture:after" && job != "" && job in before) {
-      d = ng - before[job]
+    # Labels are "capture:before" (pre-split) or "capture:NIFTY:before"
+    # (per-underlying). Pair on whatever precedes the final :before/:after
+    # so both formats work and the split can be compared against history.
+    phase=""; subject=at
+    if (at ~ /:before$/) { phase="before"; sub(/:before$/, "", subject) }
+    if (at ~ /:after$/)  { phase="after";  sub(/:after$/,  "", subject) }
+    key = subject "#" job
+    if (phase == "before" && job != "") { before[key]=ng; beforeRss[key]=rss; label[key]=subject }
+    if (phase == "after" && job != "" && key in before) {
+      d = ng - before[key]
       pairs++
-      printf "  job %-14s  nativeGap %7.0f -> %7.0f MB   delta %+8.0f MB   RSS %6.0f -> %6.0f MB   took %ss\n",
-             job, before[job], ng, d, beforeRss[job], rss, (took==""?"?":sprintf("%.1f", took/1000))
-      if (d > maxd) { maxd=d; maxjob=job }
+      printf "  %-22s nativeGap %7.0f -> %7.0f MB   delta %+8.0f MB   RSS %6.0f -> %6.0f MB   took %ss\n",
+             label[key], before[key], ng, d, beforeRss[key], rss, (took==""?"?":sprintf("%.1f", took/1000))
+      if (d > maxd) { maxd=d; maxjob=label[key] }
       sumd += d
-      delete before[job]
+      delete before[key]
     }
     next
   }
