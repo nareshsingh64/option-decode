@@ -33,22 +33,44 @@ Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2
 # Out of the box jemalloc has background_thread DISABLED and a 10s dirty
 # decay, so freed pages are returned to the OS only when later allocation
 # activity happens to touch that arena. The wave screener's scan is exactly
-# the wrong shape for that: one scan runs ~216 back-to-back per-symbol
-# history queries and drives RSS from 276MB to 2,134MB (measured
-# 2026-08-12), and nothing reclaims until well after it finishes.
+# the wrong shape for that, driving RSS from 276MB to 2,134MB in one pass
+# (measured 2026-08-12) with nothing reclaiming until well afterwards.
 #
-# background_thread:true gives jemalloc a thread that purges on schedule
-# instead of opportunistically; the 2s decays let it act during the scan
-# rather than long after. Paired with SCAN_YIELD_MS in wave-screener.ts,
-# which supplies the idle moments this needs to use - either half alone
-# does little.
+# The allocating work is the ELLIOTT WAVE ANALYTICS, not the database.
+# Isolated on this host over the same 214 symbols:
+#   queries only (getWavePriceHistory x214):  peak 225MB, settles to 163MB
+#   queries + calculateElliottWave/RSI/RVOL:  peak 976MB, stays  955MB
+# getSpotPriceHistory for the 7 indices is cheap too (186MB). So Prisma, the
+# mariadb driver and the query volume are all cleared - it is short-lived JS
+# churn in the wave engine that V8 collects (heapTotal never leaves ~62MB)
+# while the freed pages stay with the allocator.
+#
+# background_thread:true gives jemalloc a thread that purges rather than
+# waiting for opportunistic reclamation. The decays are ZERO, not 2000:
+# an earlier attempt paired a 2s decay with a 100ms yield, which cannot work
+# - a page must sit dirty for the whole decay window before it is purgeable,
+# so a 100ms pause could never trigger a 2s decay. Those two numbers were
+# written in the same commit and never checked against each other.
+#
+# Zero was chosen from a measured A/B, not from theory. Replaying the
+# screener scan's per-symbol work in isolation on this host (214 symbols):
+#
+#   jemalloc defaults (10s decay):  peak 938MB, 288MB after 30s idle
+#   dirty_decay_ms:0 + bg thread:   peak 721MB, 136MB after 30s idle
+#
+# Peak -23%, idle -53%. Both configs DO eventually return the memory, which
+# is itself worth knowing: earlier readings of "never returned" were taken
+# 5s after the loop, i.e. inside the default 10s decay window.
+#
+# It costs CPU - purging on free rather than in batches. Watch for the
+# screener scan getting slower, and raise it if so.
 #
 # VALIDATE BEFORE DEPLOYING. A malformed pair makes jemalloc refuse the
 # whole string ("<jemalloc>: Invalid conf pair: ...") and the worker starts
 # with default behaviour or fails outright, both silently as far as systemd
 # is concerned. Check on the host with:
 #   LD_PRELOAD=<path> MALLOC_CONF=<value> node -e 'console.log("ok")'
-Environment=MALLOC_CONF=background_thread:true,dirty_decay_ms:2000,muzzy_decay_ms:2000
+Environment=MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0
 
 ExecStart=/usr/bin/pnpm --filter @option-decode/worker exec tsx src/worker.ts
 
