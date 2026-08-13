@@ -46,7 +46,26 @@ const SCREENER_SCAN_SCHEDULER_ID = "wave-screener-scan:scan";
 // Slower than quote capture on purpose - a wave count doesn't meaningfully
 // change every 60s, and this keeps Dhan/DB load down since it's re-reading
 // history for the whole universe every run, not just the latest tick.
-const SCREENER_SCAN_INTERVAL_MS = 3 * 60_000;
+//
+// Widened 3min -> 10min on 2026-08-13 for memory, after five attempts to
+// make the scan cheaper or its memory return faster all failed to move the
+// production peak. An isolated A/B on the host proved the allocating work is
+// the wave analytics themselves (calculateElliottWave/RSI/RVOL over ~1,000
+// points x 214 symbols), not the queries: queries alone peak 225MB, queries
+// plus analytics peak 976MB. Nothing about deallocation helped, so this
+// reduces the amount of the work instead.
+//
+// Be clear what this buys, because it is NOT a lower peak: one scan still
+// costs ~2.4GB. It cuts how OFTEN that happens - roughly 5 spikes per
+// 15-minute restart generation down to 1-2 - which lowers the time spent
+// near the ceiling and the chance of colliding with another allocation on a
+// 3.8GB host. If the peak itself must come down, the levers are a smaller
+// universe (screen liquid stocks, not all 214) or a shorter lookback.
+//
+// Safe for alerting: ALERT_COOLDOWN_MS is 2 hours, so a 10-minute cadence
+// is still far finer than the rate at which the same signal can re-alert,
+// and an intraday wave count does not turn over inside 10 minutes.
+const SCREENER_SCAN_INTERVAL_MS = 10 * 60_000;
 // Every Nth symbol of the ~216-symbol scan universe, so one scan produces a
 // handful of samples rather than 216 log blocks.
 const SCAN_MEMORY_SAMPLE_EVERY = 40;
