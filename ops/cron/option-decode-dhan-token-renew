@@ -1,0 +1,23 @@
+# Dhan access tokens live exactly 24 hours and there is no long-lived
+# alternative: the 12-month API key only MINTS a token, and minting needs an
+# interactive browser login with 2FA. /v2/RenewToken is the only automatable
+# path, and it only works on a token that is still ACTIVE - once expired it
+# can only be replaced by hand at web.dhan.co.
+#
+# EVERY 6 HOURS, not once a day at a fixed time. A daily run renews a 24h
+# token at the same clock time, so the new token expires at exactly that
+# time tomorrow and every future run lands ON the expiry boundary - one late
+# cron, one slow API call, and the token is unrecoverable. Polling every 6h
+# against the script's own 12h-remaining threshold means renewal always
+# happens with 6-12h of margin and never at the edge.
+#
+# Daily-including-weekends matters for the same reason: a token skipped over
+# a Saturday is expired by Monday, and weekends are exactly when nobody is
+# watching.
+#
+# Usually a no-op - the script exits 0 immediately when more than 12h remain.
+#
+# Output goes to a log rather than cron mail (no MTA on this host); the
+# script exits non-zero on every failure path and logs a FAILED line, which
+# is the alerting surface.
+0 */6 * * * root /opt/option-decode/ops/scripts/dhan-token-renew.sh >> /opt/option-decode-native/logs/dhan-token-renew.log 2>&1
