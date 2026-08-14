@@ -134,7 +134,7 @@ if [ "$CODE" = "404" ] || [ "$CODE" = "405" ]; then
   CODE=$(echo "$RESP" | tail -1)
   BODY=$(echo "$RESP" | sed '$d')
 fi
-[ "$CODE" = "200" ] || die "RenewToken HTTP $CODE - existing token left in place. Body: $(echo "$BODY" | head -c 300)"
+[ "$CODE" = "200" ] || die "RenewToken HTTP $CODE - existing token left in place, no harm done. Body: $(echo "$BODY" | head -c 500)"
 
 NEW_TOKEN=$(BODY="$BODY" python3 - <<'PY'
 import json, os
@@ -148,7 +148,7 @@ for k in ("accessToken", "access_token", "token"):
 print("")
 PY
 )
-[ -n "$NEW_TOKEN" ] || die "no JWT in RenewToken response - THE OLD TOKEN MAY NOW BE DEAD. Body: $(echo "$BODY" | head -c 300)"
+[ -n "$NEW_TOKEN" ] || die "no JWT in RenewToken response - THE OLD TOKEN IS NOW DEAD. Recover by hand from this body if a token is in it (logged in full deliberately: a JWT is ~300 chars, so truncating here could destroy the only copy). Body: $BODY"
 
 # Sanity-check the new token before trusting it.
 CHECK=$(NEW_TOKEN="$NEW_TOKEN" python3 - <<'PY'
