@@ -7,7 +7,7 @@
 # access management), and there is no long-lived credential that can replace
 # them: the 12-month "API key & secret" only MINTS a token, and minting
 # requires an interactive browser login with 2FA every time. The one
-# automatable path is POST/GET /v2/RenewToken, which extends an ACTIVE token
+# automatable path is GET /v2/RenewToken, which extends an ACTIVE token
 # by another 24h with no browser. That is what this does.
 #
 # THE DANGEROUS PART, READ BEFORE EDITING
@@ -121,19 +121,28 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# --- Renew. POST first; some docs show GET, so fall back on 404/405 ------
-log "calling /v2/RenewToken"
-RESP=$(curl -s -w '\n%{http_code}' -X POST 'https://api.dhan.co/v2/RenewToken' \
-  -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID" -H 'Content-Type: application/json')
+# --- Renew ---------------------------------------------------------------
+# THE CONTRACT, ESTABLISHED BY PROBING PRODUCTION 2026-08-14. The docs are
+# wrong or ambiguous on both halves, so do not "correct" this from them:
+#
+#   GET  https://api.dhan.co/v2/RenewToken
+#   headers: access-token, dhanClientId          <- NOT client-id
+#   200 body: {"createTime":..., "expiryTime":..., "token":"<JWT>"}
+#
+# POST returns 400 DH-905 "Missing required fields" - which is how the first
+# live run failed, harmlessly. And the header name is the one place this
+# endpoint differs from every other Dhan call the app makes: the rest of the
+# client sends "client-id" (see packages/dhan/src/index.ts), and sending that
+# here also yields 400. The response field is "token", not "accessToken".
+#
+# A 400 is rejected before the token is consumed, so a wrong-shaped request
+# is safe. A 200 consumes it immediately - which is why everything below
+# treats the body as the only surviving copy.
+log "calling GET /v2/RenewToken"
+RESP=$(curl -s -w '\n%{http_code}' 'https://api.dhan.co/v2/RenewToken' \
+  -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
 CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
-if [ "$CODE" = "404" ] || [ "$CODE" = "405" ]; then
-  log "POST returned $CODE, retrying as GET (docs disagree on the verb; neither 404 nor 405 consumes the token)"
-  RESP=$(curl -s -w '\n%{http_code}' 'https://api.dhan.co/v2/RenewToken' \
-    -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
-  CODE=$(echo "$RESP" | tail -1)
-  BODY=$(echo "$RESP" | sed '$d')
-fi
 [ "$CODE" = "200" ] || die "RenewToken HTTP $CODE - existing token left in place, no harm done. Body: $(echo "$BODY" | head -c 500)"
 
 NEW_TOKEN=$(BODY="$BODY" python3 - <<'PY'
@@ -142,7 +151,8 @@ try:
     d = json.loads(os.environ["BODY"])
 except Exception:
     print(""); raise SystemExit
-for k in ("accessToken", "access_token", "token"):
+# "token" is what Dhan actually returns; the others are defensive.
+for k in ("token", "accessToken", "access_token"):
     if isinstance(d.get(k), str) and d[k].count(".") == 2:
         print(d[k]); raise SystemExit
 print("")
