@@ -10,3 +10,24 @@ coverage
 *.tsbuildinfo
 nginx/certs/*.crt
 nginx/certs/*.key
+
+# --- Backtest / research artefacts: never deploy these ---
+# The deploy rsyncs the WHOLE checkout into every release
+# (ops/native-migration/native-deploy.sh), so anything committed ends up on the
+# production host and inside each release build. None of this is needed there:
+# it is analysis code, its generated workbooks, and the JSON dumps behind them.
+# They were all untracked by habit; these rules make that a guarantee rather
+# than something the next `git add -A` can undo.
+apps/api/src/scripts/backtest-*
+apps/api/src/scripts/*-duckdb-source.ts
+apps/api/src/scripts/index-option-selling-source.ts
+apps/api/src/scripts/option-margin.ts
+apps/api/src/scripts/daily-regime-duckdb.ts
+apps/api/src/scripts/pullback-strategy-core.ts
+apps/api/src/scripts/market-bias.ts
+scripts/build-*-xlsx.py
+docs/output/*.xlsx
+
+# Excel writes a lock file next to an open workbook; it is not content.
+~$*
+.DS_Store
