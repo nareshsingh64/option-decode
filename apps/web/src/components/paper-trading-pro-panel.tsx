@@ -134,7 +134,11 @@ interface SimTradeDto {
   lowEdgeFlag: boolean;
   signalRef: string | null;
   exitReason: string | null;
-  legs: Array<{ id: string; side: "SELL" | "BUY"; optionType: "CE" | "PE"; strikePrice: number; fillPrice: number }>;
+  // Both are ISO strings straight off the API - it has always sent them, this
+  // local mirror of the DTO just never declared them.
+  openedAt: string;
+  closedAt: string | null;
+  legs: Array<{ id: string; side: "SELL" | "BUY"; optionType: "CE" | "PE"; strikePrice: number; fillPrice: number; closeFillPrice: number | null }>;
   exitFlags: Array<{ rule: string; detail: string | null }>;
 }
 
@@ -204,6 +208,26 @@ function formatInr(value: number | null | undefined): string {
   return `₹${Math.round(value).toLocaleString("en-IN")}`;
 }
 
+// Entry/exit stamps are pinned to IST rather than the browser's zone. A
+// trader reading "closed 09:47" needs it against the session clock, and the
+// same account is read from phones that travel.
+const IST_STAMP = new Intl.DateTimeFormat("en-IN", {
+  timeZone: "Asia/Kolkata",
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
+function formatIstStamp(value: string | null | undefined): string {
+  if (!value) {
+    return "--";
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "--" : IST_STAMP.format(parsed);
+}
+
 function pnlClass(value: number | null | undefined): string {
   if (value == null) {
     return "text-terminal-muted";
@@ -267,6 +291,11 @@ interface PaperTradingProPanelProps {
 export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
   const [summary, setSummary] = useState<SimSummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  // Leg breakdown shown on row hover. Positioned FIXED against the viewport
+  // rather than absolutely inside the table: the closed-trades list is an
+  // `overflow-y-auto` scroll container, which would clip an absolutely
+  // positioned child. The anchor rect is captured on enter.
+  const [legDetail, setLegDetail] = useState<{ trade: SimTradeDto; top: number; left: number } | null>(null);
   const [quote, setQuote] = useState<SimQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [isQuoting, setIsQuoting] = useState(false);
@@ -375,6 +404,26 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
     setSignalContext(draft.signalRef ? { wci: draft.wci, drcr: draft.drcr, signalRef: draft.signalRef, note: draft.note } : null);
     setQuote(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time mount handoff
+  }, []);
+
+  // Summing the scorecard's own rows rather than re-deriving the rule
+  // client-side: the API decides what qualifies, so counting its output can
+  // never drift from it.
+  const scorecardTradeCount = useMemo(
+    () => (summary?.analytics.signalScorecard ?? []).reduce((sum, row) => sum + row.trades, 0),
+    [summary]
+  );
+
+  // Anchor the hover card to the row's right edge, flipping to the left when
+  // the row sits close enough to the viewport edge that the card would run
+  // off it. Clamped vertically so a row near the bottom still shows the card.
+  const showLegDetail = useCallback((trade: SimTradeDto, row: HTMLElement) => {
+    const rect = row.getBoundingClientRect();
+    const cardWidth = 280;
+    const cardHeight = 40 + trade.legs.length * 20;
+    const left = rect.right + cardWidth + 16 < window.innerWidth ? rect.right + 8 : Math.max(8, rect.left - cardWidth - 8);
+    const top = Math.max(8, Math.min(rect.top, window.innerHeight - cardHeight - 8));
+    setLegDetail({ trade, top, left });
   }, []);
 
   const refreshSummary = useCallback(async () => {
@@ -668,20 +717,46 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
           </div>
 
           <div className="rounded border border-terminal-line bg-terminal-panel p-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-terminal-muted">Closed Strategies</h2>
-            <div className="mt-2 max-h-48 overflow-y-auto">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-terminal-muted">
+              Closed Strategies
+              {summary && summary.closedTrades.length > 0 ? (
+                <span className="ml-2 font-normal normal-case tracking-normal text-terminal-muted/70">
+                  {summary.closedTrades.length} shown
+                </span>
+              ) : null}
+            </h2>
+            <div className="mt-2 max-h-60 overflow-y-auto">
               <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-terminal-muted/70">
+                    <th className="py-1 pr-2 font-medium">Strategy</th>
+                    <th className="py-1 pr-2 font-medium">Contract</th>
+                    <th className="py-1 pr-2 font-medium">Entry (IST)</th>
+                    <th className="py-1 pr-2 font-medium">Exit (IST)</th>
+                    <th className="py-1 pr-2 font-medium">Reason</th>
+                    <th className="py-1 text-right font-medium">P&amp;L</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {(summary?.closedTrades ?? []).slice(0, 12).map((trade) => (
-                    <tr key={trade.id} className="border-b border-terminal-line/40">
+                  {/* The API returns up to 50; show them all rather than
+                      silently hiding rows behind a slice the user cannot see. */}
+                  {(summary?.closedTrades ?? []).map((trade) => (
+                    <tr
+                      key={trade.id}
+                      className="cursor-default border-b border-terminal-line/40 hover:bg-terminal-line/20"
+                      onMouseEnter={(event) => showLegDetail(trade, event.currentTarget)}
+                      onMouseLeave={() => setLegDetail(null)}
+                    >
                       <td className="py-1.5 pr-2 text-terminal-text">{STRATEGY_LABELS[trade.strategyType]}</td>
                       <td className="py-1.5 pr-2 text-terminal-muted">{trade.underlyingSymbol} {trade.expiryLabel}</td>
+                      <td className="py-1.5 pr-2 tabular-nums text-terminal-muted">{formatIstStamp(trade.openedAt)}</td>
+                      <td className="py-1.5 pr-2 tabular-nums text-terminal-muted">{formatIstStamp(trade.closedAt)}</td>
                       <td className="py-1.5 pr-2 text-terminal-muted">{trade.exitReason ?? trade.status}</td>
-                      <td className={`py-1.5 text-right font-semibold ${pnlClass(trade.realizedPnl)}`}>{formatInr(trade.realizedPnl)}</td>
+                      <td className={`py-1.5 text-right font-semibold tabular-nums ${pnlClass(trade.realizedPnl)}`}>{formatInr(trade.realizedPnl)}</td>
                     </tr>
                   ))}
                   {summary && summary.closedTrades.length === 0 ? (
-                    <tr><td className="py-2 text-terminal-muted">No closed trades yet.</td></tr>
+                    <tr><td className="py-2 text-terminal-muted" colSpan={6}>No closed trades yet.</td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -835,6 +910,16 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
       {analytics && analytics.signalScorecard.length > 0 ? (
         <div className="mt-3 rounded border border-terminal-line bg-terminal-panel p-3">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-terminal-muted">Signal Scorecard - P&L by DRCR regime at entry</h2>
+          {/* This table counts FEWER trades than "Closed Strategies" above, and
+              silently disagreeing with the list right next to it is what made
+              it read as broken. Only trades opened from a Strike Matrix signal
+              carry a DRCR reading at entry; a manually built structure has no
+              regime to bucket into, so it is excluded by construction. Say so
+              with the actual counts rather than leaving the gap unexplained. */}
+          <p className="mt-1 text-[0.65rem] text-terminal-muted/80">
+            {scorecardTradeCount} of {summary?.closedTrades.length ?? 0} closed {scorecardTradeCount === 1 ? "trade" : "trades"} - signal-attributed only.
+            Manually built structures have no entry DRCR and are not counted.
+          </p>
           <table className="mt-2 w-full text-left text-xs">
             <thead>
               <tr className="border-b border-terminal-line text-[0.65rem] uppercase text-terminal-muted">
@@ -853,6 +938,40 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
                   <td className="py-1.5 pr-2">{row.trades}</td>
                   <td className="py-1.5 pr-2">{row.trades > 0 ? `${Math.round((row.wins / row.trades) * 100)}%` : "--"}</td>
                   <td className={`py-1.5 text-right font-semibold ${pnlClass(row.totalPnl)}`}>{formatInr(row.totalPnl)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {legDetail ? (
+        <div
+          className="pointer-events-none fixed z-50 w-[280px] rounded border border-terminal-line bg-terminal-panel p-2 text-xs shadow-lg"
+          style={{ top: legDetail.top, left: legDetail.left }}
+        >
+          <div className="mb-1 font-semibold text-terminal-text">
+            {STRATEGY_LABELS[legDetail.trade.strategyType]} · {legDetail.trade.lots} lot{legDetail.trade.lots === 1 ? "" : "s"}
+          </div>
+          <div className="mb-1.5 text-[0.65rem] text-terminal-muted">
+            {legDetail.trade.underlyingSymbol} {legDetail.trade.expiryLabel} · {formatIstStamp(legDetail.trade.openedAt)} → {formatIstStamp(legDetail.trade.closedAt)}
+          </div>
+          <table className="w-full text-left text-[0.7rem]">
+            <thead>
+              <tr className="text-[0.6rem] uppercase text-terminal-muted/70">
+                <th className="pr-2 font-medium">Leg</th>
+                <th className="pr-2 text-right font-medium">Entry</th>
+                <th className="text-right font-medium">Exit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {legDetail.trade.legs.map((leg) => (
+                <tr key={leg.id}>
+                  <td className={`pr-2 ${leg.side === "SELL" ? "text-terminal-red" : "text-terminal-emerald"}`}>
+                    {leg.side} {leg.strikePrice} {leg.optionType}
+                  </td>
+                  <td className="pr-2 text-right tabular-nums text-terminal-muted">{leg.fillPrice}</td>
+                  <td className="text-right tabular-nums text-terminal-muted">{leg.closeFillPrice ?? "--"}</td>
                 </tr>
               ))}
             </tbody>
