@@ -302,6 +302,25 @@ not awaited, and a failure only logs.
 Net effect of the three fixes: first request after a deploy went 3,702ms →
 107ms, steady state ~1,373ms median → 4ms.
 
+**That 4ms no longer holds — do not diagnose against it.** Re-measured on
+2026-08-14 during market hours, `/api/market/overview` is **4,132ms median
+over 240 requests** (p90 7,210ms, p99 11,952ms, max 30,214ms). Cause not yet
+established; being investigated separately. Two things are already ruled in
+or out:
+
+- **Not pool exhaustion.** In the same window `strike-matrix` ran at a 7ms
+  median and `elliott-wave` at 74ms. Starvation slows everything uniformly —
+  that signature is unrelated endpoints finishing together at ~10.31s, not
+  one endpoint being slow while its neighbours are fast.
+- **The host was I/O saturated**: 34–53% iowait, ~19MB/s read / ~38MB/s
+  write, 1.4G of 4G swapped. Whether overview is a victim of that or
+  independently regressed is the open question.
+
+How to measure it again: `api.log` puts the URL on the `incoming request`
+line and the duration on the `request completed` line, joined by `reqId` —
+neither line alone is enough, which is why an earlier read of this file
+concluded response times could not be attributed to endpoints at all.
+
 ## Conventions that bite
 
 - **Runtime values crossing into `apps/web`**: `next.config.ts` carries
