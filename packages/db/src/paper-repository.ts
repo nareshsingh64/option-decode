@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getFallbackLotSize } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -1160,7 +1161,7 @@ async function mapTrade(
 }
 
 async function getPaperLotSize(underlyingSymbol: string, expiry: string, client: PrismaClient) {
-  return (await getStoredFnoLotSize(underlyingSymbol, expiry, client)) ?? getFallbackLotSizeForUnderlying(underlyingSymbol);
+  return (await getStoredFnoLotSize(underlyingSymbol, expiry, client)) ?? getFallbackLotSize(underlyingSymbol);
 }
 
 async function getLatestPaperOrderPrice(
@@ -1208,22 +1209,6 @@ async function getLatestPaperOptionTick(
   });
 }
 
-function getFallbackLotSizeForUnderlying(underlyingSymbol: string) {
-  const lotSizes: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    NIFTYNXT50: 25,
-    SENSEX: 20,
-    BANKEX: 30,
-    CRUDEOIL: 100,
-    NATURALGAS: 1250,
-    COPPER: 2500,
-    SILVER: 30
-  };
-  return lotSizes[underlyingSymbol.toUpperCase()] ?? 1;
-}
 
 function lotsFromQuantity(quantity: number, lotSize: number) {
   return Math.max(1, Math.round(quantity / lotSize));

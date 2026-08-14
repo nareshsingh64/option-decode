@@ -1,5 +1,5 @@
 import { MIN_RECOMMENDATION_OPEN_INTEREST, OI_BREADTH_DOMINANCE_RATIO, pressureValue } from "@option-decode/analytics";
-import { NSE_SESSION_CLOSE_IST_MINUTES } from "@option-decode/types";
+import { getFallbackLotSize, NSE_SESSION_CLOSE_IST_MINUTES } from "@option-decode/types";
 import type { OptionContractTick } from "@option-decode/types";
 import type { MarketOverview, OverviewTick } from "./live-dashboard";
 import { classifyOptionActivity, type OptionActivityKind } from "./strike-pressure-analytics";
@@ -751,7 +751,7 @@ function formatLarge(value?: number, mode: NumberFormatMode = "indian") {
 }
 
 function toLots(value: number | undefined, tick?: Pick<OverviewTick, "lotSize" | "underlyingSymbol">) {
-  const lotSize = tick?.lotSize && tick.lotSize > 0 ? tick.lotSize : getLotSizeForUnderlying(tick?.underlyingSymbol);
+  const lotSize = tick?.lotSize && tick.lotSize > 0 ? tick.lotSize : getFallbackLotSize(tick?.underlyingSymbol);
   return (value ?? 0) / lotSize;
 }
 
@@ -764,19 +764,4 @@ function formatQuantityValue(value: number | undefined, tick: OverviewTick | und
   return `${sign}${formatLarge(displayValue, preferences.numberFormatMode)}`;
 }
 
-function getLotSizeForUnderlying(underlyingSymbol?: string) {
-  const lotSizes: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    NIFTYNXT50: 25,
-    SENSEX: 20,
-    BANKEX: 30,
-    CRUDEOIL: 100,
-    NATURALGAS: 1250,
-    COPPER: 2500,
-    SILVER: 30
-  };
-  return lotSizes[String(underlyingSymbol ?? "").toUpperCase()] ?? 1;
-}
+

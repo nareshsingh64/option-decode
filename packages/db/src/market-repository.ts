@@ -1,4 +1,5 @@
 import { calculatePressureScore } from "@option-decode/analytics";
+import { getFallbackLotSize } from "@option-decode/types";
 import type { MarketPulsePoint, OptionChainSnapshot, OptionContractTick, SpotPricePoint } from "@option-decode/types";
 import type { OptionType, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -99,25 +100,9 @@ function sanitizeGreek(value: number | undefined): number | undefined {
 }
 
 async function getLotSizeForExpiry(underlyingSymbol: string, expiryLabel: string, client: DbClient): Promise<number> {
-  return (await getStoredFnoLotSize(underlyingSymbol, expiryLabel, client)) ?? getFallbackLotSizeForUnderlying(underlyingSymbol);
+  return (await getStoredFnoLotSize(underlyingSymbol, expiryLabel, client)) ?? getFallbackLotSize(underlyingSymbol);
 }
 
-function getFallbackLotSizeForUnderlying(underlyingSymbol: string): number {
-  const lotSizes: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    NIFTYNXT50: 25,
-    SENSEX: 20,
-    BANKEX: 30,
-    CRUDEOIL: 100,
-    NATURALGAS: 1250,
-    COPPER: 2500,
-    SILVER: 30
-  };
-  return lotSizes[underlyingSymbol.toUpperCase()] ?? 1;
-}
 
 function tickReferenceKey(tick: { optionType: OptionType; strikePrice: Prisma.Decimal }): string {
   return `${tick.optionType}:${tick.strikePrice.toString()}`;

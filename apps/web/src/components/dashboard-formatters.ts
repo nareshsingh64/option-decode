@@ -1,3 +1,4 @@
+import { getFallbackLotSize } from "@option-decode/types";
 import type { OverviewTick } from "./live-dashboard";
 import type { DisplayPreferences } from "./option-chain-builders";
 
@@ -149,7 +150,7 @@ export function formatLarge(value?: number, mode: NumberFormatMode = "indian") {
 }
 
 export function toLots(value: number | undefined, tick?: Pick<OverviewTick, "lotSize" | "underlyingSymbol">) {
-  const lotSize = tick?.lotSize && tick.lotSize > 0 ? tick.lotSize : getLotSizeForUnderlying(tick?.underlyingSymbol);
+  const lotSize = tick?.lotSize && tick.lotSize > 0 ? tick.lotSize : getFallbackLotSize(tick?.underlyingSymbol);
   return (value ?? 0) / lotSize;
 }
 
@@ -169,22 +170,6 @@ export function formatOptionalNumber(value: number | undefined, digits: number) 
   return value.toFixed(digits);
 }
 
-export function getLotSizeForUnderlying(underlyingSymbol?: string) {
-  const lotSizes: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    NIFTYNXT50: 25,
-    SENSEX: 20,
-    BANKEX: 30,
-    CRUDEOIL: 100,
-    NATURALGAS: 1250,
-    COPPER: 2500,
-    SILVER: 30
-  };
-  return lotSizes[String(underlyingSymbol ?? "").toUpperCase()] ?? 1;
-}
 
 export function formatLotsAndQty(lots: number, lotSize: number, quantity: number) {
   return `${lots} x ${lotSize} = ${quantity} qty`;

@@ -19,6 +19,7 @@
 //   expiry settlement (intrinsic value, EXPIRED status).
 
 import { classifyDrcr } from "@option-decode/analytics";
+import { getFallbackLotSize } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -244,23 +245,7 @@ async function getSimLotSize(underlyingSymbol: string, expiry: string, client: P
   if (stored) {
     return stored;
   }
-  // Keep in sync with getFallbackLotSizeForUnderlying in
-  // market-repository.ts - a miss here silently sizes the whole position
-  // at 1 unit, which makes every P&L figure round to zero.
-  const fallback: Record<string, number> = {
-    NIFTY: 65,
-    BANKNIFTY: 30,
-    FINNIFTY: 60,
-    MIDCPNIFTY: 120,
-    NIFTYNXT50: 25,
-    SENSEX: 20,
-    BANKEX: 30,
-    CRUDEOIL: 100,
-    NATURALGAS: 1250,
-    COPPER: 2500,
-    SILVER: 30
-  };
-  return fallback[underlyingSymbol.toUpperCase()] ?? 1;
+  return getFallbackLotSize(underlyingSymbol);
 }
 
 // A per-request memo of "latest tick for this contract". Two things make it

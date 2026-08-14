@@ -405,6 +405,49 @@ export const DRCR_BANDS = {
   neutralTo: 1.2
 } as const;
 
+/**
+ * Contract lot sizes, used ONLY as a fallback when the real value is not
+ * available from the feed tick or from `FnoLotSize`. Prefer the stored value
+ * every time: exchanges revise lot sizes periodically, so a constant is a
+ * snapshot with an expiry date on it.
+ *
+ * This table existed as SIX hand-maintained copies - three in packages/db
+ * (market/paper/sim repositories) and three in apps/web (dashboard
+ * formatters, strike-pressure analytics, option-chain builders) - carrying a
+ * "keep in sync" comment and no mechanism to enforce it. They happened to
+ * agree when this was consolidated; the point is that nothing made them.
+ *
+ * NIFTY IS 65 HERE, NOT 75. 75 is the number everyone reaches for and it is
+ * wrong for this data - verified against `OptionContract.lotSize` (1,878
+ * NIFTY rows, all 65) and `FnoLotSize` across four contract months. A wrong
+ * lot size does not fail loudly; it silently rescales every rupee figure and
+ * every rupees-to-points cost conversion.
+ */
+export const FALLBACK_LOT_SIZES: Readonly<Record<string, number>> = {
+  NIFTY: 65,
+  BANKNIFTY: 30,
+  FINNIFTY: 60,
+  MIDCPNIFTY: 120,
+  NIFTYNXT50: 25,
+  SENSEX: 20,
+  BANKEX: 30,
+  CRUDEOIL: 100,
+  NATURALGAS: 1250,
+  COPPER: 2500,
+  SILVER: 30
+};
+
+/**
+ * Fallback lot size for an underlying, or 1 when it is unknown.
+ *
+ * The 1 is deliberate and load-bearing: it makes a miss show up as a position
+ * sized at a single unit - every P&L rounding towards zero - rather than as a
+ * plausible-looking figure computed from someone else's contract.
+ */
+export function getFallbackLotSize(underlyingSymbol: string | null | undefined): number {
+  return FALLBACK_LOT_SIZES[String(underlyingSymbol ?? "").toUpperCase()] ?? 1;
+}
+
 export interface StrikeMatrixRow {
   optionType: OptionType;
   strikePrice: number;

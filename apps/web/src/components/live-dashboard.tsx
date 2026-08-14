@@ -3,6 +3,7 @@
 import { Clock3, Pause, SkipBack, SkipForward } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { getFallbackLotSize } from "@option-decode/types";
 import type { MarketBiasSummary, MarketPulse, StrikeMovementRow } from "@option-decode/types";
 import { AccountPanel } from "./account-panel";
 import { AdminPanel } from "./admin-panel";
@@ -51,7 +52,6 @@ import {
   formatTradablePrice,
   getDefaultTargetPrice,
   getDefaultTrailDistanceForEntry,
-  getLotSizeForUnderlying,
   getTrailingStopLoss,
   mergeTickerItems,
   normalizeTradablePrice
@@ -1276,7 +1276,7 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
   const orderTick = useMemo(() => (orderOverview ? findOptionTick(orderOverview, Number(orderStrike), orderOptionType) : undefined), [orderOptionType, orderOverview, orderStrike]);
   const marketEntryPrice = orderTick?.lastPrice ?? 0;
   const orderEntryPrice = normalizeTradablePrice(Number(orderEntry || marketEntryPrice));
-  const orderLotSize = orderTick?.lotSize && orderTick.lotSize > 0 ? orderTick.lotSize : getLotSizeForUnderlying(overview.snapshot.underlyingSymbol);
+  const orderLotSize = orderTick?.lotSize && orderTick.lotSize > 0 ? orderTick.lotSize : getFallbackLotSize(overview.snapshot.underlyingSymbol);
   const orderQuantity = Number(orderLots || 0) * orderLotSize;
   const defaultTrailDistance = getDefaultTrailDistanceForEntry(orderEntryPrice);
   const defaultStopLoss = getTrailingStopLoss(orderAction, orderEntryPrice, defaultTrailDistance);
