@@ -19,8 +19,8 @@ import { CalendarDatePicker } from "./calendar-date-picker";
 import { formatPrice } from "./dashboard-formatters";
 import { fetchReplayTradingDates, fetchStrikeMatrix } from "./dashboard-client";
 import type { StrikeMatrixResponse } from "./dashboard-client";
-import { storeSimTicketDraft } from "./paper-trading-pro-panel";
-import type { SimTicketDraft } from "./paper-trading-pro-panel";
+import { buildSimDraft, storeSimTicketDraft } from "./sim-ticket-draft";
+import type { SimTicketDraft } from "./sim-ticket-draft";
 
 const HORIZON_LABELS: Array<[TradingHorizon, string]> = [
   ["intraday", "Intraday"],
@@ -36,69 +36,6 @@ const REFRESH_MS: Record<TradingHorizon, number> = {
   monthly: 15 * 60_000
 };
 
-// Map a recommendation onto a Paper Trading Pro strategy from which side(s)
-// the structure writes: put-only -> bull put spread, call-only -> bear call
-// spread. Defined-risk defaults on purpose - the sim ticket lets the trader
-// switch to the naked variant deliberately.
-//
-// Both sides written is IRON_CONDOR everywhere in STRIKE_MATRIX_HORIZONS
-// (packages/analytics/src/strike-matrix.ts) except one specific cell:
-// intraday+Neutral, whose own structure text is "Sell short strangle" (no
-// condor mentioned at all - unlike weekly/monthly Neutral, which list
-// "iron condor(s)" as the primary structure and strangle only as a
-// secondary alternative). SHORT_STRANGLE exists as a Paper Trade Pro
-// strategy specifically to make that one cell buildable; if that matrix
-// table's text ever changes, this condition needs to move with it.
-function buildSimDraft(underlying: string, expiry: string, horizon: TradingHorizon, data: StrikeMatrixResponse): SimTicketDraft | null {
-  const { analysis } = data;
-  const recommendation = analysis.recommendation;
-  if (!recommendation) {
-    return null;
-  }
-  const hasPut = recommendation.putStrike !== undefined;
-  const hasCall = recommendation.callStrike !== undefined;
-  if (!hasPut && !hasCall) {
-    return null;
-  }
-  const writesBothSides = hasPut && hasCall;
-  const isIntradayNeutralStrangle = writesBothSides && horizon === "intraday" && analysis.bias === "Neutral";
-  const strategyType: SimTicketDraft["strategyType"] = isIntradayNeutralStrangle
-    ? "SHORT_STRANGLE"
-    : writesBothSides
-      ? "IRON_CONDOR"
-      : hasPut
-        ? "BULL_PUT_SPREAD"
-        : "BEAR_CALL_SPREAD";
-  // Only a wall that actually clears the conviction bar (meetsThreshold)
-  // counts as institutional backing - a strongly negative (unwinding) WCI
-  // used to win here via Math.abs() and get stamped onto the trade as
-  // conviction, which is the literal opposite of what a negative WCI means.
-  //
-  // Restricted to the side(s) this structure actually WRITES: taking the
-  // best of both walls meant a strong put wall could lend its conviction
-  // to a call-only structure (and vice versa) - a wall on a side the trade
-  // never sells is not backing for that trade. Uses the minimum across the
-  // written legs rather than the maximum, so a two-legged structure is
-  // reported only as backed as its weakest sold leg - the same rule
-  // recommendation.wallBacked applies server-side, which requires EVERY
-  // written side to qualify.
-  const wallWcis = [hasCall ? analysis.callWall : undefined, hasPut ? analysis.putWall : undefined]
-    .filter((wall): wall is NonNullable<typeof wall> => wall?.meetsThreshold === true)
-    .map((wall) => wall.wci);
-  const backedOnEveryWrittenSide = wallWcis.length === (writesBothSides ? 2 : 1);
-  return {
-    underlyingSymbol: underlying,
-    expiry,
-    strategyType,
-    horizon: horizon === "intraday" ? "INTRADAY" : horizon === "weekly" ? "WEEKLY" : "MONTHLY",
-    shortPutStrike: recommendation.putStrike,
-    shortCallStrike: recommendation.callStrike,
-    wci: backedOnEveryWrittenSide ? Math.min(...wallWcis) : null,
-    drcr: analysis.drcr ?? null,
-    signalRef: `${underlying}:${data.expiry}:${horizon}:${data.snapshotTime}`,
-    note: `${analysis.bias} bias - ${recommendation.structure}`
-  };
-}
 
 interface StrikeMatrixPanelProps {
   underlying: string;

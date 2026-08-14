@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CalendarDatePicker } from "./calendar-date-picker";
 import type { MarketOverview } from "./live-dashboard";
+import { buildMatrixDefault, takeSimTicketDraft } from "./sim-ticket-draft";
+import type { SimHorizon, SimStrategyType, SimTicketDraft } from "./sim-ticket-draft";
+import { fetchStrikeMatrix } from "./dashboard-client";
+import type { TradingHorizon } from "@option-decode/types";
 
 // Paper Trading Pro: seller strategy simulator panel.
 //
@@ -13,59 +17,6 @@ import type { MarketOverview } from "./live-dashboard";
 // seller analytics strip along the bottom.
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-
-type SimStrategyType =
-  | "SHORT_STRADDLE"
-  | "BULL_PUT_SPREAD"
-  | "BEAR_CALL_SPREAD"
-  | "IRON_CONDOR"
-  | "NAKED_CALL"
-  | "NAKED_PUT"
-  | "SHORT_STRANGLE"
-  | "IRON_BUTTERFLY";
-type SimHorizon = "INTRADAY" | "WEEKLY" | "MONTHLY";
-
-// --- Signal handoff from the Strike Matrix tab ("Paper Trade This") ---
-// The Strike Matrix panel stores a draft here and navigates to this tab;
-// the ticket pre-fills from it on mount. sessionStorage (not state) so the
-// handoff survives the tab switch without threading props through
-// live-dashboard.
-const SIM_TICKET_DRAFT_KEY = "option-decode:sim-ticket-draft";
-
-export interface SimTicketDraft {
-  underlyingSymbol: string;
-  expiry: string;
-  strategyType: SimStrategyType;
-  horizon: SimHorizon;
-  shortPutStrike?: number;
-  shortCallStrike?: number;
-  wci: number | null;
-  drcr: number | null;
-  signalRef: string;
-  note?: string;
-}
-
-export function storeSimTicketDraft(draft: SimTicketDraft): void {
-  try {
-    sessionStorage.setItem(SIM_TICKET_DRAFT_KEY, JSON.stringify(draft));
-  } catch {
-    // Session storage unavailable (private mode edge cases) - the user can
-    // still build the ticket manually.
-  }
-}
-
-function takeSimTicketDraft(): SimTicketDraft | null {
-  try {
-    const raw = sessionStorage.getItem(SIM_TICKET_DRAFT_KEY);
-    if (!raw) {
-      return null;
-    }
-    sessionStorage.removeItem(SIM_TICKET_DRAFT_KEY);
-    return JSON.parse(raw) as SimTicketDraft;
-  } catch {
-    return null;
-  }
-}
 
 interface SignalContext {
   wci: number | null;
@@ -296,6 +247,15 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
   // `overflow-y-auto` scroll container, which would clip an absolutely
   // positioned child. The anchor rect is captured on enter.
   const [legDetail, setLegDetail] = useState<{ trade: SimTradeDto; top: number; left: number } | null>(null);
+  // Where the ticket's current structure came from, so the UI never leaves
+  // the trader guessing whether the matrix chose it or it is just the
+  // fallback sitting there.
+  const [ticketSource, setTicketSource] = useState<"handoff" | "matrix" | "fallback" | "manual" | null>(null);
+  const [matrixNote, setMatrixNote] = useState<{ reason: string | null; putDrcCount: number; callDrcCount: number } | null>(null);
+  // The (underlying, expiry, horizon) the user last chose a structure for by
+  // hand. While the ticket still points at that combination the matrix must
+  // not overwrite them; changing any of the three is what hands control back.
+  const manualSignatureRef = useRef<string | null>(null);
   const [quote, setQuote] = useState<SimQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [isQuoting, setIsQuoting] = useState(false);
@@ -343,7 +303,24 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
     return Number.isFinite(step) && step > 0 ? step : 50;
   }, [strikeChoices]);
 
+  // Snap the ticket to ATM as the market moves - but NOT while it is showing
+  // a strike that came from the Strike Matrix or a "Paper Trade This" draft.
+  //
+  // Put-only and call-only structures (bull put / bear call spread) carry the
+  // recommended strike in `mainStrike` rather than in explicit legs, so an
+  // unconditional reset here silently re-points the trade at a different
+  // contract than the one the panel just said it was recommending - and it
+  // fires on any poll where ATM ticks, so the strike changes under the
+  // trader mid-ticket. A change of underlying still snaps: the matrix effect
+  // re-fetches for the new market and lands after this.
+  const followingDraftRef = useRef(false);
+  const lastUnderlyingRef = useRef(overview.selectedUnderlying);
   useEffect(() => {
+    const underlyingChanged = lastUnderlyingRef.current !== overview.selectedUnderlying;
+    lastUnderlyingRef.current = overview.selectedUnderlying;
+    if (!underlyingChanged && followingDraftRef.current) {
+      return;
+    }
     setMainStrike(overview.snapshot.atmStrike);
   }, [overview.snapshot.atmStrike, overview.selectedUnderlying]);
 
@@ -365,18 +342,27 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
     [legsOverride, strategy, mainStrike, wingWidth, condorOffset, strikeStep]
   );
 
-  // Apply a pending "Paper Trade This" draft exactly once on mount.
-  useEffect(() => {
-    const draft = takeSimTicketDraft();
-    if (!draft || draft.underlyingSymbol !== overview.selectedUnderlying) {
-      return;
-    }
+  // Load a draft into the ticket. Shared by the explicit "Paper Trade This"
+  // handoff and by the Strike Matrix auto-default below, so both paths fill
+  // the ticket identically - the only difference between them is where the
+  // draft came from and whether it may overwrite a manual choice.
+  //
+  // `applyHorizon` is false for the auto-default: the horizon selector is the
+  // input that drives which matrix is read, so writing it back from the
+  // result would let the ticket move the user's own selection under them.
+  const applyDraft = useCallback((draft: SimTicketDraft, applyHorizon: boolean) => {
     const wing = Math.max(strikeStep, 50) * 2;
+    followingDraftRef.current = true;
     setStrategy(draft.strategyType);
-    setHorizon(draft.horizon);
+    if (applyHorizon) {
+      setHorizon(draft.horizon);
+    }
     if (draft.expiry) {
       setExpiry(draft.expiry);
     }
+    // Reset first: a previous draft's explicit legs must not survive into a
+    // structure that is meant to be built from center/offset.
+    setLegsOverride(null);
     if (draft.strategyType === "IRON_CONDOR" && draft.shortPutStrike !== undefined && draft.shortCallStrike !== undefined) {
       // Honor the exact recommended walls even when they're asymmetric
       // around ATM - explicit legs instead of center/offset math.
@@ -403,8 +389,67 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
     // gate, excluded from the signal scorecard).
     setSignalContext(draft.signalRef ? { wci: draft.wci, drcr: draft.drcr, signalRef: draft.signalRef, note: draft.note } : null);
     setQuote(null);
+  }, [strikeStep]);
+
+  // Apply a pending "Paper Trade This" draft exactly once on mount.
+  useEffect(() => {
+    const draft = takeSimTicketDraft();
+    if (!draft || draft.underlyingSymbol !== overview.selectedUnderlying) {
+      return;
+    }
+    applyDraft(draft, true);
+    setTicketSource("handoff");
+    // An explicit "Paper Trade This" is a deliberate choice for this exact
+    // market and horizon, so the matrix default below must not overwrite it.
+    manualSignatureRef.current = `${draft.underlyingSymbol}|${draft.expiry}|${draft.horizon}`;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time mount handoff
   }, []);
+
+  // Pre-fill the ticket from the Strike Matrix for whatever market, expiry
+  // and horizon the panel is currently pointed at, so opening the tab shows
+  // the structure the matrix is actually recommending rather than a fixed
+  // Iron Condor. Re-runs when any of those three change; leaves the ticket
+  // alone while it still points at a combination the user chose by hand.
+  useEffect(() => {
+    const signature = `${overview.selectedUnderlying}|${expiry}|${horizon}`;
+    if (manualSignatureRef.current === signature) {
+      return;
+    }
+    const tradingHorizon: TradingHorizon = horizon === "INTRADAY" ? "intraday" : horizon === "WEEKLY" ? "weekly" : "monthly";
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await fetchStrikeMatrix(overview.selectedUnderlying, expiry, tradingHorizon);
+        // Switching market or horizon mid-request must not let a stale
+        // matrix land on the newer selection.
+        if (cancelled) {
+          return;
+        }
+        const result = buildMatrixDefault(overview.selectedUnderlying, expiry, tradingHorizon, data);
+        setMatrixNote({ reason: result.fallbackReason, putDrcCount: result.putDrcCount, callDrcCount: result.callDrcCount });
+        if (result.draft) {
+          applyDraft(result.draft, false);
+          setTicketSource("matrix");
+        } else {
+          // Deliberately leaves the ticket as it stands rather than forcing
+          // a structure - the reason is shown next to it.
+          setTicketSource("fallback");
+        }
+      } catch {
+        if (!cancelled) {
+          setMatrixNote(null);
+          setTicketSource(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // applyDraft is intentionally not a dependency: it closes over strikeStep,
+    // which moves with every overview poll, and including it would refetch the
+    // matrix on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overview.selectedUnderlying, expiry, horizon]);
 
   // Summing the scorecard's own rows rather than re-deriving the rule
   // client-side: the API decides what qualifies, so counting its output can
@@ -780,11 +825,46 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
           ) : null}
 
           <label className="mt-2 block text-[0.65rem] uppercase text-terminal-muted">Strategy</label>
-          <select className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" value={strategy} onChange={(event) => { setStrategy(event.target.value as SimStrategyType); setQuote(null); clearSignal(); }}>
+          <select
+            className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text"
+            value={strategy}
+            onChange={(event) => {
+              setStrategy(event.target.value as SimStrategyType);
+              setQuote(null);
+              clearSignal();
+              // Picking by hand pins the ticket for this market/expiry/horizon
+              // so the matrix stops reasserting itself. Changing any of the
+              // three hands control back to it.
+              setLegsOverride(null);
+              followingDraftRef.current = false;
+              setTicketSource("manual");
+              manualSignatureRef.current = `${overview.selectedUnderlying}|${expiry}|${horizon}`;
+            }}
+          >
             {Object.entries(STRATEGY_LABELS).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
             ))}
           </select>
+
+          {/* Where this structure came from. The fallback case is the one that
+              matters: without it a stale Iron Condor sitting in the dropdown
+              is indistinguishable from one the matrix actively chose. */}
+          {ticketSource === "matrix" ? (
+            <p className="mt-1 text-[0.65rem] text-terminal-emerald">
+              From Strike Matrix ({matrixNote ? `${matrixNote.putDrcCount} put / ${matrixNote.callDrcCount} call strikes` : "live"})
+            </p>
+          ) : ticketSource === "fallback" ? (
+            <p className="mt-1 text-[0.65rem] text-terminal-muted">
+              {/* Not "showing the default structure" - the fallback deliberately
+                  leaves whatever is in the ticket alone, which after a manual
+                  pick is the trader's own choice, not a default. */}
+              Strike Matrix not applied - {matrixNote?.reason ?? "no reading available"}. Structure left unchanged.
+            </p>
+          ) : ticketSource === "handoff" ? (
+            <p className="mt-1 text-[0.65rem] text-terminal-emerald">From &quot;Paper Trade This&quot;.</p>
+          ) : ticketSource === "manual" ? (
+            <p className="mt-1 text-[0.65rem] text-terminal-muted">Your selection - change market, expiry or horizon to follow the matrix again.</p>
+          ) : null}
 
           <div className="mt-2 grid grid-cols-2 gap-2">
             <div>
@@ -807,7 +887,7 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
             {needsMainStrike ? (
               <div>
                 <label className="block text-[0.65rem] uppercase text-terminal-muted">{usesCenterStrike ? "Center Strike" : "Strike"}</label>
-                <select className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" value={mainStrike} onChange={(event) => { setMainStrike(Number(event.target.value)); setQuote(null); clearSignal(); }}>
+                <select className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" value={mainStrike} onChange={(event) => { setMainStrike(Number(event.target.value)); setQuote(null); clearSignal(); followingDraftRef.current = false; setTicketSource("manual"); }}>
                   {strikeChoices.map((strike) => (
                     <option key={strike} value={strike}>{strike === overview.snapshot.atmStrike ? `${strike} (ATM)` : strike}</option>
                   ))}
@@ -825,13 +905,13 @@ export function PaperTradingProPanel({ overview }: PaperTradingProPanelProps) {
               {showWingWidth ? (
                 <div>
                   <label className="block text-[0.65rem] uppercase text-terminal-muted">Wing Width</label>
-                  <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={wingWidth} onChange={(event) => { setWingWidth(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); }} />
+                  <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={wingWidth} onChange={(event) => { setWingWidth(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); setTicketSource("manual"); }} />
                 </div>
               ) : null}
               {showCondorOffset ? (
                 <div>
                   <label className="block text-[0.65rem] uppercase text-terminal-muted">Short Offset</label>
-                  <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={condorOffset} onChange={(event) => { setCondorOffset(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); }} />
+                  <input className="mt-1 w-full rounded border border-terminal-line bg-terminal-input p-2 text-sm text-terminal-text" min={strikeStep} step={strikeStep} type="number" value={condorOffset} onChange={(event) => { setCondorOffset(Number(event.target.value) || strikeStep); setQuote(null); clearSignal(); setTicketSource("manual"); }} />
                 </div>
               ) : null}
             </div>
