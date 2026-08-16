@@ -148,6 +148,52 @@ quarantined until `include:amazonses.com` is added.
 Inbound mail for the domain is GoDaddy's (`MX smtp.secureserver.net`), not the
 Cloudflare Email Routing that used to forward to Outlook.
 
+### Dhan access tokens live 24 hours, and the weekend cannot be automated
+
+There is no long-lived credential. The 12-month "API key & secret" only MINTS
+a token, and minting needs an interactive browser login with 2FA every time.
+The one automatable path is `GET /v2/RenewToken`, which extends an **active**
+token by another 24h. `ops/scripts/dhan-token-renew.sh` does that; cron is
+`ops/cron/option-decode-dhan-token-renew`, installed by `native-deploy.sh`.
+
+The endpoint's contract was established by probing production, and the docs
+are wrong or ambiguous on both halves — **do not "correct" it from them**:
+
+```
+GET  https://api.dhan.co/v2/RenewToken
+headers: access-token, dhanClientId          <- NOT client-id
+200 body: {"createTime":..., "expiryTime":..., "token":"<JWT>"}
+```
+
+POST returns 400 DH-905. `client-id` — the header every *other* Dhan call in
+this app uses — also fails. The response field is `token`, not `accessToken`.
+
+**The call is destructive: a 200 kills the old token immediately.** Hence the
+script validates the new one against `/v2/fundlimit` *before* persisting,
+backs up and writes atomically, and logs the response body untruncated on the
+failure path — a JWT is ~300 chars, and truncating there could destroy the
+only copy in existence. That is not hypothetical: the first probe run consumed
+a live token and it was recovered by pasting from the log.
+
+**Renewal runs at 08:20 and 23:35 IST, Mon–Fri — not every 12 hours.** The
+times are pinned to the EC2 window (08:15 boot, 23:55 shutdown), not to a
+clock. 23:35 is 20 minutes before shutdown specifically so a full-life token
+goes into the overnight gap; a literal 12-hourly cadence would put one run in
+the middle of the night when the box is off, and it would simply never fire.
+Both runs pass `--threshold-hours 25` so they renew unconditionally.
+
+**Monday morning always needs a manual token, and no cron can fix that.**
+Friday's 23:35 renewal produces a token good until Saturday 23:35; the box is
+off from Friday 23:55 to Monday 08:15, which is 56 hours against a 24-hour
+token. An expired token cannot be renewed, only regenerated at web.dhan.co.
+The post-boot run is written to fail loudly with `MANUAL ACTION REQUIRED`
+rather than leave a wall of 401s. A Sunday-evening paste covers Monday and
+lets cron carry the rest of the week.
+
+A token is only renewable if it was minted from Dhan Web: `tokenConsumerType`
+`SELF` and an empty `partnerId`. The script's preflight refuses a partner
+token rather than burning it to find out.
+
 **The API does not log to journald.** `journalctl -u option-decode-api` shows
 only systemd's own lines; the application's pino output goes to
 `/opt/option-decode-native/logs/api/api.log`. Reading the journal and seeing
@@ -219,6 +265,27 @@ a short window is often a step in a staircase. Before saying a change improved
 something, measure the same way, over the same span, on both sides — and if a
 claim turns out wrong, retract it plainly.
 
+### Units: rupees are not points, and the mistake looks conservative
+
+A backtest charged `brokeragePerLeg * legs` — **₹20** — straight against a P&L
+denominated in **index points**, so every leg cost 20 *points*. On a two-legged
+strangle that was 40 points against an average credit of 119, and 80 points on
+a four-legged condor against an 83-point credit. The correct conversion is
+rupees ÷ lot size: about **0.31 points/leg on NIFTY and 1.0 on SENSEX**, i.e.
+20–65x smaller.
+
+Two things make this worth remembering beyond the one fix:
+
+- **It survived review because it looked conservative.** A backtest whose
+  numbers come out worse than expected attracts far less scrutiny than one
+  that looks good. Check the direction of an error before trusting that a
+  pessimistic result is a safe one — this one flipped an iron condor's
+  published average from **−3.9 to +70.6 points**, reversing a conclusion the
+  write-up had drawn about protection being pure expense.
+- **Points are not comparable across underlyings.** NIFTY's lot is 65 and
+  SENSEX's is 20, so one NIFTY point is worth 3.25x a SENSEX point of P&L.
+  Anything summed across indices has to be rupees.
+
 ## Feed gotchas (Dhan)
 
 - **Greeks are zeroed far more widely than "ITM calls".** `delta`,
@@ -246,9 +313,51 @@ claim turns out wrong, retract it plainly.
 - `openInterest` / `volume` / `changeInOpenInterest` are **raw contract
   quantities**. Divide by the tick's own `lotSize` for lots — and honour the
   user's `quantityDisplayMode` preference rather than hardcoding either unit.
-- `lotSize` comes from the tick, not a constant (it is not always 75).
+- `lotSize` comes from the tick, not a constant. **NIFTY is 65, not the 75
+  everyone reaches for** — verified against `OptionContract.lotSize` (1,878
+  NIFTY rows, all 65) and `FnoLotSize` across four contract months; SENSEX is
+  20. When the tick has no lot size, use `getFallbackLotSize()` from
+  `@option-decode/types` — the one table, not a retyped copy. Note the stored
+  `OptionContractTick` rows carry **no** lotSize column, so anything reading
+  history has to join `OptionContract` or `FnoLotSize`. A wrong lot size never
+  fails loudly: it silently rescales every rupee figure and every
+  rupees-to-points conversion, so the failure mode is plausible numbers.
 - India VIX is often absent locally; the range builder falls back to a 15%
   default and says so in the UI.
+
+## Margin: the app's own model overstates index options by ~2x
+
+`computeDynamicMarginForTrade` (packages/db/src/sim-repository.ts) uses
+
+```
+max(0.20 * spot + premium - otmAmount, 0.10 * spot)
+```
+
+which is the SEBI-style **prescribed minimum** short-option formula. Applied to
+an index option it lands roughly **2.0–2.4x above what a broker actually
+blocks**. Worked example, NIFTY 2026-08-14, spot 24,366, short 24,650 CE at
+15.95, lot 65:
+
+| | |
+|---|---|
+| app model | 4,605 pts/unit → **₹2,99,335** = 18.9% of the ₹15.84L notional |
+| published | **₹1.25–1.5 lakh** per lot for a naked NIFTY short held overnight = 7.9–9.5% |
+
+Exposure margin alone is a documented 2% of contract value; the balance is
+SPAN. **This affects Paper Trade Pro's live buying-power display**, not just
+backtests — it is not only a research concern, and it is not yet fixed.
+
+Real margin is SPAN + Exposure, which the exchange revalues **six times a
+trading day** from its own risk arrays. It cannot be reconstructed from stored
+option chains, so nothing here will ever be exact. Backtests use a separate,
+deliberately coarse model — a percentage of notional plus however far a short
+is ITM — calibrated to the published range and stated as ±20%. Strike distance
+while OTM is *not* modelled: the published figures overlap too heavily to fit
+that curve, and inventing a coefficient would be false precision.
+
+If a real number is ever needed, Dhan has a margin calculator endpoint. Note
+its MCP credentials are separate from the app's `.env.production` token and
+were expired when this was written.
 
 ## Performance: the API is round-trip-bound, not compute-bound
 
@@ -330,7 +439,11 @@ concluded response times could not be attributed to endpoints at all.
 - **One source of truth for thresholds.** Band edges and gates are defined once
   and imported (`DRCR_BANDS` in types, `STRIKE_MATRIX_HORIZONS` target deltas,
   `MIN_RECOMMENDATION_OPEN_INTEREST`, `OI_BREADTH_DOMINANCE_RATIO`). If a number
-  is needed in a second place, export it — do not retype it.
+  is needed in a second place, export it — do not retype it. Contract lot
+  sizes were the counter-example: the same eleven-symbol table sat in **six**
+  files, three in `packages/db` and three in `apps/web`, one of them carrying
+  a "keep in sync" comment and no way to enforce it. They now live once, as
+  `FALLBACK_LOT_SIZES` / `getFallbackLotSize()` in `packages/types`.
 - Any strike the app *names as tradeable* passes the same liquidity gate
   (`MIN_RECOMMENDATION_OPEN_INTEREST`, volume > 0). Two standards is a bug.
 - **There are two "bias" signals and they are not the same thing.** The
