@@ -44,10 +44,18 @@
 # and Dhan does not offer one. The post-boot run exists partly to say so
 # loudly rather than let Monday fail as a wall of 401s.
 #
+# EMAIL ALERTS
+# Every terminal path emails TOKEN_ALERT_EMAIL (read from the env file):
+# SUCCESS with the new expiry, or FAILED with the reason. Alerting is hooked
+# into die() rather than sprinkled at each exit, so a failure path added later
+# is covered automatically. Mail is best-effort - it can never turn a good
+# renewal into a bad exit code - and the token is never included in it.
+#
 # Usage:
 #   dhan-token-renew.sh --dry-run              # check and report only
 #   dhan-token-renew.sh                        # renew if <12h left
 #   dhan-token-renew.sh --threshold-hours 25   # renew unconditionally
+#   dhan-token-renew.sh --test-alert           # email a sample, token untouched
 
 set -uo pipefail
 
@@ -58,9 +66,15 @@ LOG_TAG="dhan-token-renew"
 # fires twice, and against burning a freshly-issued token for no reason.
 RENEW_IF_HOURS_LEFT_BELOW=12
 DRY_RUN=0
+TEST_ALERT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
+    # Send a sample alert and exit WITHOUT touching the token. Exists because
+    # the only other way to see what the email looks like is to renew for
+    # real, and RenewToken destroys the current token on success - you cannot
+    # "just try it" on this endpoint.
+    --test-alert) TEST_ALERT=1 ;;
     # The pre-shutdown run passes a threshold above the 24h token life so it
     # always renews, sending a full-life token into the overnight gap. There
     # is no cost to renewing early - it simply resets the 24h clock.
@@ -71,7 +85,80 @@ while [ $# -gt 0 ]; do
 done
 
 log() { echo "[$LOG_TAG $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
-die() { log "FAILED: $*"; exit 1; }
+
+# --- Email alerting -------------------------------------------------------
+# Sends through the SAME GoDaddy mailbox the app itself uses. That is not
+# laziness: the domain publishes DMARC p=quarantine with SPF
+# "v=spf1 include:secureserver.net -all", and the -all is a hard fail. Any
+# OTHER sender would be quarantined until it was added to the SPF record, so
+# reusing support@pytrade.co.in is what keeps these alerts deliverable.
+#
+# Recipient comes from TOKEN_ALERT_EMAIL in the env file. If it is missing the
+# script logs and carries on - a missing alert address must never be the reason
+# a token renewal fails.
+#
+# NEVER PUT THE TOKEN IN THE EMAIL. Status, expiry and a masked client id only.
+# Mail lands in third-party inboxes and gets forwarded; a JWT in there is a
+# live credential sitting in someone's mail archive.
+notify() {
+  local status="$1" detail="$2"
+  local to
+  to=$(grep '^TOKEN_ALERT_EMAIL=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'')
+  if [ -z "$to" ]; then
+    log "no TOKEN_ALERT_EMAIL set - skipping email alert"
+    return 0
+  fi
+  # Best effort by design: || true so a mail outage cannot turn a successful
+  # renewal into a non-zero exit, which is how you end up "fixing" a token
+  # that was never broken.
+  ENV_FILE="$ENV_FILE" ALERT_TO="$to" ALERT_STATUS="$status" ALERT_DETAIL="$detail" \
+    ALERT_HOST="$(hostname)" python3 - <<'PYEOF' 2>&1 | while read -r l; do log "mail: $l"; done || true
+import os, smtplib, ssl, datetime
+from email.message import EmailMessage
+
+env = {}
+for line in open(os.environ["ENV_FILE"]):
+    if "=" in line and not line.lstrip().startswith("#"):
+        k, v = line.split("=", 1)
+        env[k.strip()] = v.strip().strip('"').strip("'")
+
+host = env.get("SMTP_HOST"); port = int(env.get("SMTP_PORT", "465"))
+user = env.get("SMTP_USER"); pw = env.get("SMTP_PASSWORD")
+sender = env.get("EMAIL_FROM") or user
+if not (host and user and pw):
+    print("SMTP not configured - skipped"); raise SystemExit
+
+status = os.environ["ALERT_STATUS"]
+detail = os.environ["ALERT_DETAIL"]
+now = datetime.datetime.now(datetime.timezone.utc)
+ist = (now + datetime.timedelta(hours=5, minutes=30)).strftime("%a %d %b %Y %H:%M IST")
+
+msg = EmailMessage()
+# Status first so it is readable in a phone notification without opening it.
+msg["Subject"] = f"[{status}] Dhan token renewal - {ist}"
+msg["From"] = sender
+msg["To"] = os.environ["ALERT_TO"]
+msg.set_content(
+    f"Dhan access token renewal: {status}\n"
+    f"Host: {os.environ.get('ALERT_HOST','?')}\n"
+    f"When: {ist}  ({now.strftime('%Y-%m-%dT%H:%M:%SZ')})\n\n"
+    f"{detail}\n\n"
+    "-- \n"
+    "Sent by ops/scripts/dhan-token-renew.sh on the Option Decode host.\n"
+    "The token itself is deliberately not included in this email.\n"
+)
+ctx = ssl.create_default_context()
+if str(env.get("SMTP_SECURE", "true")).lower() == "true" or port == 465:
+    with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
+        smtp.login(user, pw); smtp.send_message(msg)
+else:
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        smtp.starttls(context=ctx); smtp.login(user, pw); smtp.send_message(msg)
+print("alert sent to " + os.environ["ALERT_TO"])
+PYEOF
+}
+
+die() { log "FAILED: $*"; notify "FAILED" "$*"; exit 1; }
 
 [ -r "$ENV_FILE" ] || die "cannot read $ENV_FILE"
 
@@ -79,6 +166,15 @@ TOKEN=$(grep '^DHAN_ACCESS_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d 
 CLIENT_ID=$(grep '^DHAN_CLIENT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"'')
 [ -n "$TOKEN" ] || die "DHAN_ACCESS_TOKEN missing from $ENV_FILE"
 [ -n "$CLIENT_ID" ] || die "DHAN_CLIENT_ID missing from $ENV_FILE"
+
+if [ "$TEST_ALERT" = "1" ]; then
+  log "sending a test alert - the token is NOT touched"
+  notify "TEST" "This is a test of the token-renewal alert path. No renewal was attempted and the token on this host is unchanged.
+
+If this reached you, the SUCCESS and FAILED alerts will too."
+  log "test alert done"
+  exit 0
+fi
 
 # --- Preflight: is this token renewable, and does it need renewing? -------
 PREFLIGHT=$(TOKEN="$TOKEN" python3 - <<'PY'
@@ -211,4 +307,28 @@ for u in option-decode-api option-decode-worker; do
   systemctl is-active --quiet "$u" || die "$u did not come back after restart"
 done
 log "api and worker restarted on the new token"
+
+# Claims only - decoded from the NEW token so the email states the real expiry
+# rather than "24h from now", which would be an assumption.
+SUMMARY=$(NEW_TOKEN="$NEW_TOKEN" CLIENT_ID="$CLIENT_ID" python3 - <<'PYEOF'
+import base64, json, os, datetime
+c = json.loads(base64.urlsafe_b64decode(os.environ["NEW_TOKEN"].split(".")[1] + "=="))
+def fmt(ts):
+    u = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+    return (u + datetime.timedelta(hours=5, minutes=30)).strftime("%a %d %b %Y %H:%M IST")
+exp = c.get("exp"); iat = c.get("iat")
+print("The token was renewed and both services were restarted on it.")
+print("")
+print("  New token expires : %s" % fmt(exp))
+if iat:
+    print("  Issued            : %s" % fmt(iat))
+    print("  Life              : %.1f hours" % ((exp - iat) / 3600))
+print("  Dhan client       : ...%s" % os.environ["CLIENT_ID"][-4:])
+print("  Renewable again   : %s" % ("yes" if c.get("tokenConsumerType") == "SELF" and not c.get("partnerId") else "NO - partner token"))
+print("")
+print("Verified against /v2/fundlimit before it was saved, so it is known to")
+print("authenticate rather than merely well-formed.")
+PYEOF
+)
+notify "SUCCESS" "$SUMMARY"
 log "SUCCESS"
