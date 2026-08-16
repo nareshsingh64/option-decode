@@ -93,9 +93,9 @@ log() { echo "[$LOG_TAG $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 # OTHER sender would be quarantined until it was added to the SPF record, so
 # reusing support@pytrade.co.in is what keeps these alerts deliverable.
 #
-# Recipient comes from TOKEN_ALERT_EMAIL in the env file. If it is missing the
-# script logs and carries on - a missing alert address must never be the reason
-# a token renewal fails.
+# Recipients come from TOKEN_ALERT_EMAIL in the env file, comma-separated for
+# more than one. If it is missing the script logs and carries on - a missing
+# alert address must never be the reason a token renewal fails.
 #
 # NEVER PUT THE TOKEN IN THE EMAIL. Status, expiry and a masked client id only.
 # Mail lands in third-party inboxes and gets forwarded; a JWT in there is a
@@ -137,7 +137,13 @@ msg = EmailMessage()
 # Status first so it is readable in a phone notification without opening it.
 msg["Subject"] = f"[{status}] Dhan token renewal - {ist}"
 msg["From"] = sender
-msg["To"] = os.environ["ALERT_TO"]
+# Comma-separated list. send_message() derives the envelope recipients from
+# this header, so every address gets a copy from one connection - no loop, and
+# no chance of one address failing silently while another succeeds.
+recipients = [a.strip() for a in os.environ["ALERT_TO"].split(",") if a.strip()]
+if not recipients:
+    print("TOKEN_ALERT_EMAIL parsed to no addresses - skipped"); raise SystemExit
+msg["To"] = ", ".join(recipients)
 msg.set_content(
     f"Dhan access token renewal: {status}\n"
     f"Host: {os.environ.get('ALERT_HOST','?')}\n"
@@ -154,7 +160,7 @@ if str(env.get("SMTP_SECURE", "true")).lower() == "true" or port == 465:
 else:
     with smtplib.SMTP(host, port, timeout=30) as smtp:
         smtp.starttls(context=ctx); smtp.login(user, pw); smtp.send_message(msg)
-print("alert sent to " + os.environ["ALERT_TO"])
+print("alert sent to " + ", ".join(recipients))
 PYEOF
 }
 
