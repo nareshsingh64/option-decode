@@ -194,6 +194,38 @@ A token is only renewable if it was minted from Dhan Web: `tokenConsumerType`
 `SELF` and an empty `partnerId`. The script's preflight refuses a partner
 token rather than burning it to find out.
 
+**Every renewal emails its outcome** (added 2026-08-16). Subject is
+`[SUCCESS]` or `[FAILED]` followed by the IST timestamp — status first so it
+reads in a phone notification without being opened. SUCCESS reports the expiry
+*decoded from the new token* rather than assuming "24h from now", and whether
+that token is itself renewable, which is what decides if the next cron run can
+work at all.
+
+- **Recipients live in `TOKEN_ALERT_EMAIL` in `.env.production`**, not in the
+  repo — comma-separated for more than one. They go into a single `To` header
+  rather than a loop, so one connection either delivers to all of them or
+  fails as a unit; a loop lets the second address fail silently after the
+  first has gone out. A missing value logs and carries on: no alert address
+  should ever be the reason a renewal fails.
+- **It sends through the app's own GoDaddy mailbox, and that is load-bearing**
+  — see the transactional-email section above. `p=quarantine` plus a hard-fail
+  `-all` SPF means any other sender is quarantined until the DNS record
+  changes.
+- **The token is never in the email.** Mail is forwarded and archived, and a
+  JWT sitting in an inbox is a live credential. Status, expiry and a masked
+  client id only.
+- **Alerting hangs off `die()`**, not repeated at each exit, so every failure
+  path is covered and any added later is covered for free — including the
+  Monday `MANUAL ACTION REQUIRED` case, which is the one that most needed a
+  voice and was previously silent unless somebody opened the log.
+- Mail is best-effort and wrapped so an SMTP outage cannot turn a good renewal
+  into a non-zero exit. That failure mode ends with someone "fixing" a token
+  that was never broken.
+- **`--test-alert` sends a sample and exits without touching the token.** It
+  exists because the only other way to see the email is to renew for real, and
+  RenewToken destroys the current token the moment it returns 200 — this is
+  not an endpoint you can just try.
+
 **The API does not log to journald.** `journalctl -u option-decode-api` shows
 only systemd's own lines; the application's pino output goes to
 `/opt/option-decode-native/logs/api/api.log`. Reading the journal and seeing
