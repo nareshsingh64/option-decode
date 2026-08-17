@@ -20,6 +20,15 @@
 # atomically, and every failure path leaves the existing file untouched and
 # exits non-zero.
 #
+# A FAILURE TO VERIFY IS NOT A BAD TOKEN. Once RenewToken has returned 200 the
+# old token is gone, so the new one is the only credential in existence and
+# discarding it is the destructive act. A 5xx or a timeout from the verify
+# endpoint is Dhan's problem, not the token's - those are retried and then
+# persisted anyway with a loud warning. Only a 4xx is treated as a real
+# rejection, and even then the token is logged rather than lost. This is not
+# hypothetical: a 502 on 2026-08-17 threw away a good token and forced a manual
+# regeneration.
+#
 # It also only works on tokens generated from Dhan Web ("tokenConsumerType":
 # "SELF", empty partnerId). A partner-minted token cannot be renewed this
 # way and needs the consent flow instead - the preflight check below refuses
@@ -67,6 +76,9 @@ LOG_TAG="dhan-token-renew"
 RENEW_IF_HOURS_LEFT_BELOW=12
 DRY_RUN=0
 TEST_ALERT=0
+# Set when the token was persisted without a successful /v2/fundlimit check,
+# so the success email says so rather than implying a clean run.
+UNVERIFIED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
@@ -273,11 +285,68 @@ PY
 case "$CHECK" in ERR*) die "${CHECK#ERR }" ;; esac
 log "new token accepted by Dhan, valid for $(echo "$CHECK" | awk '{print $2}')h"
 
-# Prove it actually authenticates BEFORE persisting.
-VERIFY=$(curl -s -o /dev/null -w '%{http_code}' 'https://api.dhan.co/v2/fundlimit' \
-  -H "access-token: $NEW_TOKEN" -H "dhanClientId: $CLIENT_ID")
-[ "$VERIFY" = "200" ] || die "new token rejected by /v2/fundlimit (HTTP $VERIFY). The old token is likely dead - regenerate at web.dhan.co"
-log "new token verified against /v2/fundlimit"
+# --- Verify, but understand what a failure here actually means -----------
+#
+# THE PRIORITY INVERTS THE MOMENT RenewToken RETURNS 200. Before that call,
+# the old token is alive and refusing to persist a bad new one is the safe
+# choice. After it, the old token is DEAD and this new one is the only
+# credential that exists - so discarding it is the destructive act, not
+# keeping it.
+#
+# This cost a real token on 2026-08-17. RenewToken returned 200, a valid 24h
+# token came back, and /v2/fundlimit answered 502 - a Bad Gateway from Dhan's
+# own infrastructure, nothing to do with the token. The script treated any
+# non-200 as "rejected", died before persisting, and threw away a perfectly
+# good credential that the old one had already been spent to obtain. Monday
+# morning then needed a manual regeneration for no reason.
+#
+# So failures are now separated by kind:
+#   200          -> verified, persist normally
+#   5xx/000      -> TRANSIENT (gateway error, timeout, DNS). Retry; if it
+#                   still will not answer, PERSIST ANYWAY and warn loudly. A
+#                   probably-good token beats a definitely-dead one.
+#   4xx          -> a genuine rejection. Do not persist, but log the token so
+#                   it is recoverable by hand rather than lost.
+VERIFY_ATTEMPTS=3
+VERIFIED=0
+VERIFY=""
+for attempt in $(seq 1 "$VERIFY_ATTEMPTS"); do
+  VERIFY=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 'https://api.dhan.co/v2/fundlimit' \
+    -H "access-token: $NEW_TOKEN" -H "dhanClientId: $CLIENT_ID")
+  if [ "$VERIFY" = "200" ]; then
+    VERIFIED=1
+    break
+  fi
+  case "$VERIFY" in
+    4*) log "verify returned HTTP $VERIFY - a genuine rejection, retrying will not help"; break ;;
+  esac
+  if [ "$attempt" -lt "$VERIFY_ATTEMPTS" ]; then
+    log "verify attempt $attempt/$VERIFY_ATTEMPTS got HTTP $VERIFY (transient) - retrying in $((attempt * 5))s"
+    sleep $((attempt * 5))
+  fi
+done
+
+if [ "$VERIFIED" = "1" ]; then
+  log "new token verified against /v2/fundlimit"
+else
+  case "$VERIFY" in
+    4*)
+      # Provably bad, and the old one is already dead. Nothing to persist that
+      # would help, but the token must not vanish - log it exactly as the
+      # unparseable-response path does, for the same reason.
+      log "TOKEN BELOW IS THE ONLY COPY - the old token was consumed and this one did not authenticate."
+      log "NEW_TOKEN=$NEW_TOKEN"
+      die "MANUAL ACTION REQUIRED - new token rejected by /v2/fundlimit (HTTP $VERIFY) and the old one is already dead. The new token is in the line above if it is worth trying; otherwise regenerate at web.dhan.co"
+      ;;
+    *)
+      log "WARNING: could not verify the new token after $VERIFY_ATTEMPTS attempts (last HTTP ${VERIFY:-000})."
+      log "WARNING: this looks like a Dhan-side or network fault, NOT a bad token. Persisting anyway -"
+      log "WARNING: the old token is already dead, so keeping this one is strictly better than discarding it."
+      log "NEW_TOKEN=$NEW_TOKEN"
+      UNVERIFIED=1
+      ;;
+  esac
+fi
 
 # --- Persist atomically, keeping the old one recoverable -----------------
 mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
@@ -336,5 +405,20 @@ print("Verified against /v2/fundlimit before it was saved, so it is known to")
 print("authenticate rather than merely well-formed.")
 PYEOF
 )
-notify "SUCCESS" "$SUMMARY"
-log "SUCCESS"
+if [ "$UNVERIFIED" = "1" ]; then
+  # Renewed and persisted, but never proved to authenticate. That is a
+  # materially different outcome from a clean run and the subject line has to
+  # say so - "SUCCESS" here would be a quiet lie.
+  notify "SUCCESS (UNVERIFIED)" "$SUMMARY
+
+WARNING: /v2/fundlimit could not be reached to confirm this token actually
+authenticates - it answered with a server-side error or timed out across every
+retry. The token was persisted anyway, because RenewToken had already consumed
+the previous one and a probably-good token is better than a certainly-dead one.
+
+Check that market data is flowing. If it is not, regenerate at web.dhan.co."
+  log "SUCCESS (persisted without verification - see warnings above)"
+else
+  notify "SUCCESS" "$SUMMARY"
+  log "SUCCESS"
+fi
