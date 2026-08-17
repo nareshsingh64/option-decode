@@ -525,6 +525,40 @@ concluded response times could not be attributed to endpoints at all.
   Verified on the live production UI, not just the API — 24,000 renders with an
   `OUTSIDE RANGE` flag and carries the strongest-support mark, matching the
   Dashboard on all four marks.
+- **Paper Trade Pro is per-user, and the admin view is READ ONLY.** Users see
+  only their own simulator account: no `/api/sim/*` route takes a user
+  identifier at all — every one resolves the caller from the session cookie —
+  and `closeSimTrade` re-checks `account: { userId }` on the trade itself, so a
+  guessed trade id gets nothing. Keep it that way. **Do not add a `userId`
+  parameter to `/api/sim/*`**; a surface that cannot name another user is a
+  structural guarantee that no future role-checking bug can turn into a
+  cross-user leak.
+
+  Admin oversight lives in a separate `/api/admin/sim/*` namespace behind
+  `requireAdminUser` (403, matching the other admin routes), added 2026-08-17:
+  `GET /accounts` lists every active account, `GET /accounts/:userId` returns
+  one in full. There is deliberately **no endpoint to close or reset another
+  user's trades** — that is a different feature with a different blast radius,
+  and its absence is the guarantee, not the UI.
+
+  Two things that are load-bearing rather than stylistic:
+
+  - **`getSimSummaryForUserId` exists because `getSimSummary` would CREATE an
+    account.** The latter goes through `getOrCreateSimAccount`, so pointing it
+    at another user's id makes a read perform a write — an admin merely
+    *looking* at someone who has never traded would conjure a `SimAccount` for
+    them, and the list would then be populated with accounts it had just
+    invented. The read-only variant returns null instead.
+  - **The list carries no unrealised P&L, on purpose.** Marking open positions
+    costs one `OptionContractTick` read per leg and those reads are cold in
+    practice; measured at ~975ms for ONE account with two open trades. Doing
+    that per row against a pool of 10 is how `getAtmCallIvHistory` starved the
+    API. Live marks belong on the single-account detail view.
+
+  The list also skips accounts whose `User` row is missing. Production honours
+  the FK (0 orphans), but `sync-prod-db.sh` imports through mysqldump with
+  foreign-key checks off, so a **dev machine can have `SimAccount` rows with no
+  `User`** — this one did, and it crashed the first test run.
 - Comments here explain **why**, especially where a fix encodes a real incident
   ("live NIFTY gave 24500 against a spot of 24367"). Match that: a comment that
   restates the code is noise; one that records the failure it prevents is not.
