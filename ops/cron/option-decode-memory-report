@@ -12,3 +12,12 @@
 # Not rotated by ops/logrotate/option-decode (that covers *.log only) - these
 # are small, one per weekday.
 15 4 * * 1-5 root mkdir -p /opt/option-decode-native/logs/memory-reports && /opt/option-decode/ops/scripts/worker-memory-report.sh >> /opt/option-decode-native/logs/memory-reports/$(date +\%F).txt 2>&1
+
+# Five minutes later, decide whether that report is worth an email. Separate
+# line rather than chained onto the one above so a mail failure can never mark
+# the report job itself as failed, and so the report is already written and
+# closed before anything reads it.
+#
+# Regression-only, plus a Friday summary. A daily "all fine" email gets
+# filtered within a fortnight and takes the important one with it.
+20 4 * * 1-5 root /opt/option-decode/ops/scripts/worker-memory-alert.sh >> /opt/option-decode-native/logs/memory-reports/alert.log 2>&1
