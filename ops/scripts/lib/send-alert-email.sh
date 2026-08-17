@@ -55,13 +55,34 @@ recipients = [a.strip() for a in os.environ["ALERT_TO"].split(",") if a.strip()]
 if not recipients:
     print("no recipients after parsing - skipped"); raise SystemExit
 
+body = os.environ["ALERT_BODY"]
+
 msg = EmailMessage()
 msg["Subject"] = os.environ["ALERT_SUBJECT"]
 msg["From"] = sender
 # One To header, not a loop: send_message derives the envelope recipients from
 # it, so every address is delivered on one connection or fails as a unit.
 msg["To"] = ", ".join(recipients)
-msg.set_content(os.environ["ALERT_BODY"])
+msg.set_content(body)
+
+# HTML alternative, purely so COLUMNS SURVIVE. These bodies contain
+# space-padded tables that are correctly aligned in a fixed-width font, but
+# mail clients render text/plain in a PROPORTIONAL font by default - which
+# collapses the padding and makes a table of numbers unreadable, reported
+# 2026-08-17. The <pre> block is the whole point; nothing here is styling for
+# its own sake.
+#
+# Sent as an alternative rather than a replacement so a plain-text client still
+# gets a readable message, and so the alignment problem cannot come back by
+# someone deciding HTML mail is unnecessary.
+esc = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+msg.add_alternative(
+    "<html><body style=\"margin:0;padding:12px;background:#ffffff\">"
+    "<pre style=\"font-family:'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;"
+    "font-size:13px;line-height:1.45;color:#1f2937;white-space:pre;"
+    "overflow-x:auto;margin:0\">" + esc + "</pre></body></html>",
+    subtype="html"
+)
 
 ctx = ssl.create_default_context()
 if str(env.get("SMTP_SECURE", "true")).lower() == "true" or port == 465:
