@@ -491,6 +491,40 @@ concluded response times could not be attributed to endpoints at all.
   also be reading different captures. "Balanced" and "Neutral" are *not*
   synonyms across the two. The UI names the universe in each label for
   exactly this reason — don't rename either back to a bare "Bias".
+- **Support/resistance is marked in two places and must come from ONE
+  ranking.** The Dashboard's `pressure.supportZones`/`resistanceZones`
+  (`topZones` in analytics) and the Option Chain's row marks are the same
+  verdict shown twice — unlike the two bias signals above, these are *not*
+  supposed to differ. The chain now takes both the strikes it force-shows and
+  the ranks it paints straight from those zones; its own per-row scores are
+  kept for inspection but decide nothing. Keeping two rankings in sync by hand
+  is the bug, not the fix.
+
+  They did disagree (2026-08-17, NIFTY spot 24,256): the chain marked 24,200 as
+  strongest support while the Dashboard said 24,000. Both call `pressureValue`
+  — the maths was never the problem. Three divergences were:
+
+  - **The chain ranked only the rows it displayed.** VIX 11.58 on 1.2 DTE gave
+    an expected-move window of just `[24,094-24,418]`, so 24,000 was never a
+    candidate however strong it was.
+  - **The guard watched a different number than the ranking.** Outside-window
+    walls were force-included by *raw OI*, but marks are ranked by
+    `pressureValue`. 24,000 was only THIRD by raw OI (12.31M vs 24,200's
+    12.47M, a 1.3% gap) yet FIRST by score (352,092 vs 271,964), because its
+    OI built while its premium **fell** (writing) where 24,200's premium
+    **rose** (put buying, which is not a floor). A guard must rank on the same
+    metric as the thing it guards.
+  - **The guard was not directional.** For puts it spent one of its two slots
+    on 24,300 — above spot, and discarded by the support ranking on the very
+    next line.
+
+  Also aligned: the chain averaged volume across *visible rows* while the
+  Dashboard averages across the *whole chain*, so the same strike scored
+  differently in each view (24,200: 271,964 vs 295,943).
+
+  Verified on the live production UI, not just the API — 24,000 renders with an
+  `OUTSIDE RANGE` flag and carries the strongest-support mark, matching the
+  Dashboard on all four marks.
 - Comments here explain **why**, especially where a fix encodes a real incident
   ("live NIFTY gave 24500 against a spot of 24367"). Match that: a comment that
   restates the code is noise; one that records the failure it prevents is not.
