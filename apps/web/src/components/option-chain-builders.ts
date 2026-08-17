@@ -115,23 +115,34 @@ function timeValue(lastPrice: number | undefined, intrinsic: number): number | u
   return Math.max(0, lastPrice - intrinsic);
 }
 
-// How many of the heaviest open-interest strikes per side are pulled back
-// into view when the expected-move window would have excluded them.
-// Two per side matches what the chain marks (strongest and second
-// strongest support and resistance), so the marking can never point at a
-// level that isn't on screen.
+// How many zones per side the chain marks (strongest and second strongest),
+// and therefore how many must be pulled back into view when the
+// expected-move window would have excluded them.
 const ALWAYS_VISIBLE_OI_WALLS_PER_SIDE = 2;
 
-// The heaviest-OI strikes on each side, regardless of where the range
-// falls. Ranked on raw open interest rather than the display-converted
-// value: which strike carries the most OI is a property of the chain, not
-// of whether the user is currently viewing lots or contracts.
-function topOpenInterestStrikes(ticks: OverviewTick[], optionType: "CE" | "PE"): number[] {
-  return ticks
-    .filter((tick) => tick.optionType === optionType && (tick.openInterest ?? 0) > 0)
-    .sort((left, right) => (right.openInterest ?? 0) - (left.openInterest ?? 0))
-    .slice(0, ALWAYS_VISIBLE_OI_WALLS_PER_SIDE)
-    .map((tick) => tick.strikePrice);
+// The strikes the DASHBOARD's zone ranking names, which are exactly the ones
+// this table marks. Taking them from the shared computation rather than
+// re-deriving them is what stops the two views disagreeing.
+//
+// It used to force-include the top strikes by RAW OPEN INTEREST, and that was
+// wrong in two compounding ways - both seen live on NIFTY 2026-08-17, spot
+// 24,256, 1.2 DTE:
+//
+//  - IT GUARDED ON A DIFFERENT METRIC THAN IT RANKED ON. Inclusion was by raw
+//    OI; the marking is by pressureValue. 24,000 was only THIRD by raw OI
+//    (12.31M against 24,200's 12.47M, a 1.3% gap) so it was never pulled in,
+//    yet it was FIRST by score - 352,092 against 271,964 - because its OI was
+//    building while its premium fell (writing) where 24,200's premium rose
+//    (put buying). With VIX at 11.58 the expected-move window was only
+//    [24,094-24,418], so 24,000 fell outside it and simply never entered the
+//    ranking. The chain marked 24,200 as strongest support while the
+//    dashboard said 24,000.
+//  - IT WAS NOT DIRECTIONAL. For puts it spent one of its two slots on
+//    24,300 - a strike ABOVE spot, which the support ranking then discards as
+//    a floor the market has already traded through. Half the budget went to a
+//    strike that could never be marked.
+function zoneStrikes(zones: Array<{ strikePrice: number }> | undefined): number[] {
+  return (zones ?? []).slice(0, ALWAYS_VISIBLE_OI_WALLS_PER_SIDE).map((zone) => zone.strikePrice);
 }
 
 export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, preferences: DisplayPreferences) {
@@ -157,8 +168,8 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
   // unioned back in and flagged outOfRange so the table can show they sit
   // beyond the expected move rather than pretending they're inside it.
   const wallStrikes = new Set([
-    ...topOpenInterestStrikes(overview.snapshot.ticks, "CE"),
-    ...topOpenInterestStrikes(overview.snapshot.ticks, "PE")
+    ...zoneStrikes(overview.pressure?.resistanceZones),
+    ...zoneStrikes(overview.pressure?.supportZones)
   ]);
 
   const isInRange = (strike: number) => strike >= range.lower && strike <= range.upper;
@@ -271,25 +282,32 @@ export function buildChainRows(overview: MarketOverview, range: VixStrikeRange, 
     row.peSrScore = pressureValue(toScoringTick(row, "PE"), peAverageVolume);
   }
 
-  // Ranked directionally, matching topZones in @option-decode/analytics:
-  // resistance is a ceiling so it can only be at or above the money, support
-  // is a floor so it can only be at or below. Without this the combined score
-  // happily returned a "2nd strongest support" ABOVE spot - live NIFTY gave
-  // 24500 against a spot of 24367, and SENSEX did the same - which is a put
-  // wall the market has already traded through, not a floor under it.
+  // The marks come STRAIGHT FROM THE DASHBOARD'S ZONES, not from a second
+  // ranking computed here. The per-row scores above are kept because they are
+  // the same function and are useful for inspection, but they no longer decide
+  // anything - if they did, the two views could disagree again.
   //
-  // The pivot is the ATM strike rather than raw spot: spot almost never sits
-  // exactly on a strike, so testing against it hands the ATM strike to
-  // whichever side happens to be nearer. With NIFTY spot 24590.85 and ATM
-  // 24600 the ATM put wall - routinely the heaviest support on the chain -
-  // was excluded from support ranking every single tick.
-  const moneyPivot = overview.snapshot.atmStrike || spot;
-  applyPressureRanks(visibleRows, (row) => (row.strike >= moneyPivot ? row.ceSrScore : 0), (row, rank) => {
-    row.ceSrRank = rank;
-  });
-  applyPressureRanks(visibleRows, (row) => (row.strike <= moneyPivot ? row.peSrScore : 0), (row, rank) => {
-    row.peSrRank = rank;
-  });
+  // They previously did disagree, and not because the maths differed. Both
+  // call pressureValue; they ranked over different universes. This table
+  // ranked only the rows it was displaying and averaged volume across just
+  // those rows, while the dashboard ranks the whole chain and averages across
+  // all of it - so the same strike scored differently in the two views
+  // (24,200 was 271,964 here against 295,943 there on 2026-08-17), and any
+  // strike outside the expected-move window could not be marked at all
+  // however strong it was. Sourcing the verdict from one place is the only
+  // way that stays fixed; keeping two rankings in sync by hand is the bug.
+  const supportRanks = zoneStrikes(overview.pressure?.supportZones);
+  const resistanceRanks = zoneStrikes(overview.pressure?.resistanceZones);
+  for (const row of visibleRows) {
+    const supportIndex = supportRanks.indexOf(row.strike);
+    if (supportIndex >= 0) {
+      row.peSrRank = (supportIndex + 1) as 1 | 2;
+    }
+    const resistanceIndex = resistanceRanks.indexOf(row.strike);
+    if (resistanceIndex >= 0) {
+      row.ceSrRank = (resistanceIndex + 1) as 1 | 2;
+    }
+  }
 
   return visibleRows;
 }
@@ -658,17 +676,6 @@ function applyPressurePercents<T>(rows: T[], getValue: (row: T) => number, setPe
     const percent = maxValue > 0 ? Math.round((getValue(row) / maxValue) * 100) : 0;
     setPercent(row, percent);
   }
-}
-
-function applyPressureRanks<T>(rows: T[], getValue: (row: T) => number, setRank: (row: T, rank: 1 | 2) => void) {
-  const rankedRows = [...rows]
-    .filter((row) => getValue(row) > 0)
-    .sort((left, right) => getValue(right) - getValue(left))
-    .slice(0, 2);
-
-  rankedRows.forEach((row, index) => {
-    setRank(row, (index + 1) as 1 | 2);
-  });
 }
 
 export function buildTopStrikeRows(overview: MarketOverview, preferences: DisplayPreferences) {
