@@ -296,6 +296,49 @@ export async function fetchAdminOverview(): Promise<AdminOverview> {
   return response.json() as Promise<AdminOverview>;
 }
 
+export interface SimAdminAccountRow {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  role: string;
+  disabled: boolean;
+  accountId: string;
+  startingCapital: number;
+  cash: number;
+  openTrades: number;
+  closedTrades: number;
+  realizedPnl: number;
+  createdAt: string;
+  lastTradeAt: string | null;
+}
+
+// Paper Trade Pro oversight, read-only. Two calls rather than one because the
+// list is aggregates (cheap, all users) while the detail marks open positions
+// live (one tick read per leg, so one account at a time).
+export async function fetchSimAdminAccounts(): Promise<SimAdminAccountRow[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/admin/sim/accounts`, { cache: "no-store", credentials: "include" });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Simulator accounts failed with HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { accounts: SimAdminAccountRow[] };
+  return payload.accounts;
+}
+
+export async function fetchSimAdminAccountDetail(userId: string): Promise<unknown> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const response = await fetch(`${apiUrl}/api/admin/sim/accounts/${encodeURIComponent(userId)}`, {
+    cache: "no-store",
+    credentials: "include"
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `Simulator detail failed with HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function updateAdminUserRole(userId: string, role: AdminOverview["users"][number]["role"]) {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
   const response = await fetch(`${apiUrl}/api/admin/users/${userId}/role`, {

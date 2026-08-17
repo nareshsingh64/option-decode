@@ -10,7 +10,7 @@ import { calculateAtmIvPercentile, calculateAtmStraddleExpectedMove, calculateEl
 import { calculateTradeRecommendations } from "@option-decode/trading";
 import { loadConfig } from "@option-decode/config";
 import { buildPasswordResetEmail, buildVerificationEmail } from "./email-templates.js";
-import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAtmCallIvHistory, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, validatePaperOrderCapacity, verifyEmailToken } from "@option-decode/db";
+import { buildDemoSnapshot, calculateOiWeightedAverageSellPrices, cancelPendingPaperOrder, closePaperPosition, createEmailVerificationToken, createPasswordResetToken, createUser, disablePushSubscriptionsForUser, getAdminOverview, getAtmCallIvHistory, getAuthUserById, getDefaultWatchlist, getLatestOptionChainSnapshot, getLatestSpotChange, getOptionChainSnapshotById, getPaperSummary, getPendingOrdersForMarginGroup, getSimSummaryForUserId, getSpotPriceHistory, getUserAlertThreshold, getUserCredentialsByEmail, listPcrTrend, listRecentPressureHistory, listRecentWaveAlerts, listSimAccountsForAdmin, listReplaySnapshots, listReplayTradingDates, listStoredExpiries, listUserAlertThresholds, logDhanApiRequest, markUserLogin, placeMultiLegPaperOrder, placePaperOrder, recordOrderMargin, resetPasswordWithToken, saveOptionChainSnapshot, setUserTabs, updateAdminUserDisabled, updateAdminUserRole, updateDefaultWatchlist, updatePaperPositionRisk, updatePendingPaperOrder, upsertPushSubscription, upsertUserAlertThreshold, validatePaperOrderCapacity, verifyEmailToken } from "@option-decode/db";
 import { DhanClient, getFnoExchangeSegment, getSupportedUnderlyingKeys, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
@@ -529,6 +529,41 @@ app.get("/api/admin/overview", async (request, reply) => {
   }
 
   return getAdminOverview();
+});
+
+// Paper Trade Pro oversight. READ ONLY, deliberately: an admin can look at
+// anyone's simulator account but cannot close a trade or reset a balance.
+// Acting on another user's positions is a different feature with a different
+// blast radius, and leaving it out means no bug here can move someone's money,
+// paper or otherwise.
+//
+// These live in their own /api/admin/sim/* namespace rather than adding a
+// userId parameter to /api/sim/*. That surface currently takes NO user
+// identifier at all - every route acts strictly as the caller - and that is a
+// structural guarantee worth keeping: it means no future role-checking bug can
+// turn an ordinary endpoint into a cross-user data leak.
+app.get("/api/admin/sim/accounts", async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.cookie);
+  if (!admin) {
+    return reply.status(403).send({ message: "Admin access is required." });
+  }
+  return { accounts: await listSimAccountsForAdmin() };
+});
+
+app.get<{ Params: { userId: string } }>("/api/admin/sim/accounts/:userId", async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.cookie);
+  if (!admin) {
+    return reply.status(403).send({ message: "Admin access is required." });
+  }
+  // Null means the user has no simulator account - a 404, NOT an empty
+  // summary. getSimSummaryForUserId deliberately does not create one, so an
+  // admin browsing to a user who has never traded cannot conjure an account
+  // into existence just by looking.
+  const summary = await getSimSummaryForUserId(request.params.userId);
+  if (!summary) {
+    return reply.status(404).send({ message: "That user has no simulator account." });
+  }
+  return summary;
 });
 
 const adminRoleSchema = z.object({

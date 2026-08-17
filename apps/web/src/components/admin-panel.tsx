@@ -1,6 +1,9 @@
-import { LineChart, Play, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
+import { LineChart, Play, RefreshCw, ShieldCheck, UserCircle, WalletCards } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AdminOverview } from "./live-dashboard";
+import { fetchSimAdminAccounts } from "./dashboard-client";
+import type { SimAdminAccountRow } from "./dashboard-client";
 
 // Role-based tab access: the assignable tab set and its display labels.
 // Mirrors ASSIGNABLE_TABS/TAB_LABELS in @option-decode/db. Dashboard,
@@ -178,6 +181,8 @@ export function AdminPanel({
           </div>
         </div>
       </div>
+
+      <SimAccountsSection formatCurrency={formatCurrency} formatIstShortDateTime={formatIstShortDateTime} />
     </Panel>
   );
 }
@@ -209,6 +214,108 @@ function StatusTile({ icon, label, value, detail, tone = "blue" }: { icon: React
       <p className="mt-3 text-xs uppercase text-terminal-muted">{label}</p>
       <p className={`mt-1 font-semibold ${toneClass}`}>{value}</p>
       {detail ? <p className="mt-1 text-xs text-terminal-muted">{detail}</p> : null}
+    </div>
+  );
+}
+
+// Paper Trade Pro oversight. READ ONLY - there are no controls here, and that
+// is deliberate: an admin can see any user's simulator account but cannot
+// close a trade or reset a balance. The API has no endpoint for it either, so
+// this is not merely a UI omission.
+//
+// Fetches its own data rather than being handed it, because the admin overview
+// payload is loaded on every visit to this tab and simulator accounts are only
+// interesting when someone actually opens this section.
+function SimAccountsSection({ formatCurrency, formatIstShortDateTime }: {
+  formatCurrency: (value: number) => string;
+  formatIstShortDateTime: (value: string) => string;
+}) {
+  const [rows, setRows] = useState<SimAdminAccountRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRows(await fetchSimAdminAccounts());
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to load simulator accounts.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="mt-4 rounded border border-terminal-line bg-terminal-panel p-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-terminal-muted">
+          Paper Trade Pro accounts
+          {rows ? <span className="ml-2 font-normal normal-case tracking-normal text-terminal-muted/70">{rows.length} with activity</span> : null}
+        </h2>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="flex items-center gap-1 rounded border border-terminal-line px-2 py-1 text-[0.65rem] uppercase text-terminal-muted hover:text-terminal-text"
+        >
+          <RefreshCw className="h-3 w-3" /> Refresh
+        </button>
+      </div>
+
+      <p className="mt-1 text-[0.65rem] text-terminal-muted/80">
+        Read-only. Only users who have opened the simulator appear here. Unrealised P&amp;L is deliberately absent -
+        marking open positions costs a quote per leg, so it is not computed for a list.
+      </p>
+
+      {error ? <p className="mt-2 text-xs text-terminal-red">{error}</p> : null}
+      {loading && !rows ? <p className="mt-2 text-xs text-terminal-muted">Loading...</p> : null}
+
+      {rows && rows.length > 0 ? (
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-terminal-muted/70">
+                <th className="py-1 pr-2 font-medium">User</th>
+                <th className="py-1 pr-2 font-medium">Role</th>
+                <th className="py-1 pr-2 text-right font-medium">Open</th>
+                <th className="py-1 pr-2 text-right font-medium">Closed</th>
+                <th className="py-1 pr-2 text-right font-medium">Realised P&amp;L</th>
+                <th className="py-1 pr-2 text-right font-medium">Cash</th>
+                <th className="py-1 pr-2 font-medium">Last trade</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.accountId} className="border-b border-terminal-line/40">
+                  <td className="py-1.5 pr-2 text-terminal-text">
+                    {row.displayName ?? row.email}
+                    {row.displayName ? <span className="ml-1 text-terminal-muted">{row.email}</span> : null}
+                    {row.disabled ? <span className="ml-1 text-terminal-red">(disabled)</span> : null}
+                  </td>
+                  <td className="py-1.5 pr-2 text-terminal-muted">{row.role}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums">{row.openTrades}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums">{row.closedTrades}</td>
+                  <td className={`py-1.5 pr-2 text-right font-semibold tabular-nums ${row.realizedPnl >= 0 ? "text-terminal-emerald" : "text-terminal-red"}`}>
+                    {formatCurrency(row.realizedPnl)}
+                  </td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-terminal-muted">{formatCurrency(row.cash)}</td>
+                  <td className="py-1.5 pr-2 text-terminal-muted">
+                    {row.lastTradeAt ? formatIstShortDateTime(row.lastTradeAt) : "never"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {rows && rows.length === 0 ? (
+        <p className="mt-2 text-xs text-terminal-muted">No user has opened the simulator yet.</p>
+      ) : null}
     </div>
   );
 }

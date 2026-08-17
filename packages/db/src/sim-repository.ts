@@ -923,7 +923,140 @@ function mapTradeDto(trade: {
 
 export async function getSimSummary(user: AuthUserDto, client: PrismaClient = prisma): Promise<SimSummary> {
   const account = await getOrCreateSimAccount(user, client);
+  return buildSimSummary(account, client);
+}
 
+export interface SimAdminAccountRow {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  role: string;
+  disabled: boolean;
+  accountId: string;
+  startingCapital: number;
+  cash: number;
+  openTrades: number;
+  closedTrades: number;
+  realizedPnl: number;
+  createdAt: string;
+  lastTradeAt: string | null;
+}
+
+/**
+ * One row per user who actually has a simulator account, for the admin list.
+ *
+ * DELIBERATELY AGGREGATES ONLY - no live marks, no per-leg tick lookups.
+ * Marking open positions costs one OptionContractTick read per leg, and those
+ * reads are cold in practice (that table's indexes are ~11.8GB and tick ingest
+ * evicts pages continuously). Measured on production, a single account with 2
+ * open trades took ~975ms cold. Doing that for every user on a list page would
+ * multiply it by the user count against a connection pool of 10 - which is
+ * precisely how a wide fan-out in getAtmCallIvHistory once starved every other
+ * request in the process. Live marks belong on the single-account detail view,
+ * where the cost is one account's worth.
+ *
+ * So unrealised P&L is NOT in this row. A column that needs a per-leg read to
+ * populate has no place on a list; the detail view is one click away.
+ *
+ * Only users WITH an active account are returned - the admin view exists to
+ * show simulator activity, and listing everyone who has never opened it would
+ * bury the ones who have.
+ *
+ * Caller is responsible for authorisation. Nothing here checks who is asking.
+ */
+export async function listSimAccountsForAdmin(client: PrismaClient = prisma): Promise<SimAdminAccountRow[]> {
+  const rawAccounts = await client.simAccount.findMany({
+    where: { isActive: true },
+    include: {
+      user: { select: { id: true, email: true, displayName: true, role: true, disabled: true } }
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  // The relation is required in the schema and production honours it (checked
+  // 2026-08-17: 0 orphans), so Prisma types `user` as non-null - but a LOCAL
+  // database can disagree. scripts/sync-prod-db.sh imports through mysqldump,
+  // which disables foreign-key checks, so a SimAccount can arrive without the
+  // User row it points at; the dev machine had two such rows.
+  //
+  // Guarded rather than trusted because of the failure mode, not the odds: an
+  // admin page is exactly where a 500 from one malformed row is least
+  // acceptable, and the alternative is a list that works everywhere except the
+  // machine it gets developed on.
+  const accounts = rawAccounts.filter((account) => account.user !== null);
+  if (!accounts.length) {
+    return [];
+  }
+
+  // Counts and sums come from grouped queries rather than loading every trade:
+  // an admin list must not scale its row count with trade volume.
+  const accountIds = accounts.map((account) => account.id);
+  const [byStatus, realized, lastTrade] = await Promise.all([
+    client.simTrade.groupBy({
+      by: ["accountId", "status"],
+      where: { accountId: { in: accountIds } },
+      _count: { _all: true }
+    }),
+    client.simTrade.groupBy({
+      by: ["accountId"],
+      where: { accountId: { in: accountIds }, realizedPnl: { not: null } },
+      _sum: { realizedPnl: true }
+    }),
+    client.simTrade.groupBy({
+      by: ["accountId"],
+      where: { accountId: { in: accountIds } },
+      _max: { openedAt: true }
+    })
+  ]);
+
+  const openBy = new Map<string, number>();
+  const closedBy = new Map<string, number>();
+  for (const row of byStatus) {
+    const target = row.status === "OPEN" ? openBy : closedBy;
+    target.set(row.accountId, (target.get(row.accountId) ?? 0) + row._count._all);
+  }
+  const realizedBy = new Map(realized.map((row) => [row.accountId, Number(row._sum.realizedPnl ?? 0)]));
+  const lastBy = new Map(lastTrade.map((row) => [row.accountId, row._max.openedAt]));
+
+  return accounts.map((account) => ({
+    userId: account.user.id,
+    email: account.user.email,
+    displayName: account.user.displayName,
+    role: account.user.role,
+    disabled: account.user.disabled,
+    accountId: account.id,
+    startingCapital: account.startingCapital.toNumber(),
+    cash: account.cash.toNumber(),
+    openTrades: openBy.get(account.id) ?? 0,
+    closedTrades: closedBy.get(account.id) ?? 0,
+    realizedPnl: round2(realizedBy.get(account.id) ?? 0),
+    createdAt: account.createdAt.toISOString(),
+    lastTradeAt: lastBy.get(account.id)?.toISOString() ?? null
+  }));
+}
+
+/**
+ * The same summary for a user the CALLER is not - admin read-only views.
+ *
+ * Returns null rather than creating anything when the user has never opened
+ * the simulator. That is the whole reason this exists instead of calling
+ * getSimSummary with someone else's AuthUserDto: getSimSummary goes through
+ * getOrCreateSimAccount, so browsing to a user who has never traded would
+ * silently CREATE a SimAccount for them - a read performing a write, and one
+ * that would then pollute the admin list with phantom accounts it had just
+ * invented.
+ *
+ * Caller is responsible for authorisation. Nothing in this function checks
+ * who is asking.
+ */
+export async function getSimSummaryForUserId(userId: string, client: PrismaClient = prisma): Promise<SimSummary | null> {
+  const account = await client.simAccount.findFirst({ where: { userId, isActive: true } });
+  return account ? buildSimSummary(account, client) : null;
+}
+
+type SimAccountRow = Awaited<ReturnType<typeof getOrCreateSimAccount>>;
+
+async function buildSimSummary(account: SimAccountRow, client: PrismaClient): Promise<SimSummary> {
   const [openTrades, closedTrades] = await Promise.all([
     client.simTrade.findMany({
       where: { accountId: account.id, status: "OPEN" },
