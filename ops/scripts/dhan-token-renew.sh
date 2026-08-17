@@ -20,6 +20,12 @@
 # atomically, and every failure path leaves the existing file untouched and
 # exits non-zero.
 #
+# THE PREFLIGHT PROVES THE TOKEN IS ALIVE, not merely unexpired. A JWT's exp
+# claim cannot know it has been revoked server-side, so the run starts with a
+# read-only /v2/fundlimit call. A 4xx there stops the run with MANUAL ACTION
+# REQUIRED; a 5xx is ignored, because a Dhan hiccup must never block a
+# legitimate renewal.
+#
 # A FAILURE TO VERIFY IS NOT A BAD TOKEN. Once RenewToken has returned 200 the
 # old token is gone, so the new one is the only credential in existence and
 # discarding it is the destructive act. A 5xx or a timeout from the verify
@@ -223,7 +229,39 @@ case "$PREFLIGHT" in
   ERR*) die "${PREFLIGHT#ERR }" ;;
 esac
 HOURS_LEFT=$(echo "$PREFLIGHT" | awk '{print $2}')
-log "token valid, ${HOURS_LEFT}h remaining"
+log "token claims ${HOURS_LEFT}h remaining"
+
+# --- Is the token actually alive, or does it only LOOK alive? ------------
+#
+# The exp claim above is self-reported and cannot know the token was revoked
+# server-side. On 2026-08-17 that gap showed itself: a renewal consumed the
+# token, the replacement was lost to a separate bug, and every subsequent run
+# cheerfully reported "token valid, 10.98h remaining" about a credential that
+# had been dead for hours. A JWT has no idea it has been revoked.
+#
+# One read-only call closes it. /v2/fundlimit does not consume or modify
+# anything - unlike RenewToken, this is an endpoint you can safely poke.
+#
+# The response is judged the OPPOSITE way round to the post-renewal check, and
+# deliberately so. Here the old token is still alive, so a 4xx is real news:
+# stop, say MANUAL ACTION REQUIRED, and do not spend a renewal attempt
+# discovering it. A 5xx or a timeout says nothing about the token - it must
+# NOT block a legitimate renewal, or one Dhan hiccup at 23:35 would strand the
+# box overnight with a token nobody refreshed.
+PRECHECK=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 'https://api.dhan.co/v2/fundlimit' \
+  -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
+case "$PRECHECK" in
+  200)
+    log "token confirmed live against /v2/fundlimit"
+    ;;
+  4*)
+    die "MANUAL ACTION REQUIRED - the token still claims ${HOURS_LEFT}h but /v2/fundlimit rejects it (HTTP $PRECHECK), so it has been revoked or already consumed. An exp claim cannot know that. It cannot be renewed in this state - regenerate at web.dhan.co > My Profile > Access DhanHQ APIs."
+    ;;
+  *)
+    log "WARNING: could not confirm the token against /v2/fundlimit (HTTP ${PRECHECK:-000})."
+    log "WARNING: that is a Dhan-side or network fault and says nothing about the token - continuing."
+    ;;
+esac
 
 if awk "BEGIN{exit !($HOURS_LEFT > $RENEW_IF_HOURS_LEFT_BELOW)}"; then
   log "more than ${RENEW_IF_HOURS_LEFT_BELOW}h left - nothing to do"
