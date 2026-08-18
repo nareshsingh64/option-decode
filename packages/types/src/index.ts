@@ -398,6 +398,31 @@ export const MCX_SESSION_CLOSE_IST_MINUTES = 23 * 60 + 30;
 export const NSE_CLOSE_UTC_HOUR = 10;
 export const NSE_CLOSE_UTC_MINUTE = 11;
 
+/**
+ * Underlyings that trade on MCX rather than NSE/BSE.
+ *
+ * Kept here beside the session constants because the only reason to know which
+ * exchange a symbol belongs to is to pick the right session times, and a
+ * separate copy of this list somewhere else would be a fact that can disagree
+ * with itself.
+ */
+export const MCX_UNDERLYINGS: ReadonlySet<string> = new Set(["CRUDEOIL", "NATURALGAS", "COPPER", "SILVER"]);
+
+/**
+ * When this underlying's session ends, in IST minutes past midnight.
+ *
+ * The difference is not cosmetic: NSE closes 15:41 while MCX runs to 23:30,
+ * nearly eight hours later. Anything that asks "has this contract finished
+ * trading today" and assumes the NSE close will be wrong about every commodity
+ * for most of the evening - which is exactly how two expired CRUDEOIL trades
+ * sat OPEN for a day (see the settlement note in sim-repository).
+ */
+export function getSessionCloseIstMinutes(underlyingSymbol: string): number {
+  return MCX_UNDERLYINGS.has(underlyingSymbol.toUpperCase())
+    ? MCX_SESSION_CLOSE_IST_MINUTES
+    : NSE_SESSION_CLOSE_IST_MINUTES;
+}
+
 export const DRCR_BANDS = {
   bullishAbove: 1.5,
   bearishBelow: 0.6,

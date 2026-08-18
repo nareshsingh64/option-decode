@@ -20,6 +20,23 @@ const SIM_EOD_SCHEDULER_ID = "sim-eod-mtm:mark";
 const SIM_EOD_CRON_PATTERN = "45 15 * * 1-5";
 const SIM_EOD_TIMEZONE = "Asia/Kolkata";
 
+// A SECOND pass at 23:40 IST, for MCX.
+//
+// The 15:45 run sits four minutes after the NSE close, which is right for
+// index options and nearly eight hours too early for a commodity: MCX trades
+// until 23:30. With only the afternoon run, an expired CRUDEOIL position could
+// not settle until the NEXT day's 15:45 - seen live on 2026-08-17, two trades
+// that expired that day settled 24 hours later, both in the money, so a real
+// loss sat unrealised with its margin still counted the whole time.
+//
+// 23:40 rather than 23:35 so it lands after the MCX close with a margin, and
+// before the host's 23:55 shutdown. Same job, same handler - settlement is
+// idempotent (the status transition is a conditional updateMany on
+// status = OPEN), so a contract that already settled in the afternoon is
+// simply not found by the evening pass.
+const SIM_EOD_MCX_SCHEDULER_ID = "sim-eod-mtm:mark-mcx";
+const SIM_EOD_MCX_CRON_PATTERN = "40 23 * * 1-5";
+
 // Phase 2: intraday engine (automated exits + 5-min MTM sampling). Fires
 // every minute; the handler itself no-ops outside the NSE session so the
 // schedule stays trivially simple.
@@ -144,6 +161,22 @@ export async function startSimEodScheduler(redisConnection: { url: string; maxRe
       }
     }
   );
+  // Same queue, same job name, same handler - only the firing time differs.
+  await queue.upsertJobScheduler(
+    SIM_EOD_MCX_SCHEDULER_ID,
+    { pattern: SIM_EOD_MCX_CRON_PATTERN, tz: SIM_EOD_TIMEZONE },
+    {
+      name: SIM_EOD_JOB_NAME,
+      data: {},
+      opts: {
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 30000
+        }
+      }
+    }
+  );
   await intradayQueue.upsertJobScheduler(
     SIM_INTRADAY_SCHEDULER_ID,
     { every: SIM_INTRADAY_INTERVAL_MS },
@@ -154,7 +187,9 @@ export async function startSimEodScheduler(redisConnection: { url: string; maxRe
     }
   );
 
-  console.log("Sim EOD mark-to-market BullMQ scheduler registered", {
+  console.log("Sim EOD mark-to-market BullMQ schedulers registered", {
+    mcxSchedulerId: SIM_EOD_MCX_SCHEDULER_ID,
+    mcxPattern: SIM_EOD_MCX_CRON_PATTERN,
     queue: SIM_EOD_QUEUE,
     schedulerId: SIM_EOD_SCHEDULER_ID,
     pattern: SIM_EOD_CRON_PATTERN,
