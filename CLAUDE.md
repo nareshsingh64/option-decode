@@ -607,6 +607,36 @@ concluded response times could not be attributed to endpoints at all.
   Verified on the live production UI, not just the API — 24,000 renders with an
   `OUTSIDE RANGE` flag and carries the strongest-support mark, matching the
   Dashboard on all four marks.
+- **An expired option settles at its own session close, not "expiry + 24h".**
+  One NSE-shaped schedule was being applied to MCX as well, and the gap showed
+  up as expired positions left OPEN with their margin still counted. Two
+  CRUDEOIL trades that expired 2026-08-17 were still open the next afternoon,
+  both ITM, so a real loss sat unrealised for a full extra day.
+
+  The old rule required `expiryDate + 86_400_000`. `expiryDate` is a
+  `@db.Date`, so it is **UTC midnight** — meaning that rule only became true at
+  00:00 UTC the day AFTER expiry, while the only job acting on it runs at 15:45
+  IST. A Friday expiry therefore waited until Monday, the job being
+  weekdays-only.
+
+  Two halves to the fix, and both are needed:
+
+  - `expirySettlementMoment()` asks each contract for its own close via
+    `getSessionCloseIstMinutes()` in `packages/types` — **NSE 15:41, MCX
+    23:30**, nearly eight hours apart. The exchange list (`MCX_UNDERLYINGS`)
+    lives beside the session constants, because the only reason to know a
+    symbol's exchange is to pick its session times.
+  - A **second EOD pass at 23:40 IST** (`sim-eod-mtm:mark-mcx`). The 15:45 run
+    is four minutes after the NSE close but *before* MCX has finished trading,
+    so without an evening pass a commodity still could not settle until the
+    next day. 23:40 clears the 23:30 close and beats the host's 23:55 shutdown.
+
+  Same queue, job name and handler for both passes — settlement is idempotent
+  (a conditional `updateMany` on `status = OPEN`), so a contract settled in the
+  afternoon is simply not found in the evening.
+
+  Net effect: NSE settles same day +4 minutes, MCX same day +10 minutes, and a
+  Friday expiry no longer waits for Monday.
 - **Paper Trade Pro is per-user, and the admin view is READ ONLY.** Users see
   only their own simulator account: no `/api/sim/*` route takes a user
   identifier at all — every one resolves the caller from the session cookie —
