@@ -290,11 +290,74 @@ fi
 # A 400 is rejected before the token is consumed, so a wrong-shaped request
 # is safe. A 200 consumes it immediately - which is why everything below
 # treats the body as the only surviving copy.
-log "calling GET /v2/RenewToken"
-RESP=$(curl -s -w '\n%{http_code}' 'https://api.dhan.co/v2/RenewToken' \
-  -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
-CODE=$(echo "$RESP" | tail -1)
-BODY=$(echo "$RESP" | sed '$d')
+# --- Call RenewToken, retrying a TRANSIENT failure safely -----------------
+#
+# A 5xx here is ambiguous in a way that matters. "502 Bad Gateway" usually
+# means the request never reached the token service, in which case the old
+# token is untouched and retrying is free. But it can also mean the service
+# processed the call and the RESPONSE was lost on the way back - and in that
+# case the old token is already dead, a new one exists that we never saw, and
+# blindly retrying with the dead token would turn a recoverable blip into a
+# manual regeneration.
+#
+# So the ambiguity is RESOLVED rather than guessed at: probe the OLD token
+# against /v2/fundlimit. If it still authenticates, the renewal definitively
+# did not happen and a retry is safe. If it does not, the renewal DID happen
+# and the new token is lost - say so loudly instead of retrying into a wall.
+#
+# Seen twice: 2026-08-17 and 2026-08-18, both at 02:50 UTC, both 502.
+RENEW_ATTEMPTS=3
+CODE=""
+BODY=""
+for attempt in $(seq 1 "$RENEW_ATTEMPTS"); do
+  log "calling GET /v2/RenewToken (attempt $attempt/$RENEW_ATTEMPTS)"
+  RESP=$(curl -s -w '\n%{http_code}' --max-time 30 'https://api.dhan.co/v2/RenewToken' \
+    -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
+  CODE=$(echo "$RESP" | tail -1)
+  BODY=$(echo "$RESP" | sed '$d')
+  [ "$CODE" = "200" ] && break
+
+  case "$CODE" in
+    4*)
+      die "RenewToken HTTP $CODE - a genuine rejection, existing token left in place. Body: $(echo "$BODY" | head -c 500)"
+      ;;
+  esac
+
+  # Transient. Establish whether the old token survived before deciding.
+  STILL_ALIVE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 'https://api.dhan.co/v2/fundlimit' \
+    -H "access-token: $TOKEN" -H "dhanClientId: $CLIENT_ID")
+  if [ "$STILL_ALIVE" = "200" ]; then
+    log "RenewToken HTTP $CODE (transient) but the existing token still authenticates - the call did not go through"
+    if [ "$attempt" -lt "$RENEW_ATTEMPTS" ]; then
+      log "retrying in $((attempt * 10))s"
+      sleep $((attempt * 10))
+      continue
+    fi
+    # Out of attempts, but nothing was consumed and the token is still good.
+    # This is NOT a failure worth alarming about: the next scheduled run will
+    # try again long before the token expires.
+    log "RenewToken unreachable after $RENEW_ATTEMPTS attempts, but the current token is UNHARMED and still valid."
+    notify "NO ACTION NEEDED" "Dhan's /v2/RenewToken was unreachable this run (HTTP $CODE, repeated $RENEW_ATTEMPTS times).
+
+NOTHING IS BROKEN AND NOTHING NEEDS DOING. The renewal call never went through,
+so the existing token was not consumed - it was re-checked against
+/v2/fundlimit after each attempt and still authenticates.
+
+  Token still valid for : ${HOURS_LEFT}h
+  Dhan client           : ...${CLIENT_ID: -4}
+
+The next scheduled run will renew it. This message exists so a failed run is
+visible, not because action is required - if the token were actually at risk
+this would say MANUAL ACTION REQUIRED instead."
+    log "exiting cleanly - transient upstream fault, token intact"
+    exit 0
+  fi
+
+  # Old token no longer authenticates after a 5xx: the renewal DID happen and
+  # the reply was lost. This is the genuinely bad case.
+  die "MANUAL ACTION REQUIRED - RenewToken returned HTTP $CODE and the previous token no longer authenticates (/v2/fundlimit gave $STILL_ALIVE). The renewal almost certainly succeeded server-side and its response was lost, so the new token exists but was never received. Regenerate at web.dhan.co > My Profile > Access DhanHQ APIs. Body: $(echo "$BODY" | head -c 500)"
+done
+
 [ "$CODE" = "200" ] || die "RenewToken HTTP $CODE - existing token left in place, no harm done. Body: $(echo "$BODY" | head -c 500)"
 
 NEW_TOKEN=$(BODY="$BODY" python3 - <<'PY'

@@ -30,3 +30,13 @@
 # logs a FAILED line on every failure path, which is the alerting surface.
 50 2 * * 1-5 root /opt/option-decode/ops/scripts/dhan-token-renew.sh --threshold-hours 25 >> /opt/option-decode-native/logs/dhan-token-renew.log 2>&1
 5 18 * * 1-5 root /opt/option-decode/ops/scripts/dhan-token-renew.sh --threshold-hours 25 >> /opt/option-decode-native/logs/dhan-token-renew.log 2>&1
+
+# Mid-morning safety net, 04:20 UTC = 09:50 IST. Exists because Dhan's auth
+# endpoints returned 502 to the 08:20 run on two consecutive days (2026-08-17
+# and 2026-08-18) - harmlessly, since nothing was consumed, but it left the
+# renewal undone until 23:35 that night.
+#
+# Threshold 14 rather than 25 so this is genuinely a NET and not a third daily
+# renewal: it fires only when the 08:20 run did not manage to reset the clock.
+# After a successful 08:20 run the token has ~24h left and this exits quietly.
+20 4 * * 1-5 root /opt/option-decode/ops/scripts/dhan-token-renew.sh --threshold-hours 14 >> /opt/option-decode-native/logs/dhan-token-renew.log 2>&1
