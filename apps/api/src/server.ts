@@ -2211,28 +2211,19 @@ function buildEmptySnapshot(underlyingSymbol: string, expiry?: string) {
   };
 }
 
+// Routes through the shared isMarketSessionOpen rather than a local copy of
+// the session bounds. This used to hardcode 09:15-15:30 for NSE, which the
+// move to NSE_SESSION_* in @option-decode/types missed - so from 15:30 to
+// 15:41 IST the ticker served the STORED feed while the market was still
+// live. That window is exactly the Closing Auction Session print (~15:29)
+// and the F&O tail to 15:40, i.e. the settlement price and the last ten
+// minutes of trading on it; see docs/nse-cas-impact.md.
 function shouldUseStoredTickerFeed(definition: UnderlyingDefinition) {
-  if (definition.segment === "MCX_COMM") {
-    return !isMarketSessionOpen(9, 0, 23, 30);
-  }
-
-  return !isMarketSessionOpen(9, 15, 15, 30);
+  return !isSegmentMarketSessionOpen(definition.segment);
 }
 
 function firstPositiveNumber(...values: Array<number | undefined>) {
   return values.find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
-}
-
-function isMarketSessionOpen(startHour: number, startMinute: number, endHour: number, endMinute: number) {
-  const now = new Date();
-  const istNow = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-  const day = istNow.getUTCDay();
-  if (day === 0 || day === 6) {
-    return false;
-  }
-
-  const minutes = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
-  return minutes >= startHour * 60 + startMinute && minutes <= endHour * 60 + endMinute;
 }
 
 function handleSnapshotSavedMessage(message: string) {

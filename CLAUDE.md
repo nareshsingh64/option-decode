@@ -365,6 +365,41 @@ Two things make this worth remembering beyond the one fix:
   SENSEX's is 20, so one NIFTY point is worth 3.25x a SENSEX point of P&L.
   Anything summed across indices has to be rupees.
 
+## The close is an auction now (CAS, from 2026-08-03)
+
+`docs/nse-cas-impact.md` is the reference, measured against our own capture
+rather than quoted from a broker blog. The short version, because it changes
+what a settlement price *is*:
+
+F&O-eligible cash stocks stop continuous trading at **15:15**; a 20-minute
+auction (reference price = VWAP 15:00-15:15, band ±3%, random close 15:28-15:30,
+matching 15:30-15:35) sets the official close. Index closes are built from those
+constituent closes, so **index option final settlement is a single auction print
+instead of a 30-minute VWAP**. F&O keeps trading to **15:40**.
+
+- **Spot freezes at 15:15 and steps once at ~15:29.** Verified in
+  `OptionChainSnapshot`: the stepped value equals the `DailyBar` close exactly
+  on every day where both exist. A frozen spot after 15:15 is the auction, not
+  a dead feed.
+- **The terminal gap widened ~3-7x.** Last-price-at-15:15 vs official close,
+  across 209 F&O stocks: **9.0 bps pre-CAS -> 39.0 bps** over the first five CAS
+  sessions, converging (62.6 -> 25.1 bps by day five). NIFTY's auction step has
+  run 0 to **196 points (0.80%)**, mean absolute ~33 points over the last five.
+- **The day-1 upward bias decayed to a coin flip in a week** (79.9% of stocks
+  closed above their 15:15 price on 3 Aug, 51.7% by 7 Aug). Don't build on the
+  headline number.
+- **The option market prices the auction before we can see it.** SENSEX expiry
+  13 Aug: `strike + CE - PE` on the expiring contract tracked the frozen spot
+  until 15:24, then ran 77,922 -> 78,079 by 15:30 and held flat to 15:41, while
+  our spot showed 77,861 throughout. That parity value is a synthetic
+  auction-close indicator we can build from data already captured.
+- **`apps/api/src/server.ts:2219` still hardcodes a 15:30 close** in a private
+  duplicate of `isMarketSessionOpen`, so the API serves the stored ticker feed
+  from 15:30-15:41 - across the CAS print. The `NSE_SESSION_*` constants in
+  `@option-decode/types` are already 09:14-15:41; this call site was missed.
+- Any expiry-day backtest predating August 2026 is measuring a settlement
+  mechanism that no longer exists.
+
 ## Feed gotchas (Dhan)
 
 - **Greeks are zeroed far more widely than "ITM calls".** `delta`,
