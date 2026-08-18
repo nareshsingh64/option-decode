@@ -80,6 +80,32 @@ function toNumber(value: Prisma.Decimal | number | null | undefined): number | u
   return typeof value === "number" ? value : value.toNumber();
 }
 
+/**
+ * A greek read back from storage, with a literal 0 treated as MISSING.
+ *
+ * The feed returns 0 for delta/IV/theta/gamma on a large fraction of the
+ * chain rather than omitting them, and 0 is not a possible value for a live
+ * contract: measured on production 2026-08-18, 116 of 117 ITM NIFTY puts came
+ * back delta 0 and IV 0 while quoting real prices - the 24550 put was 352
+ * points in the money at an LTP of 335 with a "delta" of 0, where the true
+ * figure is near -0.9.
+ *
+ * Rendering that as "0.00" tells a trader the position has no directional
+ * exposure, which is the opposite of the truth for a deep ITM option. The
+ * whole app already treats 0 as missing (see CLAUDE.md's feed-gotchas entry);
+ * this is where that rule gets applied to STORED ticks, so the chain table,
+ * the Strike Matrix and anything else reading a snapshot all see undefined
+ * rather than each having to remember.
+ *
+ * Applied on read, not only on write, because history already has zeros
+ * persisted - sanitizeGreek let them through - and those rows still get
+ * displayed.
+ */
+function toGreek(value: Prisma.Decimal | number | null | undefined): number | undefined {
+  const parsed = toNumber(value);
+  return parsed === 0 ? undefined : parsed;
+}
+
 // Greeks/IV come straight from Dhan's feed with no validation on their side
 // - confirmed in production: a SILVER contract (illiquid far strike) once
 // returned a theta value whose magnitude blew past this column's
@@ -94,6 +120,13 @@ const GREEK_MAX_ABS = 9999;
 
 function sanitizeGreek(value: number | undefined): number | undefined {
   if (value === undefined || !Number.isFinite(value) || Math.abs(value) > GREEK_MAX_ABS) {
+    return undefined;
+  }
+  // A literal 0 is the feed saying "no value", not a reading - see toGreek
+  // below for the measurement. Stored as NULL so the column means what it
+  // says; toGreek still guards the read path because rows written before
+  // this already hold zeros.
+  if (value === 0) {
     return undefined;
   }
   return value;
@@ -597,11 +630,11 @@ export async function getLatestOptionChainSnapshot(underlyingSymbol = "NIFTY", r
       changeInOpenInterest: toNumber(tick.changeInOpenInterest),
       sessionOiChange,
       sessionPriceChangePercent: sessionPriceChange !== undefined && sessionOpen?.lastPrice ? (sessionPriceChange / sessionOpen.lastPrice) * 100 : undefined,
-      impliedVolatility: toNumber(tick.impliedVolatility),
-      delta: toNumber(tick.deltaValue),
-      gamma: toNumber(tick.gammaValue),
-      theta: toNumber(tick.thetaValue),
-      vega: toNumber(tick.vegaValue)
+      impliedVolatility: toGreek(tick.impliedVolatility),
+      delta: toGreek(tick.deltaValue),
+      gamma: toGreek(tick.gammaValue),
+      theta: toGreek(tick.thetaValue),
+      vega: toGreek(tick.vegaValue)
     };
   });
 
@@ -923,11 +956,11 @@ export async function getOptionChainSnapshotById(snapshotId: string, client: DbC
       changeInOpenInterest: toNumber(tick.changeInOpenInterest),
       sessionOiChange,
       sessionPriceChangePercent: sessionPriceChange !== undefined && sessionOpen?.lastPrice ? (sessionPriceChange / sessionOpen.lastPrice) * 100 : undefined,
-      impliedVolatility: toNumber(tick.impliedVolatility),
-      delta: toNumber(tick.deltaValue),
-      gamma: toNumber(tick.gammaValue),
-      theta: toNumber(tick.thetaValue),
-      vega: toNumber(tick.vegaValue)
+      impliedVolatility: toGreek(tick.impliedVolatility),
+      delta: toGreek(tick.deltaValue),
+      gamma: toGreek(tick.gammaValue),
+      theta: toGreek(tick.thetaValue),
+      vega: toGreek(tick.vegaValue)
     };
   });
 

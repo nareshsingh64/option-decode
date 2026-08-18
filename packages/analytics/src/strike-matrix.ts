@@ -289,7 +289,24 @@ const WCI_BASELINE_MULTIPLIER: Record<TradingHorizon, number> = {
   monthly: 1.75
 };
 
-function chainWciBaseline(rows: StrikeMatrixRow[]): number | undefined {
+/**
+ * Turnover ratio across the WHOLE chain, independent of delta.
+ *
+ * Takes the minimum shape rather than StrikeMatrixRow on purpose. It used to
+ * take the same delta-bearing rows the universe is built from, which quietly
+ * coupled it to whether the feed happened to supply a delta - and the feed
+ * zeroes delta on most of the chain. Once a zeroed delta is correctly read as
+ * MISSING, those rows stop being rows at all and the "every strike with any
+ * volume" this function is documented to sum becomes "every strike with any
+ * volume that also has a delta".
+ *
+ * Measured on NIFTY 2026-08-18 the difference was only +2.0% (the zeroed
+ * strikes are illiquid wings contributing almost nothing to the pooled sums),
+ * but the baseline sets the WCI threshold that gates every recommendation, and
+ * a threshold that moves with an unrelated feed quirk is a bug waiting for a
+ * chain where the wings are not negligible.
+ */
+function chainWciBaseline(rows: Array<{ volume: number; oiChange: number }>): number | undefined {
   let sumAbsOiChange = 0;
   let sumVolume = 0;
   for (const row of rows) {
@@ -301,8 +318,8 @@ function chainWciBaseline(rows: StrikeMatrixRow[]): number | undefined {
   return sumVolume > 0 ? sumAbsOiChange / sumVolume : undefined;
 }
 
-function relativeWciThreshold(allRows: StrikeMatrixRow[], horizon: TradingHorizon): number {
-  const baseline = chainWciBaseline(allRows);
+function relativeWciThreshold(turnoverRows: Array<{ volume: number; oiChange: number }>, horizon: TradingHorizon): number {
+  const baseline = chainWciBaseline(turnoverRows);
   // No usable volume anywhere on the chain (e.g. a stale/empty snapshot) -
   // fall back to the horizon's static legacy threshold rather than 0.
   if (baseline === undefined) {
@@ -564,7 +581,13 @@ export function calculateStrikeMatrix(
   const putDrcAverage = putDrcCount > 0 ? putDrcTotal / putDrcCount : 0;
   const callDrcAverage = callDrcCount > 0 ? callDrcTotal / callDrcCount : 0;
   const { drcr, bias } = readWriterFlow(putDrcCount, callDrcCount, putDrcAverage, callDrcAverage);
-  const effectiveWciThreshold = relativeWciThreshold(allRows, horizon);
+  // Straight from the ticks, so the baseline covers the whole chain whether or
+  // not the feed supplied a delta for each strike.
+  const turnoverRows = snapshot.ticks.map((tick) => ({
+    volume: tick.volume ?? 0,
+    oiChange: tick.changeInOpenInterest ?? 0
+  }));
+  const effectiveWciThreshold = relativeWciThreshold(turnoverRows, horizon);
   const callWall = findWall(universe, "CE", effectiveWciThreshold);
   const putWall = findWall(universe, "PE", effectiveWciThreshold);
 
