@@ -194,6 +194,53 @@ A token is only renewable if it was minted from Dhan Web: `tokenConsumerType`
 `SELF` and an empty `partnerId`. The script's preflight refuses a partner
 token rather than burning it to find out.
 
+**A 5xx from Dhan is not a token problem, and the script must not treat it as
+one.** This cost real time twice. On 2026-08-17 RenewToken returned 200 and
+the *verification* call answered 502; the script discarded a brand-new token
+the old one had already been spent to obtain, and Monday needed a manual
+regeneration for nothing. On 2026-08-18 RenewToken itself answered 502, the
+existing token was untouched and stayed valid another 15 hours, and it was
+still reported as FAILED.
+
+Both are now handled by the same principle: **decide what a failure MEANS
+before reacting to it.**
+
+- **After RenewToken returns 200 the calculus inverts.** The old token is dead
+  from that moment, so the new one is the only credential in existence and
+  DISCARDING it is the destructive act. A 5xx or timeout on the verify call is
+  retried, then the token is persisted anyway and reported as
+  `SUCCESS (UNVERIFIED)`. Only a 4xx is a real rejection — and even then the
+  token is written to the log rather than lost.
+- **A 5xx on RenewToken itself is genuinely ambiguous**, and the ambiguity is
+  resolved rather than guessed. It usually means the request never arrived, so
+  the old token is fine and retrying is free — but it can mean the service
+  processed the call and the reply was lost, in which case the old token is
+  already dead and a new one exists that nobody received. So after a 5xx the
+  script probes the OLD token against `/v2/fundlimit`: still authenticates ⇒
+  the renewal did not happen ⇒ retry (3 attempts). Does not ⇒ the renewal DID
+  happen ⇒ `MANUAL ACTION REQUIRED`, do not retry into a wall.
+- **An unreachable Dhan with the token intact is `NO ACTION NEEDED`, not
+  FAILED.** The alert says so and states the hours remaining. Alert severity
+  that does not track actual severity is how a benign upstream blip gets
+  investigated twice.
+
+The preflight also proves the token is ALIVE, not merely unexpired: a JWT's
+`exp` claim cannot know it was revoked server-side, and on 2026-08-17 every run
+cheerfully reported "token valid, 10.98h remaining" about a credential that had
+been dead since 08:20. One read-only `/v2/fundlimit` call closes that. Note the
+response is judged the OPPOSITE way round there — before RenewToken the old
+token is still alive, so a 4xx is real news and stops the run, while a 5xx must
+NOT block a legitimate renewal.
+
+**Schedule note.** Both 502s hit the 08:20 IST run and both 23:35 runs were
+clean, which looks like a Dhan maintenance window — but the cron only ever
+probes at those two times, so that is 2 observations against 2, not evidence.
+The app's own Dhan calls show 5 5xx across ~127k requests over six days, and
+those are market-data endpoints which may be different infrastructure from
+`/v2/RenewToken`. Do not move the schedule on this without more data. A 09:50
+IST run at `--threshold-hours 14` was added as a net instead: it fires only
+when the 08:20 run failed to reset the clock, and exits quietly otherwise.
+
 **Every renewal emails its outcome** (added 2026-08-16). Subject is
 `[SUCCESS]` or `[FAILED]` followed by the IST timestamp — status first so it
 reads in a phone notification without being opened. SUCCESS reports the expiry
