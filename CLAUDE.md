@@ -776,6 +776,25 @@ concluded response times could not be attributed to endpoints at all.
 
   Net effect: NSE settles same day +4 minutes, MCX same day +10 minutes, and a
   Friday expiry no longer waits for Monday.
+- **A job-level session gate is not a per-symbol one**, and the wave screener
+  ran for weeks on the difference. Its gate had been widened from `NSE_EQ` to
+  "either NSE_EQ or MCX_COMM open" so commodities kept being screened past
+  NSE's 15:41 close — correct for the job — but the universe was still
+  assembled unconditionally. So from 15:41 to 23:30 all ~219 NSE F&O stocks
+  were re-scanned on frozen prices, roughly **47 times an evening**: about
+  10,000 pointless per-symbol history queries and ~7.6M rows a night, on a
+  2-vCPU box shared with MySQL. Confirmed live at 21:39 IST, still logging
+  `universeSize: 223`.
+
+  **It emitted no wrong signals, which is exactly why nobody noticed.** A wave
+  count over frozen prices does not change, and `ALERT_COOLDOWN_MS` dedupes it;
+  the only post-close alert in three days was a genuine 22:52 COPPER one.
+  Wasted work is silent in a way that bad output is not — when a gate is
+  widened, check what else was relying on it being narrow.
+
+  Fixed by filtering each symbol on **its own** exchange session
+  (`MCX_UNDERLYINGS` decides which), so after 15:41 the universe is the 4
+  commodities and the scan skips entirely once MCX closes too.
 - **Paper Trade Pro is per-user, and the admin view is READ ONLY.** Users see
   only their own simulator account: no `/api/sim/*` route takes a user
   identifier at all — every one resolves the caller from the session cookie —

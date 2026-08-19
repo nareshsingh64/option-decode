@@ -20,6 +20,7 @@ import { getUnderlyingDefinition } from "@option-decode/dhan";
 import { runExclusive } from "./heavy-job-lock.js";
 import { logWorkerMemory } from "./worker-memory.js";
 import type { DhanClient } from "@option-decode/dhan";
+import { MCX_UNDERLYINGS } from "@option-decode/types";
 import type { SpotPricePoint } from "@option-decode/types";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
@@ -292,7 +293,28 @@ export async function startWaveScreener(
       const sinceMs = Date.now() - SCREENER_LOOKBACK_MS;
       let alertsCreated = 0;
 
-      const scanUniverse = [...indexSymbols, ...stockSymbols];
+      // Each symbol is gated on ITS OWN exchange session, not on the job-level
+      // check above. The two are not the same thing and the difference ran for
+      // nearly eight hours a day:
+      //
+      // The gate above was widened from NSE_EQ to "either session" so that MCX
+      // commodities, which trade until 23:30 IST, kept being screened after
+      // NSE's 15:41 close. That was the right fix for the job, but the universe
+      // was still assembled unconditionally - so from 15:41 to 23:30 every one
+      // of the ~219 NSE F&O stocks was re-scanned on frozen prices, roughly 47
+      // times an evening. Measured 2026-08-19: at 21:39 IST the scan was still
+      // logging universeSize 223, about 10,000 pointless per-symbol history
+      // queries and ~7.6M rows a night on a 2-vCPU box shared with MySQL.
+      //
+      // It produced no wrong signals - a wave count on frozen prices does not
+      // change, and ALERT_COOLDOWN_MS dedupes - which is exactly why it went
+      // unnoticed. Wasted work is silent in a way that bad output is not.
+      const scanUniverse = [...indexSymbols, ...stockSymbols].filter((symbol) =>
+        isMarketSessionOpen(MCX_UNDERLYINGS.has(symbol.toUpperCase()) ? "MCX_COMM" : "NSE_EQ")
+      );
+      if (scanUniverse.length === 0) {
+        return;
+      }
       let scanned = 0;
 
       for (const symbol of scanUniverse) {
