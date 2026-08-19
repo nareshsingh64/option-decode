@@ -85,9 +85,9 @@ RestartSec=5
 # worker.close() on every BullMQ Worker, which waits for the currently
 # running job to finish before resolving. Jobs here are ~30s-cadence
 # option-chain/wave-quote captures, not long-running, so 30s is generous
-# headroom for graceful shutdown while still leaving the option-decode-
-# worker-restart.timer's 15-minute cadence (see that timer's own comment)
-# a wide margin before the next scheduled restart fires.
+# headroom for graceful shutdown. (This used to be justified against
+# option-decode-worker-restart.timer's cadence; that timer is gone - see
+# the note below.)
 TimeoutStopSec=30
 
 NoNewPrivileges=true
@@ -95,5 +95,27 @@ ProtectSystem=strict
 PrivateTmp=true
 ReadWritePaths=/opt/option-decode-native/logs /opt/option-decode-native/current
 
+# There is no periodic restart timer any more, and there should not be one.
+#
+# option-decode-worker-restart.timer recycled this unit every 7 minutes (15
+# before 2026-08-19) to bound a memory growth that was blamed, over three
+# weeks, on Prisma's native query engine, then its WASM successor, then the
+# mariadb driver, then glibc. All four were wrong. The cause was a
+# per-call `new Intl.DateTimeFormat` in the wave screener's rvol loop -
+# ~318,000 ICU allocations per scan, in C++ where process.memoryUsage()
+# could not see them. Commit a85236d hoists the formatter.
+#
+# Measured on this host immediately after, with the timer disabled: 45
+# minutes uninterrupted at a flat 372-377MB cgroup memory, four consecutive
+# full 223-symbol scans inside one generation growing the process by 4MB
+# total, against a pre-fix mean of +1,657MB per scan.
+#
+# The timer was never free. It killed capture jobs mid-flight every 7
+# minutes and left BullMQ a delayed-job backlog to replay on boot - which
+# is its own recorded incident (five index-capture 429s in six seconds).
+# Restoring it would re-buy that cost to solve a problem that no longer
+# exists. If worker memory ever climbs again, measure which allocation
+# grows before reaching for a restart; the unit files are in git history at
+# a85236d~1 if one is genuinely needed.
 [Install]
 WantedBy=multi-user.target

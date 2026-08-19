@@ -806,6 +806,15 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
   | one formatter reused | **77 MB** | 16 MB |
   | new formatter per call | **4,278 MB** | 53 MB |
 
+  Verified on production the same day. Per-scan allocation across the same
+  223-symbol universe went from a **+1,657 MB mean over seven pre-fix scans**
+  to **+6 MB over seven post-fix scans**. With
+  `option-decode-worker-restart.timer` disabled, the worker then held **45
+  uninterrupted minutes at a flat 372–377 MB** cgroup memory, four full scans
+  inside that one generation adding 4 MB in total; host available memory
+  stayed ~2,070 MB with swap flat, and the API answered 200 in 6 ms warm.
+  **The restart timer is gone** — deleted, not merely disabled.
+
   **Never construct an `Intl` formatter inside a loop.** Hoist it to module
   scope — it is stateless for formatting. The other three call sites in the
   repo (`packages/utils/src/index.ts` x2, `market-repository.ts`) were hoisted
@@ -979,10 +988,12 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     engine. Both `createMany` call sites already route through
     `insertInFixedShapes`, so the known prepared-statement-cache vector is
     already guarded — this is something else.
-  - *Contained, not fixed.* `option-decode-worker-restart.timer` restarts the
-    worker every 15 minutes and is the only reason the box survives; host sits
-    at ~120 MB available with 1.37 G swapped. Keep it until the peak is
-    actually reduced. Do not read "no OOM in the logs" as health.
+  - *Contained, not fixed — and the containment is now REMOVED.*
+    `option-decode-worker-restart.timer` restarted the worker every 15
+    minutes (7 from 2026-08-19 morning) and was the only reason the box
+    survived; host sat at ~120 MB available with 1.37 G swapped. It was
+    disabled and deleted the same day the formatter was fixed. Do not
+    re-create it — see the unit comment in `option-decode-worker.service`.
   - Still true and still a trap: systemd's `memory peak` is a cgroup
     high-water mark, so it overstates a moment rather than describing the
     steady state. Use mid-cycle RSS, `smaps_rollup`, or `free -m`.

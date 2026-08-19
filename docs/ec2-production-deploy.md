@@ -131,18 +131,20 @@ by these three units having never been enabled, so a reboot silently left
 the app down even though MySQL/Redis/nginx (enabled by default via apt) came
 back fine.
 
-`option-decode-worker-restart.timer` also runs continuously — it recycles
-the worker process on a fixed interval as a mitigation for a confirmed,
-currently-unresolved memory leak in Prisma's native query engine (not
-specific to this app's queries — see the timer/service unit comments in
-`ops/native-migration/systemd/` for the investigation and reasoning, and
-tune the interval there if you change instance type, since the safe
-interval scales with available RAM). Check it's active and see when it
-last/next fired:
+**`option-decode-worker-restart.timer` was removed on 2026-08-19 and should
+not come back.** It recycled the worker every 7 minutes (15 before that day)
+to bound a memory growth blamed in turn on Prisma's native query engine, its
+WASM successor, the mariadb driver and glibc — all four wrong. The cause was
+a per-call `new Intl.DateTimeFormat` in the wave screener's rvol loop, about
+318,000 ICU allocations per scan, allocated in C++ where
+`process.memoryUsage()` could not see them. Commit `a85236d` hoists the
+formatter; measured straight afterwards, the worker held a flat 372–377 MB
+across 45 uninterrupted minutes and four full scans.
 
-```bash
-systemctl list-timers option-decode-worker-restart.timer --no-pager
-```
+If you are provisioning a fresh host from this doc, simply do not create the
+timer. If worker memory ever climbs again, find which allocation grows before
+reaching for a restart — see CLAUDE.md's worker-memory entry for how three
+weeks of mechanism-first guessing failed and what actually worked.
 
 ## 5. Smoke Tests
 
@@ -220,7 +222,6 @@ MySQL and Redis are native services, not stopped/started with the app -
 
 This instance is stopped/started automatically on weekdays via two AWS
 EventBridge Scheduler rules (8:55 AM / 11:55 PM IST) rather than running
-24/7. `option-decode-api`, `option-decode-worker`, `option-decode-web`, and
-`option-decode-worker-restart.timer` all being `enabled` (section 4) is what
-makes this safe — the app comes back up on its own after each scheduled
-start with no manual intervention.
+24/7. `option-decode-api`, `option-decode-worker` and `option-decode-web`
+all being `enabled` (section 4) is what makes this safe — the app comes back
+up on its own after each scheduled start with no manual intervention.
