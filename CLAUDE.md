@@ -815,14 +815,26 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
   stayed ~2,070 MB with swap flat, and the API answered 200 in 6 ms warm.
   **The restart timer is gone** — deleted, not merely disabled.
 
-  **All of that is one afternoon, and one afternoon is not proof.** A check is
-  scheduled for **Thu 2026-08-20, 10:05 IST** (a one-shot in
-  `~/.claude/scheduled-tasks/worker-memory-post-fix-check/`, which fires after
-  the 09:45 memory report and its 09:50 alert). If that file is gone — the
-  task auto-disables once it runs — do the check by hand rather than assuming
-  it passed.
+  **All of that is one afternoon, and one afternoon is not proof.** Two checks
+  are scheduled, both one-shots under `~/.claude/scheduled-tasks/`, both firing
+  after the 09:45 memory report and its 09:50 alert:
 
-  Two specific reasons tomorrow tests something today could not:
+  | when | task | what it adds |
+  |---|---|---|
+  | **Thu 2026-08-20, 10:05 IST** | `worker-memory-post-fix-check` | first full-history day, first long generation |
+  | **Fri 2026-08-21, 10:07 IST** | `worker-memory-friday-check` | the weekly trend table, and Thu-vs-Fri as a like-for-like pair |
+
+  They auto-disable once they run, so a missing directory means it fired — not
+  that it was never set up. If both are gone and nothing was reported, do the
+  check by hand rather than assuming it passed.
+
+  Friday is not a duplicate of Thursday. Its alert carries the **weekly trend
+  table** whatever happens, which is also the only thing that catches a day
+  where the report silently failed to be produced — that shows as a gap in the
+  table, where regression-only alerting stays quiet. And two consecutive
+  full-history days are the first like-for-like pair since the fix.
+
+  Two specific reasons these test something 2026-08-19 could not:
 
   - **Nothing restarts the worker any more.** Every number in this whole entry,
     including the 45 minutes above, is a peak reached *within* a bounded
