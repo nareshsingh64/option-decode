@@ -9,8 +9,23 @@ import {
  * Today's calendar date in IST as YYYY-MM-DD - for comparing against
  * expiry strings (always calendar dates, not instants), not for display.
  */
+// Hoisted, like every other Intl formatter in this repo. Constructing one
+// allocates ICU state in C++ that Node's own memory APIs cannot see; doing it
+// per call inside a loop is what caused the worker's memory spikes (see
+// analytics/wave-screener.ts). These two are not per-row paths, but
+// isMarketSessionOpen runs on every job and every request, and there is no
+// reason to pay for a formatter that never varies.
+const IST_DATE_KEY_FORMAT = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+const IST_SESSION_PARTS_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kolkata",
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
 export function todayIstDateKey(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  return IST_DATE_KEY_FORMAT.format(now);
 }
 
 /**
@@ -26,13 +41,7 @@ export function isExpiryInPast(expiry: string, now = new Date()): boolean {
 }
 
 export function isMarketSessionOpen(segment: string, now = new Date()) {
-  const istParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(now);
+  const istParts = IST_SESSION_PARTS_FORMAT.formatToParts(now);
   const weekday = istParts.find((part) => part.type === "weekday")?.value;
   if (weekday === "Sat" || weekday === "Sun") {
     return false;

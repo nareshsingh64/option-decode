@@ -43,8 +43,26 @@ export function calculateRsi(prices: number[], period = 14): number | undefined 
   return 100 - 100 / (1 + rs);
 }
 
+// Constructed ONCE. This formatter used to be built inside istDateKey, so a
+// new one was allocated on every call - and calculateRvol calls it twice per
+// price point, which across the screener's ~216 symbols x ~740 points came to
+// ~318,000 constructions per scan.
+//
+// That single line was the worker's memory spike. Intl.DateTimeFormat is
+// backed by ICU, which allocates in C++ - invisible to process.memoryUsage(),
+// which is why every earlier hunt looked at the V8 heap (flat at ~60MB) and
+// at Prisma, and found nothing. Measured in isolation at the real call count,
+// same loop otherwise: reused formatter peaks at 77MB, per-call construction
+// at 4,278MB. On production the same change is worth the ~976MB that a
+// controlled A/B (2026-08-19) attributed to "the analytics" over identical
+// queries and identical row counts.
+//
+// A DateTimeFormat is stateless for formatting, so hoisting is safe and the
+// options here never vary. Never construct one inside a per-row loop.
+const IST_DATE_KEY_FORMAT = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+
 function istDateKey(iso: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+  return IST_DATE_KEY_FORMAT.format(new Date(iso));
 }
 
 /**
@@ -64,10 +82,17 @@ export function calculateRvol(points: SpotPricePoint[], baselineWindow = 20): nu
   }
 
   const deltas: number[] = [];
+  // Each sample's date key is computed once and carried into the next
+  // iteration as the previous one, rather than formatting both ends of every
+  // pair - half the work for the same answer.
+  let previousKey = istDateKey(withVolume[0].time);
   for (let i = 1; i < withVolume.length; i++) {
     const previous = withVolume[i - 1];
     const current = withVolume[i];
-    if (istDateKey(previous.time) !== istDateKey(current.time)) {
+    const currentKey = istDateKey(current.time);
+    const sameSession = currentKey === previousKey;
+    previousKey = currentKey;
+    if (!sameSession) {
       continue;
     }
     const delta = current.volume - previous.volume;

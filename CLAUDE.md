@@ -344,6 +344,105 @@ a short window is often a step in a staircase. Before saying a change improved
 something, measure the same way, over the same span, on both sides — and if a
 claim turns out wrong, retract it plainly.
 
+## Daily OHLC comes from NSE bhavcopy, not Dhan
+
+`DailyBar` holds **real** daily candles — 209 F&O stocks, 646 trading days,
+2024-01-01 onward — backfilled from the NSE UDiFF bhavcopy archive. It is the
+only real OHLC in this app; everything else is synthesized from 1-minute LTP
+ticks and cannot express a true daily high/low. Dhan's client has **no**
+historical-candle endpoint, so this is the only way to get history without
+waiting for capture to accumulate.
+
+`docs/daily-bars-bhavcopy.md` is the full reference. The four traps that cost
+real time, all now guarded by permanent checks:
+
+- **The CSV sniffer silently drops files.** Bhavcopies before ~2024-06-21 have
+  a 35-field header against 34-field data rows; DuckDB then parses the whole
+  file as one column and `union_by_name` contributes nothing — no error, 120
+  trading days simply absent. Parse options are pinned, and the ingest asserts
+  days-staged equals files-downloaded.
+- **NSE trades on some weekends.** The Union Budget session runs on 1 February
+  whatever day it falls on (2026-02-01 was a Sunday). Probe every calendar day.
+- **`PrvsClsgPric` is not restated on ex-dates**, so it cannot detect splits —
+  it detects *missing sessions*. Splits are found on `open / previous close`,
+  which separates them from genuine crashes (a split gaps the open; a crash
+  opens near the previous close and falls intraday). 43 corporate actions sit
+  in this range; unadjusted, each flips EMA50 and spikes ADX.
+- **403 is rate limiting, not a holiday.** Recording it as a holiday would bake
+  a permanent hole into the archive. Confirmed 404s are cached so re-runs stay
+  cheap; 403s stay unknown and get retried.
+
+Prices are stored exactly as published. Back-adjustment is derived at read time
+in `daily-bars-duckdb-source.ts`, the single loader both the regime report and
+the pullback backtest go through — deliberately one copy, since a drift in that
+adjustment would surface as a strategy result rather than a data bug.
+
+Daily top-up: `scripts/bhavcopy-daily-topup.sh`, cron-safe (atomic-`mkdir`
+lock, 10-day self-healing lookback). Not scheduled yet. **A 404 within the last
+3 days is never cached as a holiday** — NSE publishes after the close, so a run
+during market hours 404s on today, and caching that would blank today forever.
+
+## Strategy backtests: the pullback rule has been measured and does not work
+
+`docs/pullback-strategy-backtest.md`. Trend Pullback Continuation over 646 days
+and 209 stocks: **52.9% out-of-sample win rate (CI 45-61%), +0.008R net per
+trade** across 155 holdout trades. First result here with a sample large enough
+to mean anything, and it is negative. Three things worth not rediscovering:
+
+- **Costs are 80% of the gross edge** (0.042R gross -> 0.008R net). Stop
+  distance, not signal quality, is the dominant lever on anything like this.
+- **Only the RSI 40-55 pullback band carries weight.** Removing it: 45.6% win
+  rate, -0.095R. The ATR floor changes the trade count by zero; the ADX floor
+  doubles trades for identical expectancy.
+- **All the profit is 2026** (2024 -1.9R, 2025 -2.3R, 2026 +8.1R). The
+  aggregate hides this completely.
+
+Do not tune it to reach a target win rate: with two of three years negative,
+any parameter set that hits 60% here is fitted to the 2026 stretch.
+
+**A post-hoc market-bias re-test found the one stable bucket.** Gating on
+market direction (NIFTY 50 EMA20/50, or breadth - they agree 89% of the time)
+lifts out-of-sample expectancy 0.008R -> 0.038R. But partitioning the
+*unfiltered* baseline shows the whole effect is **short trades in a falling
+market**: +0.169R over 96 trades, and positive in all three years
+(+0.169/+0.160/+0.178). Longs lose whether the market agrees (-0.044R) or not
+(-0.185R). The surviving claim is one-sided and was found post-hoc - re-test it
+pre-registered before believing it. `docs/output/stocks-bias-retest.xlsx`.
+
+NSE **index** daily bars now live in `DailyBar` as series `IDX` (NIFTY 50,
+BANK, 500 - from `ingest-nse-index-bhavcopy.ts`, a different archive from the
+equity bhavcopy). `loadDailyBars()` filters to EQ/BE by default so indices
+never enter the tradeable universe - passing the wrong series would backtest
+NIFTY as if it were a stock.
+
+**Track B (index option selling) cannot be validated** —
+`docs/index-option-selling-backtest.md`. The binding constraint is **expiry
+cycles, not calendar days**: 21 trading days of chain data contain only **9
+complete cycles** (a cycle needs both the expiry day for settlement and an
+earlier day for entry). Entering on more days inside a cycle adds trades, not
+independent observations.
+
+- Its 89% win rate is **expected by construction** — a 0.15-delta strangle wins
+  70-85% on random data. Never quote it. Worst loss and drawdown are the
+  metrics.
+- **The tail is invisible at n=9.** Over the same 9 cycles, changing only the
+  entry day (7 DTE vs 4 DTE) moves the worst single trade from -13 to -286
+  points, 22x. A backtest that has not met the tail has not tested short
+  premium.
+- Bid/ask **are** populated on index option ticks, so fills are modelled at the
+  touch (sell the bid, buy the ask) rather than at the mid.
+- The extraction reads ~30M ticks and takes ~290s — fine once, too slow to loop.
+
+Combined workbook for both tracks: `docs/output/strategy-backtests.xlsx`,
+regenerated by `scripts/build-strategy-backtests-xlsx.py` from the two JSON
+dumps.
+
+
+
+
+
+
+
 ### Units: rupees are not points, and the mistake looks conservative
 
 A backtest charged `brokeragePerLeg * legs` — **₹20** — straight against a P&L
@@ -683,8 +782,60 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
 
 ## Open threads
 
-- **Worker memory — it is a transient NATIVE burst, not a leak and not the
-  V8 heap.** Two earlier diagnoses in this file were wrong; both retractions
+- **Worker memory — SOLVED (2026-08-19). It was `new Intl.DateTimeFormat`
+  inside a per-row loop.** Everything below this entry is the two-week hunt
+  that led here; it is kept because the wrong turns are instructive, but the
+  answer is one line.
+
+  `istDateKey()` in `packages/analytics/src/wave-screener.ts` constructed a
+  formatter on every call, and `calculateRvol` called it **twice per price
+  point** — across ~216 symbols x ~740 points that is **~318,000 constructions
+  per scan**.
+
+  **`Intl.DateTimeFormat` is backed by ICU, which allocates in C++.** That is
+  the whole reason this took so long: the cost is invisible to
+  `process.memoryUsage()`, so every measurement showed a flat ~60 MB V8 heap
+  beside a multi-gigabyte RSS, and the search kept going to Prisma, the
+  mariadb driver, jemalloc and `--max-old-space-size` — all of which were
+  innocent.
+
+  Measured in isolation at the real call count, same loop otherwise:
+
+  | | peak RSS | heapTotal |
+  |---|---|---|
+  | one formatter reused | **77 MB** | 16 MB |
+  | new formatter per call | **4,278 MB** | 53 MB |
+
+  **Never construct an `Intl` formatter inside a loop.** Hoist it to module
+  scope — it is stateless for formatting. The other three call sites in the
+  repo (`packages/utils/src/index.ts` x2, `market-repository.ts`) were hoisted
+  at the same time; they are request-path rather than per-row, so they were
+  not causing this, but the rule is the same.
+
+  Two things the hunt got structurally right, worth reusing:
+
+  - **The controlled A/B is what found it.** Replaying the real loop over the
+    real universe with one line different — identical queries, identical
+    159k rows through both arms — put 976 MB of a 1,136 MB peak on the
+    analytics and cleared the database layer at 160 MB. Every theory before
+    that was mechanism-first and every one was wrong. Isolate the variable
+    before proposing a cause.
+  - **Memory scaling linearly with rows is a per-row allocation**, and that
+    is a strong enough signal to act on. It also explains the calendar
+    pattern the user spotted: Monday looked healthy because the 2-day
+    lookback reaches into an empty weekend (~30 points/symbol against ~750 by
+    Wednesday), so the same code allocated a fraction as much. A workload
+    that is quiet on Mondays is a clue about input size, not about the code
+    changing.
+
+  `WAVE_SCREENER_SCAN_ENABLED=false` disables the scan (and only the scan —
+  quote capture keeps running, or `WavePricePoint` would drain and the next
+  measurement would be meaningless). It was added as a kill switch during
+  this investigation and kept as a safety valve; it is not needed in normal
+  operation.
+
+  *Historical — the hunt, retained for the reasoning:* Two earlier diagnoses
+  in this file were wrong; both retractions
   are below, because the way each was reached is the reusable part.
   - *What was believed (2026-08-05):* a live `malloc_trim(0)` (via `gdb -p`)
     returned 4.58 G of a 4.92 G RSS, so glibc was blamed for hoarding freed
@@ -811,7 +962,15 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
     in-loop yield. A page must sit dirty for the whole decay window to become
     purgeable, so a 100 ms pause can never trigger a 2 s decay. Both numbers
     shipped in one commit without being checked against each other.
-  - *Leading suspect, untested:* Prisma's WASM query compiler
+  - *Leading suspect, WRONG — retired 2026-08-19:* Prisma's WASM query
+    compiler. The A/B cleared it outright: 216 queries returning 159k rows
+    peaked at **160 MB**. The real culprit was ICU, which fits the same
+    "native memory invisible to Node" fingerprint — which is the lesson.
+    That fingerprint identifies a *class* of allocator, not a component, and
+    it is satisfied by every native library the process links. It narrows
+    nothing on its own; only isolating the variable did. Original reasoning
+    kept below.
+
     (`engineType = "client"`). WASM linear memory is a native mmap invisible
     to `process.memoryUsage()`, which fits this signature exactly — and
     `schema.prisma`'s own comment records the *previous* engine holding

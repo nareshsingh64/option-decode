@@ -66,6 +66,18 @@ const SCREENER_SCAN_SCHEDULER_ID = "wave-screener-scan:scan";
 // is still far finer than the rate at which the same signal can re-alert,
 // and an intraday wave count does not turn over inside 10 minutes.
 const SCREENER_SCAN_INTERVAL_MS = 10 * 60_000;
+// Kill switch for the scan ONLY - quote capture and universe sync keep
+// running, deliberately. The scan is the measured allocator (production
+// A/B 2026-08-19, same 216 symbols and the same ~159k price points through
+// both arms: queries alone peak at 160MB, queries + Elliott Wave/RSI/RVOL
+// peak at 1,136MB), so turning it off is the one lever that isolates it in
+// the live process rather than in a replay script.
+//
+// Capture must stay on while the scan is off. WavePricePoint is what the
+// scan reads; stopping capture too would drain that window, and re-enabling
+// would then meet an empty table and look cheap for a reason that has
+// nothing to do with the analytics. The measurement would prove nothing.
+const SCREENER_SCAN_ENABLED = process.env.WAVE_SCREENER_SCAN_ENABLED !== "false";
 // Every Nth symbol of the ~216-symbol scan universe, so one scan produces a
 // handful of samples rather than 216 log blocks.
 const SCAN_MEMORY_SAMPLE_EVERY = 40;
@@ -247,6 +259,12 @@ export async function startWaveScreener(
   const screenerScanWorker = new BullWorker(
     SCREENER_SCAN_QUEUE,
     async (_job: Job) => {
+      // Also checked here, not only at registration: removing the scheduler
+      // does not drain jobs it already enqueued, and the whole point of the
+      // switch is that no analytics run while it is off.
+      if (!SCREENER_SCAN_ENABLED) {
+        return;
+      }
       // Serialised with the option-chain capture jobs and instrumented -
       // this path overlapped only 6.7% of captures but accounted for 54%
       // of their >500MB bursts (production, 2026-08-12). See
@@ -376,11 +394,21 @@ export async function startWaveScreener(
     { every: QUOTE_CAPTURE_INTERVAL_MS },
     { name: QUOTE_CAPTURE_JOB_NAME, data: {}, opts: { attempts: 2 } }
   );
-  await screenerScanQueue.upsertJobScheduler(
-    SCREENER_SCAN_SCHEDULER_ID,
-    { every: SCREENER_SCAN_INTERVAL_MS },
-    { name: SCREENER_SCAN_JOB_NAME, data: {}, opts: { attempts: 1 } }
-  );
+  if (SCREENER_SCAN_ENABLED) {
+    await screenerScanQueue.upsertJobScheduler(
+      SCREENER_SCAN_SCHEDULER_ID,
+      { every: SCREENER_SCAN_INTERVAL_MS },
+      { name: SCREENER_SCAN_JOB_NAME, data: {}, opts: { attempts: 1 } }
+    );
+  } else {
+    // Removing the scheduler, not just declining to add it. It lives in
+    // Redis and outlives the process, so a worker that merely skipped the
+    // upsert would still be handed jobs by the scheduler its own previous
+    // generation registered - and with a restart timer at 7 minutes that
+    // is every generation.
+    await screenerScanQueue.removeJobScheduler(SCREENER_SCAN_SCHEDULER_ID).catch(() => undefined);
+    console.log("Elliott Wave screener SCAN disabled by WAVE_SCREENER_SCAN_ENABLED=false (quote capture still running)");
+  }
 
   console.log("Elliott Wave screener BullMQ schedulers registered", {
     universeSync: { queue: UNIVERSE_SYNC_QUEUE, pattern: UNIVERSE_SYNC_CRON_PATTERN },

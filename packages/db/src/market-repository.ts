@@ -332,14 +332,17 @@ function labelToDate(label: string): Date {
 // or empty data. Filtering to expiryDate >= today (IST, matching the
 // exchange calendar) keeps the list limited to contracts that can actually
 // still have live data.
+// Hoisted - see analytics/wave-screener.ts for why a per-call
+// Intl.DateTimeFormat is never worth it.
+const MARKET_TZ_DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+
 function todayInMarketTimezone(): Date {
-  const isoDate = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date());
-  return dateOnly(isoDate);
+  return dateOnly(MARKET_TZ_DATE_FORMAT.format(new Date()));
 }
 
 export async function saveOptionChainSnapshot(snapshot: OptionChainSnapshot, client: PrismaClient = prisma): Promise<string> {
