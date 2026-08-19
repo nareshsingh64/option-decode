@@ -13,10 +13,22 @@
 #     gap in the table, where regression-only alerting would just stay quiet.
 #
 # THE THRESHOLD, AND WHY IT IS WHERE IT IS
-# The screener scan peaked at 2,921 MB on 2026-08-13 and 594 MB on 2026-08-17
-# after the memory work. 1,200 MB sits at roughly twice the current level and
-# well under half the old one: high enough that ordinary day-to-day variance
-# will not trip it, low enough to fire long before the box is in trouble again.
+# Lowered 1,200 -> 600 MB on 2026-08-19, when the growth was actually fixed
+# (a per-call Intl.DateTimeFormat in the screener's rvol loop - see CLAUDE.md).
+# The old value was set against a 594 MB reading taken on 2026-08-17, which
+# looked like an improvement and was really a Monday artifact: the screener's
+# 2-day lookback reaches into an empty weekend, so a Monday scan loads ~30
+# price points per symbol against ~750 by Wednesday. Sizing a tripwire off
+# that reading meant sizing it off the quietest day of the week.
+#
+# The real post-fix baseline is ~330 MB per scan, measured across eight
+# consecutive scans and a 45-minute uninterrupted generation that held a flat
+# 372-377 MB. 600 MB is a little under twice that: still clear of ordinary
+# variance including the Monday/Wednesday swing in points loaded, but it now
+# fires on a doubling instead of waiting for a quadrupling. Against the old
+# 1,200 the regression would have had to more than triple before anyone heard
+# about it.
+#
 # It is a tripwire, not a target - if the real number settles somewhere else,
 # move it rather than letting it cry wolf.
 #
@@ -33,7 +45,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/send-alert-email.sh"
 
 REPORT_DIR="${REPORT_DIR:-/opt/option-decode-native/logs/memory-reports}"
-REGRESSION_MB="${REGRESSION_MB:-1200}"
+REGRESSION_MB="${REGRESSION_MB:-600}"
 FORCE_SUMMARY=0
 DRY_RUN=0
 while [ $# -gt 0 ]; do
@@ -75,15 +87,30 @@ if [ -n "$TODAY_WORST" ] && [ "$TODAY_WORST" -ge "$REGRESSION_MB" ]; then
 "The worker's screener-scan RSS peaked at ${TODAY_WORST} MB this morning, at or
 above the ${REGRESSION_MB} MB tripwire.
 
-For context: it ran 2,921 MB on 2026-08-13 before the memory work and 594 MB on
-2026-08-17 after it. A number back in four figures means the growth that was
-being contained is happening again.
+For context: the scan peaked at 2,921 MB on 2026-08-13, before the cause was
+found. Since the fix on 2026-08-19 - a per-call Intl.DateTimeFormat in the
+screener's rvol loop, ~318,000 ICU allocations per scan - the baseline has been
+about 330 MB per scan.
 
 $TREND
 
-The 15-minute worker restart timer is still active, so this is a peak reached
-WITHIN one short generation - the box is not necessarily in trouble yet, but
-the thing that was fixed is no longer behaving.
+READ THIS BEFORE ACTING. There is no longer a periodic worker restart bounding
+this. option-decode-worker-restart.timer was removed on 2026-08-19, so a peak
+here is a peak in a process that may have been running for hours, not one
+capped by a 7-minute generation. The host has 3.8 GB total and shares it with
+MySQL, Redis, api and web; the last time this went unchecked the worker took
+2.9 GB, swap thrashing starved MySQL, and unrelated API endpoints returned 500
+after waiting out the full 10s connection-pool timeout.
+
+If it needs stopping right now, WAVE_SCREENER_SCAN_ENABLED=false in
+.env.production disables the screener scan alone - quote capture keeps running,
+so no price history is lost - then restart the worker. That buys time to find
+the cause rather than re-arming a restart timer.
+
+And find the cause. Three weeks were spent guessing at mechanisms - Prisma's
+native engine, its WASM successor, the mariadb driver, glibc - and every guess
+was wrong. What worked was replaying the real loop over the real universe with
+one variable changed at a time. CLAUDE.md's worker-memory entry has the method.
 
 Full report: $REPORT"
   echo "regression alert sent"
@@ -101,6 +128,15 @@ Read the scans column alongside the peaks. Cadence went from 3 to 10 minutes on
 2026-08-12, so recent rows have fewer, wider-spaced samples - a low peak on 5
 scans is weaker evidence than the same peak on 16. A missing date means no
 report was produced that day, which is itself worth checking.
+
+Mondays read low for a reason that is not an improvement: the screener's 2-day
+lookback reaches into an empty weekend, so a Monday scan loads roughly 30 price
+points per symbol against ~750 by Wednesday. Memory scales with points, so
+compare Monday against Monday. A 594 MB Monday reading was briefly mistaken for
+a fix in August 2026.
+
+Since 2026-08-19 there is no periodic worker restart, so these peaks are
+reached in long-lived processes rather than inside a 7-minute generation.
 
 Reports: $REPORT_DIR"
   echo "weekly summary sent"
