@@ -815,6 +815,36 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
   stayed ~2,070 MB with swap flat, and the API answered 200 in 6 ms warm.
   **The restart timer is gone** — deleted, not merely disabled.
 
+  **All of that is one afternoon, and one afternoon is not proof.** A check is
+  scheduled for **Thu 2026-08-20, 10:05 IST** (a one-shot in
+  `~/.claude/scheduled-tasks/worker-memory-post-fix-check/`, which fires after
+  the 09:45 memory report and its 09:50 alert). If that file is gone — the
+  task auto-disables once it runs — do the check by hand rather than assuming
+  it passed.
+
+  Two specific reasons tomorrow tests something today could not:
+
+  - **Nothing restarts the worker any more.** Every number in this whole entry,
+    including the 45 minutes above, is a peak reached *within* a bounded
+    generation. From 2026-08-20 the worker runs from the 08:15 IST boot to the
+    23:55 shutdown — roughly a 15-hour generation. Slow accumulation that
+    7-minute restarts were concealing gets its first chance to appear. The
+    figure to read is the trend in per-scan before→after deltas across that
+    whole generation, not any single peak.
+  - **Thursday loads full history.** Monday's readings are structurally low
+    (see the lookback point below) and one was already mistaken for a fix in
+    this very investigation. Compare like with like.
+
+  **If it regressed, do not re-arm a restart timer.** That is what turned a
+  one-line bug into three weeks. Find which allocation grew, by the A/B method
+  below. To stop the bleeding meanwhile, `WAVE_SCREENER_SCAN_ENABLED=false`
+  disables the scan alone and leaves quote capture running.
+
+  The regression tripwire in `ops/scripts/worker-memory-alert.sh` is **600 MB**
+  against a ~330 MB baseline (lowered from 1,200, which had been sized off a
+  Monday reading). Silence on a weekday means no regression; Friday brings the
+  trend table regardless.
+
   **Never construct an `Intl` formatter inside a loop.** Hoist it to module
   scope — it is stateless for formatting. The other three call sites in the
   repo (`packages/utils/src/index.ts` x2, `market-repository.ts`) were hoisted
