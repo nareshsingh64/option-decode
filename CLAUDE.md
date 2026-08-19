@@ -683,6 +683,43 @@ line and the duration on the `request completed` line, joined by `reqId` —
 neither line alone is enough, which is why an earlier read of this file
 concluded response times could not be attributed to endpoints at all.
 
+### The index audit: 21.8 GB of OptionContractTick index was dead
+
+Resolved 2026-08-19. `performance_schema.table_io_waits_summary_by_index_usage`
+over a full trading day — 3.1M inserts, 51.5M index reads — recorded **zero
+reads and zero writes** on three of the five secondary indexes:
+
+| index | size | ops |
+|---|---|---|
+| `[tradingDate, symbol, expiry, optionType, strike, tickTime]` | 9.17 GB | **0** |
+| `[symbol, expiry, tradingDate, optionType, strike, tickTime]` | 9.16 GB | **0** |
+| `[tickTime]` | 3.45 GB | **0** |
+| `[symbol, expiry, optionType, strike, tickTime]` | 6.82 GB | 51,545,056 |
+| `[snapshotId]` | 5.14 GB | 7,983,096 (incl. 2.1M deletes) |
+
+Dropped. Three things worth keeping:
+
+- **`performance_schema` counters reset every morning**, because the host
+  shuts down nightly. An earlier plan to "wait for a week of counters" was
+  therefore impossible, not merely unfinished. One full trading day is the
+  most you can ever get; close the gap by grepping the call sites instead
+  (all 13 `optionContractTick` sites were checked — none filters on
+  `tradingDate` or `tickTime`).
+- **`EXPLAIN` is what proves redundancy, not column overlap.** The second
+  index was the kept one with `tradingDate` spliced into position 3. The
+  optimiser listed it as a candidate for the hot `getLatestLegTick` query and
+  **rejected** it in favour of the kept index with a backward scan.
+- **Dropping does not return disk to the OS.** With `innodb_file_per_table`
+  the pages go to the tablespace free list; the `.ibd` stays 57.8 GB until an
+  `OPTIMIZE TABLE` rebuild, which is deliberately not done (91M rows, ~20 GB
+  temp against 53 GB free). The win is insert/delete throughput and buffer
+  pool headroom, and the freed pages absorb future growth.
+
+The drop itself is near-instant — 0.14s for all three on a 99.5M-row local
+copy, since InnoDB secondary-index drops are metadata operations. Do not
+schedule a maintenance window for this sort of change on the assumption it
+is slow; measure it on the local copy first.
+
 ## Conventions that bite
 
 - **Runtime values crossing into `apps/web`**: `next.config.ts` carries
