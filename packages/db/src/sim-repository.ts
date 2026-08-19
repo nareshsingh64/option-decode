@@ -19,7 +19,7 @@
 //   expiry settlement (intrinsic value, EXPIRED status).
 
 import { classifyDrcr } from "@option-decode/analytics";
-import { getFallbackLotSize, getSessionCloseIstMinutes } from "@option-decode/types";
+import { getFallbackLotSize, getSessionCloseIstMinutes, shortLegMarginPerUnit } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -36,7 +36,6 @@ const HIGH_IV_THRESHOLD = 25;
 const LOW_EDGE_IV_HV_RATIO = 1.1;
 const HARD_STOP_MULTIPLE = 3;
 const DTE_GAMMA_THRESHOLD_DAYS = 7;
-const UNDEFINED_RISK_MARGIN_PCT = 0.2;
 // Phase 3: expiry-week margin ramp for stock options carrying physical
 // delivery obligations (NSE brokers ramp delivery margins through the last
 // week; 1.5x is a deliberately simple stand-in for that schedule).
@@ -479,16 +478,17 @@ function computeDefinedRiskMaxLossPerUnit(legs: SimLegInput[], netCreditPerUnit:
   return Math.max(...widths) - netCreditPerUnit;
 }
 
-// Exchange-style approximation for undefined-risk short options:
-// 20% of underlying + premium received - OTM amount, per short leg.
-function computeUndefinedRiskBpePerUnit(legs: SimQuotedLeg[], spotPrice: number): number {
+// Entry margin for undefined-risk short options. Model and its calibration
+// live in @option-decode/types - this and computeDynamicMarginForTrade below
+// are the two places the app blocks buying power, and they used to carry
+// separate copies of the same overstated formula.
+function computeUndefinedRiskBpePerUnit(underlyingSymbol: string, legs: SimQuotedLeg[], spotPrice: number): number {
   let bpe = 0;
   for (const leg of legs) {
     if (leg.side !== "SELL") {
       continue;
     }
-    const otmAmount = leg.optionType === "CE" ? Math.max(0, leg.strikePrice - spotPrice) : Math.max(0, spotPrice - leg.strikePrice);
-    bpe += Math.max(UNDEFINED_RISK_MARGIN_PCT * spotPrice + leg.fillPrice - otmAmount, 0.1 * spotPrice);
+    bpe += shortLegMarginPerUnit(underlyingSymbol, spotPrice, leg.strikePrice, leg.optionType);
   }
   return bpe;
 }
@@ -580,7 +580,7 @@ export async function quoteSimTrade(input: SimTradeInput, client: PrismaClient =
   if (definedMaxLossPerUnit !== null) {
     bpe = round2(definedMaxLossPerUnit * unitMultiplier);
   } else if (spotPrice !== null) {
-    bpe = round2(computeUndefinedRiskBpePerUnit(quotedLegs, spotPrice) * unitMultiplier);
+    bpe = round2(computeUndefinedRiskBpePerUnit(input.underlyingSymbol, quotedLegs, spotPrice) * unitMultiplier);
   }
 
   const shortDeltas = quotedLegs.filter((leg) => leg.side === "SELL" && leg.delta !== null).map((leg) => Math.abs(leg.delta as number));
@@ -650,9 +650,9 @@ export async function placeSimTrade(input: SimTradeInput, user: AuthUserDto, cli
   }
 
   const account = await getOrCreateSimAccount(user, client);
-  const openBpe = await sumOpenBpe(account.id, client);
+  const openMargin = await sumOpenMaintenanceMargin(account.id, client);
   const totalBuyingPower = account.cash.toNumber();
-  const availableBuyingPower = totalBuyingPower - openBpe;
+  const availableBuyingPower = totalBuyingPower - openMargin;
   if (quote.bpe > availableBuyingPower) {
     throw new SimOrderRejectedError(`Insufficient buying power: trade needs ${quote.bpe.toFixed(0)} but only ${Math.max(availableBuyingPower, 0).toFixed(0)} is available.`);
   }
@@ -724,12 +724,35 @@ export async function placeSimTrade(input: SimTradeInput, user: AuthUserDto, cli
 
 export class SimOrderRejectedError extends Error {}
 
-async function sumOpenBpe(accountId: string, client: PrismaClient): Promise<number> {
-  const result = await client.simTrade.aggregate({
+/**
+ * Buying power currently blocked by open trades.
+ *
+ * Deliberately the LIVE maintenance margin, not the sum of stored entry `bpe`.
+ * Two reasons, and the second is the one that bites:
+ *
+ * - It is what the account is actually holding. `bpe` is a historical record
+ *   of what was blocked at entry; a short that has gone ITM since then blocks
+ *   considerably more, and one that has drifted OTM blocks less.
+ * - The summary already reports available buying power from this same live
+ *   figure (see getSimSummary). While this gate read stored `bpe` instead, the
+ *   number a user was rejected against was not the number on their screen.
+ *   That divergence became a 2.2x gap for index shorts opened before the
+ *   margin model was corrected - the display would show buying power free and
+ *   the gate would refuse the trade, with nothing on screen explaining why.
+ *   Reading one figure in both places makes legacy rows self-healing and means
+ *   no backfill of stored `bpe` is needed.
+ */
+async function sumOpenMaintenanceMargin(accountId: string, client: PrismaClient): Promise<number> {
+  const openTrades = await client.simTrade.findMany({
     where: { accountId, status: "OPEN" },
-    _sum: { bpe: true }
+    include: { legs: true }
   });
-  return result._sum.bpe?.toNumber() ?? 0;
+  const tickCache: LegTickCache = new Map();
+  let total = 0;
+  for (const trade of openTrades) {
+    total += await computeDynamicMarginForTrade(trade, client, undefined, tickCache);
+  }
+  return round2(total);
 }
 
 interface TradeCloseCost {
@@ -825,11 +848,12 @@ async function computeDynamicMarginForTrade(trade: { underlyingSymbol: string; e
     if (leg.side !== "SELL") {
       continue;
     }
-    const strike = leg.strikePrice.toNumber();
-    const tick = await getLatestLegTick(trade.underlyingSymbol, trade.expiryLabel, leg.optionType, strike, client, tickCache);
-    const mid = tick && tick.bid !== null && tick.ask !== null ? (tick.bid + tick.ask) / 2 : tick?.last ?? 0;
-    const otmAmount = leg.optionType === "CE" ? Math.max(0, strike - spot) : Math.max(0, spot - strike);
-    marginPerUnit += Math.max(UNDEFINED_RISK_MARGIN_PCT * spot + mid - otmAmount, 0.1 * spot);
+    // No leg tick is read here any more. The old formula needed the current
+    // premium as an additive term; the model in @option-decode/types does not,
+    // so this loop no longer costs one OptionContractTick query per short leg.
+    // Those reads are cold in practice - the admin account list was measured
+    // at ~975ms for ONE account with two open trades, against a pool of 10.
+    marginPerUnit += shortLegMarginPerUnit(trade.underlyingSymbol, spot, leg.strikePrice.toNumber(), leg.optionType);
   }
   let margin = marginPerUnit * unitMultiplier;
   if (!isIndexUnderlying(trade.underlyingSymbol) && daysToExpiry(trade.expiryDate, asOf) <= DTE_GAMMA_THRESHOLD_DAYS) {
@@ -1383,6 +1407,9 @@ export async function computeSimStress(user: AuthUserDto, client: PrismaClient =
   }
   interface StressTrade {
     definedRisk: boolean;
+    // Carried so the projected margin below can use the same per-underlying
+    // model as live margin. An index and a stock differ by more than 2x here.
+    underlyingSymbol: string;
     staticBpe: number;
     deliveryRamp: boolean;
     spot: number;
@@ -1426,6 +1453,7 @@ export async function computeSimStress(user: AuthUserDto, client: PrismaClient =
     }
     stressTrades.push({
       definedRisk: trade.maxLoss !== null,
+      underlyingSymbol: trade.underlyingSymbol,
       staticBpe: trade.bpe.toNumber(),
       deliveryRamp: !isIndexUnderlying(trade.underlyingSymbol) && daysToExpiry(trade.expiryDate) <= DTE_GAMMA_THRESHOLD_DAYS,
       spot,
@@ -1445,10 +1473,11 @@ export async function computeSimStress(user: AuthUserDto, client: PrismaClient =
         const dIvPoints = leg.iv !== null ? leg.iv * (ivShiftPct / 100) : 0;
         pnlDelta += leg.sideSign * (leg.delta * dS + 0.5 * leg.gamma * dS * dS + leg.vega * dIvPoints) * leg.unitMultiplier;
         if (!trade.definedRisk && leg.isShort) {
-          const shiftedSpot = trade.spot + dS;
-          const shiftedPremium = Math.max(leg.mid + leg.delta * dS + 0.5 * leg.gamma * dS * dS + leg.vega * dIvPoints, 0.05);
-          const otmAmount = leg.optionType === "CE" ? Math.max(0, leg.strike - shiftedSpot) : Math.max(0, shiftedSpot - leg.strike);
-          tradeMarginPerUnit += Math.max(UNDEFINED_RISK_MARGIN_PCT * shiftedSpot + shiftedPremium - otmAmount, 0.1 * shiftedSpot);
+          // Same model as live margin, evaluated at the shifted spot. It must
+          // be the same one: a stress grid that projects margin by a different
+          // formula than the account actually blocks reports a margin call that
+          // cannot happen, or misses one that can.
+          tradeMarginPerUnit += shortLegMarginPerUnit(trade.underlyingSymbol, trade.spot + dS, leg.strike, leg.optionType);
         }
       }
       if (trade.definedRisk) {

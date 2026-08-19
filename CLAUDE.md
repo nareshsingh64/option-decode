@@ -538,35 +538,66 @@ instead of a 30-minute VWAP**. F&O keeps trading to **15:40**.
 - India VIX is often absent locally; the range builder falls back to a 15%
   default and says so in the UI.
 
-## Margin: the app's own model overstates index options by ~2x
+## Margin: index shorts were overstated ~2x — FIXED 2026-08-19
 
-`computeDynamicMarginForTrade` (packages/db/src/sim-repository.ts) uses
+The model now lives **once**, in `@option-decode/types`
+(`shortLegMarginPerUnit`), and is shared by Paper Trade Pro and the backtests.
 
 ```
-max(0.20 * spot + premium - otmAmount, 0.10 * spot)
+margin per unit = basePct * spot + max(0, amount the short is ITM)
 ```
 
-which is the SEBI-style **prescribed minimum** short-option formula. Applied to
-an index option it lands roughly **2.0–2.4x above what a broker actually
-blocks**. Worked example, NIFTY 2026-08-14, spot 24,366, short 24,650 CE at
-15.95, lot 65:
+`basePct` is **8.5% for indices, 20% for single stocks**, and that split is the
+whole fix. Three sim call sites previously used the SEBI-style **prescribed
+minimum**, `max(0.20 * spot + premium - otmAmount, 0.10 * spot)` — a floor
+calibrated for *stocks*. On an index it lands **2.0–2.4x above what a broker
+actually blocks**, because an index is a diversified basket and its worst-case
+scenario move is far smaller than any single stock's. Worked example, NIFTY
+2026-08-14, spot 24,366, short 24,650 CE, lot 65:
 
 | | |
 |---|---|
-| app model | 4,605 pts/unit → **₹2,99,335** = 18.9% of the ₹15.84L notional |
-| published | **₹1.25–1.5 lakh** per lot for a naked NIFTY short held overnight = 7.9–9.5% |
+| old (prescribed minimum) | 4,605 pts/unit → **₹2,99,335** = 18.9% of the ₹15.84L notional |
+| new model | **₹1,34,622** = 8.5% |
+| published | **₹1.25–1.5 lakh** per lot for a naked NIFTY short held overnight |
 
-Exposure margin alone is a documented 2% of contract value; the balance is
-SPAN. **This affects Paper Trade Pro's live buying-power display**, not just
-backtests — it is not only a research concern, and it is not yet fixed.
+Verified end-to-end through the real `quoteSimTrade` against a live local
+chain, not just the formula: a 1-lot NIFTY short strangle quotes ₹2,69,244,
+i.e. ₹1,34,622 per leg, inside the published range.
+
+**Do not "consolidate" the two base percentages.** They look redundant and are
+not. 20% is roughly right for single stocks — which is exactly why the error
+only ever showed on indices. Collapsing them to the index figure would
+understate stock margin by about the same factor, the same bug pointed the
+other way and much harder to notice because it flatters the account.
+`packages/types/src/margin.test.ts` asserts the split for this reason.
+
+Two knock-on changes worth knowing:
+
+- **The entry gate now reads live maintenance margin, not stored `bpe`.**
+  `placeSimTrade` used to reject against the sum of entry-time `bpe` while the
+  summary displayed available buying power from live margin — so the number a
+  user was refused against was not the number on their screen. After this fix
+  that divergence would have been a 2.2x gap on any index short opened
+  beforehand: buying power shown as free, trade refused, nothing on screen
+  explaining it. Reading one figure in both places also makes legacy rows
+  self-healing, so no `bpe` backfill is needed.
+- **`computeDynamicMarginForTrade` no longer reads a tick per short leg.** The
+  old formula needed the current premium as an additive term; this one does
+  not. Those reads are cold in practice (~975ms measured for one account with
+  two open trades) against a pool of 10.
+
+Defined-risk structures are untouched — wings cap the loss, so they keep their
+static entry BPE. All three open sim trades locally are condors/butterflies and
+priced identically before and after, which is correct rather than a null result.
 
 Real margin is SPAN + Exposure, which the exchange revalues **six times a
 trading day** from its own risk arrays. It cannot be reconstructed from stored
-option chains, so nothing here will ever be exact. Backtests use a separate,
-deliberately coarse model — a percentage of notional plus however far a short
-is ITM — calibrated to the published range and stated as ±20%. Strike distance
-while OTM is *not* modelled: the published figures overlap too heavily to fit
-that curve, and inventing a coefficient would be false precision.
+option chains, so nothing here will ever be exact — treat it as **±20%** and
+read the sensitivity band (`MARGIN_PCT_INDEX_LOW/HIGH`, 7.9–9.5%) rather than
+the point estimate. Strike distance while OTM is *not* modelled: the published
+figures overlap too heavily to fit that curve, and inventing a coefficient
+would be false precision.
 
 If a real number is ever needed, Dhan has a margin calculator endpoint. Note
 its MCP credentials are separate from the app's `.env.production` token and

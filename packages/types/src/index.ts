@@ -473,6 +473,97 @@ export function getFallbackLotSize(underlyingSymbol: string | null | undefined):
   return FALLBACK_LOT_SIZES[String(underlyingSymbol ?? "").toUpperCase()] ?? 1;
 }
 
+/**
+ * Short-option margin model. ONE definition, used by Paper Trade Pro's live
+ * buying power and by the backtests, because the two disagreeing is precisely
+ * how the bug below survived.
+ *
+ * WHAT WAS WRONG
+ * Both sim call sites used the SEBI-style *prescribed minimum*:
+ *
+ *   max(0.20 * spot + premium - otmAmount, 0.10 * spot)
+ *
+ * That floor is calibrated for STOCK options. Applied to an index option it
+ * lands 2.0-2.4x above what a broker actually blocks, because index margin is
+ * far lower - an index is a diversified basket, so its worst-case scenario
+ * move is much smaller than any single stock's. Worked example, NIFTY
+ * 2026-08-14, spot 24,366, short 24,650 CE at 15.95, lot 65:
+ *
+ *   prescribed minimum : max(0.20*24366 + 15.95 - 284, 0.10*24366)
+ *                        = 4,605 pts/unit x 65 = Rs 2,99,335  (18.9% of the
+ *                          Rs 15.84L notional)
+ *   what brokers block : Rs 1.25-1.5 lakh per lot for a naked NIFTY short
+ *                        held overnight  =  7.9-9.5% of notional
+ *
+ * In Paper Trade Pro that halved usable buying power and rejected trades a
+ * real account would have accepted.
+ *
+ * WHAT THIS IS, AND WHAT IT IS NOT
+ * Real margin is SPAN + Exposure + ELM. SPAN is a scenario-based worst case
+ * that the exchange revalues SIX times a trading day from its own risk arrays.
+ * It cannot be reconstructed from stored option chains, and no curve-fitting
+ * here would make it exact. Treat the output as +/-20%.
+ *
+ *   margin per unit = basePct * spot + max(0, amount the short is ITM)
+ *
+ * - The ITM term is the behaviour that actually matters: margin escalates hard
+ *   as a short goes into the money, which is exactly when an account blows up.
+ *   While the short is OTM the requirement is essentially flat in spot.
+ * - Strike distance while OTM is deliberately NOT modelled. Real SPAN does
+ *   charge less for further-OTM strikes, but the published figures
+ *   (Rs 1.25-1.5 lakh naked, Rs 1.2-1.35 lakh ATM) overlap too heavily to
+ *   support fitting that curve. A coefficient invented here would be false
+ *   precision.
+ *
+ * Re-check when lot sizes or the margin regime change.
+ */
+
+/** Middle of the published 7.9-9.5%-of-notional range for a naked index short. */
+export const MARGIN_BASE_PCT_INDEX = 0.085;
+/** Reported alongside index figures so a point estimate is never read alone. */
+export const MARGIN_PCT_INDEX_LOW = 0.079;
+export const MARGIN_PCT_INDEX_HIGH = 0.095;
+
+/**
+ * Non-index (single stock) stays at the prescribed 20% minimum.
+ *
+ * This is NOT an oversight and should not be "corrected" to match the index
+ * figure. The 20% floor was designed for single stocks and sits close to what
+ * brokers actually block on them, which is why the 2x error only ever showed
+ * up on indices. There is no equivalently well-sourced published range for
+ * stock options in this repo, and substituting the index number would
+ * UNDERSTATE stock margin by roughly the same factor it currently overstates
+ * index margin - the same bug, pointed the other way and harder to notice
+ * because it flatters the account.
+ */
+export const MARGIN_BASE_PCT_STOCK = 0.2;
+
+const INDEX_MARGIN_UNDERLYINGS = new Set([
+  "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX", "INDIAVIX"
+]);
+
+/** Base margin percentage of spot for one short leg on this underlying. */
+export function marginBasePctFor(underlyingSymbol: string): number {
+  return INDEX_MARGIN_UNDERLYINGS.has(underlyingSymbol.toUpperCase()) ? MARGIN_BASE_PCT_INDEX : MARGIN_BASE_PCT_STOCK;
+}
+
+/** How far a short leg is in the money, in points. Zero while OTM. */
+export function shortLegItmAmount(spot: number, strike: number, optionType: OptionType): number {
+  return optionType === "CE" ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+}
+
+/**
+ * Margin per unit (per share/index point of contract size) for ONE short leg.
+ *
+ * Multiply by lotSize * lots for the rupee figure. Legs are summed with no
+ * offset credited between a short call and a short put: SPAN gives a strangle
+ * only a small benefit because both legs cannot lose simultaneously, and
+ * crediting a large one here would flatter return-on-margin.
+ */
+export function shortLegMarginPerUnit(underlyingSymbol: string, spot: number, strike: number, optionType: OptionType): number {
+  return marginBasePctFor(underlyingSymbol) * spot + shortLegItmAmount(spot, strike, optionType);
+}
+
 export interface StrikeMatrixRow {
   optionType: OptionType;
   strikePrice: number;
