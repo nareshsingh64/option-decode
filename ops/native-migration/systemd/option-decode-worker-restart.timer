@@ -16,8 +16,25 @@ Description=Periodically restart option-decode-worker to bound Prisma native mem
 # cycles via `systemctl status option-decode-worker` and shorten further
 # if RSS is still climbing uncomfortably close to the ceiling by the time
 # each restart fires; lengthen once a stable, safe margin is confirmed.
-OnUnitActiveSec=15min
-OnBootSec=15min
+#
+# SHORTENED 15min -> 7min on 2026-08-19, doing exactly what that last
+# sentence anticipated. Measured on the box while it was degraded: the
+# worker reached 2.92GB of 3.83GB total EIGHT MINUTES into its generation,
+# leaving 130MB available with 1,981MB swapped. The consequence was not
+# theoretical - 86% iowait starved MySQL, the mariadb pool hit
+# "active=10 idle=0 limit=10" and unrelated endpoints returned 500 after
+# waiting the full 10s pool timeout together. Restarting the worker by hand
+# recovered available memory 140MB -> 2,648MB in twelve seconds, which is
+# what identifies the worker as the cause rather than a victim.
+#
+# 7min is chosen to cut the peak roughly in half based on where RSS sat at
+# the 8-minute mark, NOT from a measured curve - the growth is bursty
+# (screener scans every 10min), so a restart can land either side of a
+# burst. It is a stopgap that bounds the damage while the underlying native
+# allocation is still unexplained; see CLAUDE.md's worker-memory entry,
+# which records what has already been ruled out.
+OnUnitActiveSec=7min
+OnBootSec=7min
 Unit=option-decode-worker-restart.service
 
 [Install]
