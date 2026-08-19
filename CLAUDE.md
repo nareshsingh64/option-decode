@@ -565,6 +565,15 @@ Verified end-to-end through the real `quoteSimTrade` against a live local
 chain, not just the formula: a 1-lot NIFTY short strangle quotes ₹2,69,244,
 i.e. ₹1,34,622 per leg, inside the published range.
 
+Deployed and re-verified **on the running production release** (`567a9e8`),
+because a green local test says nothing about what the box is actually
+serving: `marginBasePctFor` returns 0.085 for NIFTY and 0.2 for RELIANCE
+there, the worked example returns ₹1,34,622, and `UNDEFINED_RISK_MARGIN_PCT`
+appears **zero** times in the release — so no path can still reach the old
+formula. Both open production trades were `BEAR_CALL_SPREAD` at the time, so
+nothing existing repriced; if you are looking for the change and see none,
+that is why. It shows on the next undefined-risk position.
+
 **Do not "consolidate" the two base percentages.** They look redundant and are
 not. 20% is roughly right for single stocks — which is exactly why the error
 only ever showed on indices. Collapsing them to the index figure would
