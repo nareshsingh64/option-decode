@@ -683,42 +683,54 @@ line and the duration on the `request completed` line, joined by `reqId` —
 neither line alone is enough, which is why an earlier read of this file
 concluded response times could not be attributed to endpoints at all.
 
-### The index audit: 21.8 GB of OptionContractTick index was dead
+### The index audit: one index was dead, two only looked it
 
-Resolved 2026-08-19. `performance_schema.table_io_waits_summary_by_index_usage`
-over a full trading day — 3.1M inserts, 51.5M index reads — recorded **zero
-reads and zero writes** on three of the five secondary indexes:
+Resolved 2026-08-19. Of five secondary indexes on `OptionContractTick`, **one**
+was dropped (9.16 GB). Two more were nearly dropped with it, and the near-miss
+is the part worth keeping.
 
-| index | size | ops |
-|---|---|---|
-| `[tradingDate, symbol, expiry, optionType, strike, tickTime]` | 9.17 GB | **0** |
-| `[symbol, expiry, tradingDate, optionType, strike, tickTime]` | 9.16 GB | **0** |
-| `[tickTime]` | 3.45 GB | **0** |
-| `[symbol, expiry, optionType, strike, tickTime]` | 6.82 GB | 51,545,056 |
-| `[snapshotId]` | 5.14 GB | 7,983,096 (incl. 2.1M deletes) |
+A day of live `performance_schema.table_io_waits_summary_by_index_usage` —
+3.1M inserts and 51.5M index reads — showed **zero reads on three** of them.
+The 11-boot-session report from `ops/scripts/capture-index-usage.sh --report`
+told a different story:
 
-Dropped. Three things worth keeping:
+| index | size | that day | 11 sessions | |
+|---|---|---|---|---|
+| `[symbol, expiry, tradingDate, optionType, strike, tickTime]` | 9.16 GB | 0 | **0** | dropped |
+| `[tickTime]` | 3.45 GB | 0 | **179,383,660** | kept |
+| `[tradingDate, symbol, expiry, optionType, strike, tickTime]` | 9.17 GB | 0 | **37,205,418** | kept |
+| `[symbol, expiry, optionType, strike, tickTime]` | 6.82 GB | 51.5M | 342,577,023 | kept |
+| `[snapshotId]` | 5.14 GB | 8.0M | 31,217,617 | kept |
 
-- **`performance_schema` counters reset every morning**, because the host
-  shuts down nightly. An earlier plan to "wait for a week of counters" was
-  therefore impossible, not merely unfinished. One full trading day is the
-  most you can ever get; close the gap by grepping the call sites instead
-  (all 13 `optionContractTick` sites were checked — none filters on
-  `tradingDate` or `tickTime`).
-- **`EXPLAIN` is what proves redundancy, not column overlap.** The second
-  index was the kept one with `tradingDate` spliced into position 3. The
-  optimiser listed it as a candidate for the hot `getLatestLegTick` query and
-  **rejected** it in favour of the kept index with a backward scan.
-- **Dropping does not return disk to the OS.** With `innodb_file_per_table`
-  the pages go to the tablespace free list; the `.ibd` stays 57.8 GB until an
-  `OPTIMIZE TABLE` rebuild, which is deliberately not done (91M rows, ~20 GB
-  temp against 53 GB free). The win is insert/delete throughput and buffer
-  pool headroom, and the freed pages absorb future growth.
+**A day of zero reads does not mean an index is unused.** `performance_schema`
+resets on every MySQL restart and this host stops nightly, so live counters
+never see past the morning boot. `option-decode-index-capture.timer` exists
+precisely to snapshot them every 30 minutes so they survive that reset — it
+was installed on 2026-08-08 for this exact decision. **Run its report before
+dropping anything.** Reading the live counters instead very nearly discarded
+179M reads' worth of index.
 
-The drop itself is near-instant — 0.14s for all three on a 99.5M-row local
-copy, since InnoDB secondary-index drops are metadata operations. Do not
-schedule a maintenance window for this sort of change on the assumption it
-is slow; measure it on the local copy first.
+Two more traps this hit:
+
+- **Grepping TypeScript is not grepping consumers.** The `tradingDate`-leading
+  index is used by `scripts/sync-prod-db.sh`, whose per-day
+  `mysqldump --where='tradingDate="$day"'` would become a full scan of ~91M
+  rows without it. No application query touches `tradingDate`, so a code
+  search over `packages/` and `apps/` finds nothing and reads as confirmation.
+- **`EXPLAIN` proves redundancy, column overlap does not.** The dropped index
+  is the kept composite with `tradingDate` spliced into position 3. The
+  optimiser lists it as a candidate for the hot `getLatestLegTick` query and
+  rejects it in favour of the composite with a backward scan.
+
+**Dropping does not return disk to the OS.** With `innodb_file_per_table` the
+pages go to the tablespace free list; the `.ibd` stays 57.8 GB until an
+`OPTIMIZE TABLE` rebuild, deliberately not done (91M rows, ~20 GB temp against
+53 GB free). The win is insert/delete throughput and buffer pool headroom.
+
+The drop itself is near-instant — three of them took 0.14s on a 99.5M-row local
+copy, since InnoDB secondary-index drops are metadata operations. Rebuilding
+one, by contrast, is a long scan. Cheap to remove, expensive to restore: read
+the report first.
 
 ## Conventions that bite
 

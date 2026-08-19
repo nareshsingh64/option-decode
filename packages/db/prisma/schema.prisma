@@ -356,29 +356,42 @@ model OptionContractTick {
   vegaValue            Decimal?            @db.Decimal(10, 6)
   snapshot             OptionChainSnapshot @relation(fields: [snapshotId], references: [id])
 
-  // TWO indexes, and both earn their place. Three others were dropped on
-  // 2026-08-19 after a full trading day of performance_schema counters showed
-  // literally zero reads and zero writes on each, while this table took 3.1M
-  // inserts and 51.5M index reads:
+  // One index was dropped here on 2026-08-19 and TWO were nearly dropped with
+  // it by mistake. The near-miss is the useful part, so it is recorded.
   //
-  //   [tradingDate, underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime]  9.17 GB
-  //   [underlyingSymbol, expiryLabel, tradingDate, optionType, strikePrice, tickTime]  9.16 GB
-  //   [tickTime]                                                                       3.45 GB
+  // A single trading day of live `performance_schema` counters showed ZERO
+  // reads on three of the five secondary indexes. Across 11 boot sessions
+  // (`ops/scripts/capture-index-usage.sh --report`), only one of those three
+  // was actually dead:
   //
-  // 21.8 GB of a 33.7 GB secondary-index footprint. The second was this one
-  // with tradingDate spliced into position 3, so anything that could use it
-  // could use this one's prefix - EXPLAIN on the hot getLatestLegTick query
-  // listed it as a candidate and the optimiser rejected it in favour of this
-  // index with a backward scan. The other two led with columns no query in the
-  // repo filters on; all 13 optionContractTick call sites were checked.
+  //   [underlyingSymbol, expiryLabel, tradingDate, optionType, strike, tickTime]
+  //       0 reads in 11 sessions        -> DROPPED (9.16 GB)
+  //   [tickTime]
+  //       179,383,660 reads in 11 sessions, 0 that day  -> KEPT
+  //   [tradingDate, underlyingSymbol, expiryLabel, optionType, strike, tickTime]
+  //       37,205,418 reads in 11 sessions, 0 that day   -> KEPT
   //
-  // Before adding an index here, check that an existing one's prefix does not
-  // already serve the query. An unused index is not free: it is maintained on
-  // every one of those 3.1M daily inserts and every one of the 2.1M daily
-  // retention deletes, and it competes for buffer pool with the indexes that
-  // are doing work.
+  // **A day of zero reads does not mean an index is unused**, and this table
+  // is the proof. `performance_schema` resets whenever MySQL restarts, and the
+  // host stops nightly, so live counters can never see further back than the
+  // morning boot. That is exactly why `option-decode-index-capture.timer`
+  // exists - it snapshots the counters every 30 minutes so they survive the
+  // reset. **Read its report before dropping anything here.**
+  //
+  // The `tradingDate`-leading index also has a consumer that no counter would
+  // have caught on a quiet day and no TypeScript grep would find either:
+  // `scripts/sync-prod-db.sh` dumps with `--where='tradingDate="$day"'`.
+  // Dropping it turns every per-day pull into a full scan of ~91M rows.
+  //
+  // The one that WAS dropped is this index with `tradingDate` spliced into
+  // position 3, so anything it could serve, the kept composite's prefix serves
+  // too - EXPLAIN on the hot getLatestLegTick query listed it as a candidate
+  // and the optimiser rejected it in favour of the composite with a backward
+  // scan.
   @@index([snapshotId])
+  @@index([tradingDate, underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
   @@index([underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime])
+  @@index([tickTime])
 }
 
 // Audit trail for every authenticated Dhan API request, across both the

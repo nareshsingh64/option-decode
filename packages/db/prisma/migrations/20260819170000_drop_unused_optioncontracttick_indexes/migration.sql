@@ -1,24 +1,25 @@
--- Drop three OptionContractTick indexes that a full trading day of
--- performance_schema counters recorded ZERO reads and ZERO writes on, while
--- the table took 3.1M inserts and 51.5M index reads through the others.
+-- Drop ONE OptionContractTick index that has never been read.
 --
---   [tradingDate, underlyingSymbol, expiryLabel, optionType, strikePrice, tickTime]  9.17 GB
---   [underlyingSymbol, expiryLabel, tradingDate, optionType, strikePrice, tickTime]  9.16 GB
---   [tickTime]                                                                       3.45 GB
+-- Across 11 boot sessions (2026-08-08 .. 2026-08-19, from
+-- ops/scripts/capture-index-usage.sh) this index recorded 0 reads, 0 writes
+-- and 0 deletes. It is the [underlyingSymbol, expiryLabel, optionType,
+-- strikePrice, tickTime] composite with tradingDate spliced into position 3,
+-- so anything it could serve is served by that composite's prefix - EXPLAIN
+-- on the hot getLatestLegTick query lists it as a candidate and the optimiser
+-- rejects it in favour of the composite with a backward scan.
 --
--- 21.8 GB of a 33.7 GB secondary-index footprint on a 91M-row table.
+-- Two SIBLING indexes were nearly dropped alongside it and must NOT be:
+--   [tickTime]                        179,383,660 reads across the same 11 sessions
+--   [tradingDate, underlyingSymbol,…]  37,205,418 reads
+-- Both showed 0 reads on the single day first examined. performance_schema
+-- resets on every MySQL restart and this host stops nightly, so a live counter
+-- can never see past the morning boot. Read the capture report, not the live
+-- counters. The tradingDate index additionally backs
+-- scripts/sync-prod-db.sh's `mysqldump --where='tradingDate="$day"'`.
 --
 -- NOTE ON DISK: with innodb_file_per_table these pages return to the
--- tablespace free list, not to the OS - the .ibd does not shrink without an
--- OPTIMIZE TABLE rebuild, which is deliberately NOT done here (91M rows,
--- ~20GB of temp space). The win is insert and delete throughput plus buffer
--- pool headroom, and the freed pages absorb future growth.
-
--- DropIndex
-DROP INDEX `OptionContractTick_tradingDate_underlyingSymbol_expiryLabel__idx` ON `OptionContractTick`;
+-- tablespace free list, not the OS - the .ibd does not shrink without an
+-- OPTIMIZE TABLE rebuild, deliberately not done here (91M rows, ~20GB temp).
 
 -- DropIndex
 DROP INDEX `OptionContractTick_underlyingSymbol_expiryLabel_tradingDate__idx` ON `OptionContractTick`;
-
--- DropIndex
-DROP INDEX `OptionContractTick_tickTime_idx` ON `OptionContractTick`;
