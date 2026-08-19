@@ -685,9 +685,46 @@ concluded response times could not be attributed to endpoints at all.
 
 ### The index audit: one index was dead, two only looked it
 
-Resolved 2026-08-19. Of five secondary indexes on `OptionContractTick`, **one**
-was dropped (9.16 GB). Two more were nearly dropped with it, and the near-miss
-is the part worth keeping.
+Decided 2026-08-19. Of five secondary indexes on `OptionContractTick`, **one**
+is dropped (9.16 GB) by migration
+`20260819170000_drop_unused_optioncontracttick_indexes`. Two more were nearly
+dropped with it, and the near-miss is the part worth keeping.
+
+**Scheduled, not yet applied at time of writing.** The migration lands with the
+next deploy; an `at` job on `dhan-ec2` was queued for **Thu 2026-08-20 08:35
+IST** to do that unattended
+(`/opt/option-decode-native/shared/one-shot-index-drop.sh`, log beside it in
+`logs/`, outcome emailed to `TOKEN_ALERT_EMAIL` as `[INDEX DROP] …`). If the
+index is already gone, it ran. Check `sudo atq` and that log before assuming
+either way.
+
+**Picking that window is the instructive part** — an unattended deploy restarts
+all three services, so it has to miss three things at once:
+
+| avoid | when |
+|---|---|
+| Dhan token renewal | 02:50 / 04:20 / 18:05 UTC (08:20 / 09:50 / 23:35 IST) |
+| market hours | 09:00–23:30 IST (MCX opens before NSE, closes long after) |
+| the host shutdown | 23:55 IST |
+
+The first draft was scheduled for 23:32 IST — after the MCX close, and **three
+minutes before the 23:35 token renewal**. RenewToken is destructive: a 200
+kills the old token instantly, so a service restarting mid-rotation can come up
+holding a dead credential, and with the box shutting down at 23:55 nobody would
+have seen it until morning. 08:35 IST clears all three by a wide margin. The
+script now refuses and emails if a guard trips rather than proceeding.
+
+Two things a dry run caught that review had not:
+
+- The success check hardcoded "expect 4 indexes after". `information_schema`
+  counts `PRIMARY`, so the real transition is **6 → 5** — it would have sent a
+  false failure alert on a perfectly good drop. Assert relative to the measured
+  before-count, not an absolute you worked out in your head.
+- The job does `git pull`, and the corrected commit had not been pushed. Had it
+  fired, the host would have pulled the earlier commit and dropped **all
+  three** indexes, including the two below carrying 179M and 37M reads. **A
+  scheduled job that pulls is only as correct as `origin/main` at fire time,
+  not as the working tree you tested.**
 
 A day of live `performance_schema.table_io_waits_summary_by_index_usage` —
 3.1M inserts and 51.5M index reads — showed **zero reads on three** of them.
