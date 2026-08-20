@@ -1,0 +1,158 @@
+# Operations schedule
+
+The production host runs on a fixed weekday window with a monthly weekend
+maintenance session. This file is the single reference for what runs when, and
+— more importantly — for the constraints that make certain times unusable.
+
+Decided 2026-08-20 after two failed maintenance attempts, both caused by
+constraints nobody had written down.
+
+## The cost model that chose this shape
+
+Instance `i-09354330ecf68b4f9`, `t4g.medium`, `ap-south-1`.
+
+| option | instance hrs/mo | monthly | annual |
+|---|---|---|---|
+| 24/7 | 730 | $178.14 | $2,137.68 |
+| 16 hrs x 5 days | 348 | $97.16 | $1,165.92 |
+| **weekday window + monthly weekend** | **345** | **$96.55** | **$1,158.60** |
+
+At $0.212/hr instance, $0.67/day storage, $3.00/mo VPC; 30.42 days and 21.75
+weekdays per average month.
+
+Two things this math settled:
+
+- **The monthly maintenance weekend is free.** It costs ~$1.70 of instance
+  time and lands the option *below* a flat 16x5 schedule. There is no cost
+  argument for skipping it, and a strong reliability argument for keeping it.
+- **~$23.38/month is fixed** (storage + VPC) and does not scale with runtime.
+  Savings only ever come out of the instance hours, so the floor is not zero.
+
+The one remaining lever is **MCX**: it extends the day from ~7.75h to 15.5h,
+i.e. half the compute (~$37/month). It supplies roughly a quarter of wave
+alerts and 7 of 45 sim trades, so it is a coverage decision, not an obvious
+cut.
+
+> Verify $0.212/hr against the actual bill. It is well above the published
+> on-demand rate for `t4g.medium`, so it may be blended with storage or data
+> transfer. If the true instance rate is lower, the absolute savings shrink
+> but the ranking of the options does not change.
+
+## Weekday schedule (Mon–Fri)
+
+| IST | UTC | What | Owner |
+|---|---|---|---|
+| 08:15 | 02:45 | Instance start | EventBridge |
+| 08:17 | 02:47 | Dhan token renewal — restarts api + worker | cron |
+| 08:35 | 03:05 | Retention prune begins | BullMQ |
+| 09:00 | 03:30 | MCX opens | — |
+| 09:14 | 03:44 | NSE opens | — |
+| 09:45 | 04:15 | Worker memory report | cron |
+| 09:50 | 04:20 | Memory alert + token safety-net (`--threshold-hours 14`) | cron |
+| 15:41 | 10:11 | NSE closes | — |
+| 15:45 | 10:15 | Sim EOD mark (NSE) | BullMQ |
+| 23:30 | 18:00 | MCX closes | — |
+| 23:32 | 18:02 | Dhan token renewal, `--no-restart` | cron |
+| 23:40 | 18:10 | Sim EOD mark (MCX) | BullMQ |
+| 23:50 | 18:20 | Instance stop | EventBridge |
+
+### Why these exact times
+
+**08:17, not 08:20.** The renewal restarts api and worker. It used to fire
+five minutes *after* the retention prune began, killing it mid-transaction
+every single weekday — see below. It now runs before the prune starts.
+
+**08:35 for the prune**, so the renewal's restart has already happened.
+
+**23:32 with `--no-restart`.** The evening renewal previously ran at 23:35 and
+restarted services three minutes before the 23:40 MCX settlement pass. The
+restart buys nothing in the evening: the box reboots in 18 minutes and reads
+the new token at boot anyway.
+
+**23:50 stop, not 23:45.** Measured from `journalctl --list-boots`,
+`poweroff.target` was being reached at 18:15:34 UTC every day, leaving the
+23:40 settlement pass a five-minute margin rather than the fifteen the docs
+claimed.
+
+## Monthly maintenance weekend
+
+**Saturday + Sunday, once a month.** The instance is started manually (the
+EC2 instance role has S3-backup permissions only, so it cannot schedule
+itself). This is the only window with no market, no ingest, no token-renewal
+collision and no shutdown deadline.
+
+Saturday is for work that holds locks or needs a MySQL restart. Sunday is the
+buffer — for anything that overran, plus verification.
+
+**Bonus worth knowing:** running the box on the maintenance weekend lets the
+Dhan token be renewed on Saturday and Sunday, which removes that month's
+Monday manual-token requirement. It only works on weekends the box actually
+runs.
+
+## Why retention had never once completed
+
+Three misconfigurations compounding. All three are fixed by config, not code.
+
+**1. The cron fired while the box was off.**
+`SNAPSHOT_RETENTION_CRON_PATTERN=0 30 1 * * *` is 01:30 UTC; the box boots at
+02:45 UTC. So the job was always a *missed* cron that BullMQ replayed at worker
+startup. "It runs at boot" was a side effect, not a design.
+
+**2. The batch was enormous.** `SNAPSHOT_RETENTION_BATCH_SIZE=5000` — and the
+batch unit is *snapshots*, each carrying ~400 ticks. One transaction therefore
+deleted **~2 million rows**. At the observed ~500 rows/sec that is over an
+hour per transaction.
+
+**3. The token renewal killed it five minutes in**, every weekday.
+
+Net effect measured 2026-08-20: a transaction 30+ minutes old holding a
+metadata lock on `OptionContractTick`, then a **3-hour rollback** that undid
+850k row deletions, 221 GB read and 437 GB written, with iowait at 79%.
+Retention sat **7 days past** its 30-day window.
+
+The lock is also what took the API down that morning — the pending index-drop
+DDL queued behind it, and because migrations run in the API's `ExecStartPre`,
+the API could not start at all.
+
+**A DDL that can block indefinitely must never gate a service start.** That is
+the durable lesson; the choice of window is secondary.
+
+### Fixes
+
+| setting | from | to | why |
+|---|---|---|---|
+| `SNAPSHOT_RETENTION_CRON_PATTERN` | `0 30 1 * * *` | `0 5 3 * * *` | 03:05 UTC = 08:35 IST, a time the box is actually up |
+| `SNAPSHOT_RETENTION_BATCH_SIZE` | 5000 | 200 | ~80k rows / ~2.7 min per transaction, so an interruption costs minutes not hours |
+| token renewal (morning) | 02:50 UTC | 02:47 UTC | restart lands before the prune, not during |
+| token renewal (evening) | 18:05 UTC | 18:02 UTC + `--no-restart` | clears the 23:40 settlement pass |
+| EventBridge stop | 18:15 UTC | 18:20 UTC | settlement gets 10 minutes, not 5 |
+
+With the 50-batch loop cap, 200 x 50 = 10,000 snapshots per run — roughly one
+day's intake, so it keeps pace once the backlog is cleared.
+
+## Constraints — check these before scheduling anything
+
+Two maintenance attempts have already been lost to constraints that were not
+written down. Both times the work itself took under a second.
+
+| avoid | when | why |
+|---|---|---|
+| boot-time retention prune | 08:15 IST + up to several hours | holds a metadata lock on `OptionContractTick` |
+| Dhan token renewal | 02:47 / 04:20 / 18:02 UTC | restarts api+worker; a 200 from RenewToken kills the old token instantly |
+| market hours | 09:00–23:30 IST | MCX opens before NSE and closes long after |
+| host shutdown | 23:50 IST | a build started too late is cut off |
+
+The box is **Mon–Fri only** (verified from `journalctl --list-boots`; the only
+weekend entries are short manual starts). So the genuinely clean window is a
+manually started weekend.
+
+## Division of responsibility
+
+**AWS console (not automatable from the host)** — the instance role
+`OptionDecodeEc2S3BackupRole` has no EventBridge permissions:
+
+- the start/stop schedule rules
+- starting the instance for a maintenance weekend
+
+**On the host** — everything else: cron times, env config, migrations, DDL,
+retention runs, verification.
