@@ -176,7 +176,10 @@ only copy in existence. That is not hypothetical: the first probe run consumed
 a live token and it was recovered by pasting from the log.
 
 **Renewal runs at 08:20 and 23:35 IST, Mon–Fri — not every 12 hours.** The
-times are pinned to the EC2 window (08:15 boot, 23:55 shutdown), not to a
+times are pinned to the EC2 window (08:15 boot, **23:45** shutdown — this file
+said 23:55 until 2026-08-20; the real figure is from `journalctl --list-boots`,
+where `poweroff.target` is reached at 18:15:34 UTC on every single boot, so the
+renewal has a **10**-minute margin rather than 20), not to a
 clock. 23:35 is 20 minutes before shutdown specifically so a full-life token
 goes into the overnight gap; a literal 12-hourly cadence would put one run in
 the middle of the night when the box is off, and it would simply never fire.
@@ -184,7 +187,7 @@ Both runs pass `--threshold-hours 25` so they renew unconditionally.
 
 **Monday morning always needs a manual token, and no cron can fix that.**
 Friday's 23:35 renewal produces a token good until Saturday 23:35; the box is
-off from Friday 23:55 to Monday 08:15, which is 56 hours against a 24-hour
+off from Friday 23:45 to Monday 08:15, which is 56 hours against a 24-hour
 token. An expired token cannot be renewed, only regenerated at web.dhan.co.
 The post-boot run is written to fail loudly with `MANUAL ACTION REQUIRED`
 rather than leave a wall of 401s. A Sunday-evening paste covers Monday and
@@ -705,12 +708,12 @@ all three services, so it has to miss three things at once:
 |---|---|
 | Dhan token renewal | 02:50 / 04:20 / 18:05 UTC (08:20 / 09:50 / 23:35 IST) |
 | market hours | 09:00–23:30 IST (MCX opens before NSE, closes long after) |
-| the host shutdown | 23:55 IST |
+| the host shutdown | 23:45 IST |
 
 The first draft was scheduled for 23:32 IST — after the MCX close, and **three
 minutes before the 23:35 token renewal**. RenewToken is destructive: a 200
 kills the old token instantly, so a service restarting mid-rotation can come up
-holding a dead credential, and with the box shutting down at 23:55 nobody would
+holding a dead credential, and with the box shutting down at 23:45 nobody would
 have seen it until morning. 08:35 IST clears all three by a wide margin. The
 script now refuses and emails if a guard trips rather than proceeding.
 
@@ -854,7 +857,11 @@ the report first.
   - A **second EOD pass at 23:40 IST** (`sim-eod-mtm:mark-mcx`). The 15:45 run
     is four minutes after the NSE close but *before* MCX has finished trading,
     so without an evening pass a commodity still could not settle until the
-    next day. 23:40 clears the 23:30 close and beats the host's 23:55 shutdown.
+    next day. 23:40 clears the 23:30 close and beats the host's 23:45 shutdown
+    — by **five minutes**, not the fifteen this file used to imply. Verified
+    still completing (2026-08-20: `sim-eod-mtm:mark-mcx` present in the worker
+    log, no OPEN sim trade past its expiry), but it is a thin margin and any
+    work added to that pass eats into it.
 
   Same queue, job name and handler for both passes — settlement is idempotent
   (a conditional `updateMany` on `status = OPEN`), so a contract settled in the
@@ -984,7 +991,7 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
   - **Nothing restarts the worker any more.** Every number in this whole entry,
     including the 45 minutes above, is a peak reached *within* a bounded
     generation. From 2026-08-20 the worker runs from the 08:15 IST boot to the
-    23:55 shutdown — roughly a 15-hour generation. Slow accumulation that
+    23:45 shutdown — roughly a 15-hour generation. Slow accumulation that
     7-minute restarts were concealing gets its first chance to appear. The
     figure to read is the trend in per-scan before→after deltas across that
     whole generation, not any single peak.
