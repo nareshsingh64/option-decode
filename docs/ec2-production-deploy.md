@@ -221,7 +221,7 @@ MySQL and Redis are native services, not stopped/started with the app -
 ## 8. Instance Schedule
 
 This instance is stopped/started automatically on weekdays via two AWS
-EventBridge Scheduler rules (8:55 AM / 11:55 PM IST) rather than running
+EventBridge Scheduler rules (**08:15 / 23:50 IST**, read back from the console on 2026-08-20 — this doc said 8:55 AM / 11:55 PM and both were wrong) rather than running
 24/7. `option-decode-api`, `option-decode-worker` and `option-decode-web`
 all being `enabled` (section 4) is what makes this safe — the app comes back
 up on its own after each scheduled start with no manual intervention.
