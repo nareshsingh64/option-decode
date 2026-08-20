@@ -157,7 +157,21 @@ export function StrikeMatrixPanel({ underlying, expiry, formatStrike, formatTime
             <p className="rounded border border-terminal-amber/50 bg-terminal-amber/10 px-3 py-2 text-xs text-terminal-amber">{analysis.horizonTenorMismatch}</p>
           ) : null}
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="DRCR (Put ΣDRC / Call ΣDRC)" value={analysis.drcr === undefined ? "--" : analysis.drcr.toFixed(2)} sub={`Put ${formatCompact(analysis.putDrcTotal)} / Call ${formatCompact(analysis.callDrcTotal)}`} tone={biasTone(analysis.bias)} />
+            {/* A missing DRCR is usually a real market state, not missing
+                data, and "--" cannot tell the two apart. It rendered "--"
+                whenever one side had no qualifying strike - which is exactly
+                when the signal is strongest. Live example, NIFTY 2026-08-20
+                intraday: both calls in the 0.15-0.25 band were being unwound
+                (OI change -2,027,805 and -461,890) while both puts were being
+                written (+605,800, +1,806,220). Negative OI change gives a
+                negative WCI, which cannot clear a positive conviction
+                threshold, so callDrcTotal was 0 and the ratio had no finite
+                value. BANKNIFTY and SENSEX priced a DRCR normally on the same
+                request, so nothing was broken - the panel just looked it.
+                The engine already distinguishes these cases (see
+                readWriterFlow in analytics/strike-matrix.ts); this only
+                surfaces the distinction it was already making. */}
+            <MetricCard label="DRCR (Put ΣDRC / Call ΣDRC)" value={drcrDisplay(analysis)} sub={`Put ${formatCompact(analysis.putDrcTotal)} / Call ${formatCompact(analysis.callDrcTotal)}`} tone={biasTone(analysis.bias)} />
             {/* Deliberately NOT called "Market bias" any more. The Dashboard's
                 own "Chain Bias" chip is a different signal over a different
                 universe (whole chain, both OI directions) and users read the
@@ -415,6 +429,27 @@ function biasTone(bias: StrikeMatrixAnalysis["bias"]): "emerald" | "red" | "ambe
 // qualifying strikes and still rendered as a bias.
 function hasWriterFlow(analysis: StrikeMatrixAnalysis): boolean {
   return analysis.putDrcCount > 0 || analysis.callDrcCount > 0;
+}
+
+// DRCR is put churn over call churn, so one side having no qualifying strike
+// leaves no finite ratio. That is not an error and not missing data - it is
+// the most one-sided reading the metric can produce, and naming it says so.
+// Deliberately NOT rendered as a number: a fabricated value from a zero
+// denominator would classify into a DRCR band and be read as comparable to a
+// real ratio.
+function drcrDisplay(analysis: StrikeMatrixAnalysis): string {
+  if (analysis.drcr !== undefined) {
+    return analysis.drcr.toFixed(2);
+  }
+  const puts = analysis.putDrcCount > 0;
+  const calls = analysis.callDrcCount > 0;
+  if (puts && !calls) {
+    return "Puts only";
+  }
+  if (calls && !puts) {
+    return "Calls only";
+  }
+  return "No flow";
 }
 
 // Band numbers come from DRCR_BANDS in @option-decode/types, the same
