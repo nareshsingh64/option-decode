@@ -1,0 +1,31 @@
+[Unit]
+# Emails when the instance starts and when it shuts down.
+#
+# The box runs on an EventBridge schedule and those transitions were
+# previously silent - the only way to know it had come up was to notice
+# something else failing.
+#
+# Ordering matters. After= the three services on start, so the mail can report
+# whether they actually came up rather than racing them. On shutdown systemd
+# reverses that order, which means ExecStop runs BEFORE they are torn down and
+# can still read their state.
+Description=Email on option-decode instance start and shutdown
+After=network-online.target option-decode-api.service option-decode-worker.service option-decode-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# RemainAfterExit is what makes ExecStop fire at shutdown. Without it the unit
+# is considered dead the moment ExecStart returns, and systemd never runs the
+# stop half.
+RemainAfterExit=yes
+ExecStart=/opt/option-decode/ops/scripts/instance-lifecycle-alert.sh start
+ExecStop=/opt/option-decode/ops/scripts/instance-lifecycle-alert.sh stop
+# Mail is best-effort: an SMTP problem must never delay a shutdown or fail a
+# boot. The script itself swallows failures too - this is the second guard.
+TimeoutStartSec=90
+TimeoutStopSec=90
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

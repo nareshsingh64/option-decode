@@ -74,6 +74,8 @@
 
 set -uo pipefail
 
+NO_RESTART=0
+
 ENV_FILE=/opt/option-decode-native/shared/.env.production
 BACKUP_DIR=/opt/option-decode-native/shared/token-backups
 LOG_TAG="dhan-token-renew"
@@ -93,6 +95,15 @@ while [ $# -gt 0 ]; do
     # real, and RenewToken destroys the current token on success - you cannot
     # "just try it" on this endpoint.
     --test-alert) TEST_ALERT=1 ;;
+    # Persist the new token but do NOT restart api/worker.
+    #
+    # The restart exists so the running services pick up the new token. That is
+    # pointless when the box reboots shortly afterwards - it reads the file at
+    # boot anyway - and it is actively harmful during maintenance: a restart
+    # kills whatever the worker is doing, and on 2026-08-20 exactly that turned
+    # a 26-minute retention DELETE into a three-hour rollback that saturated
+    # the host and left retention seven days behind.
+    --no-restart) NO_RESTART=1 ;;
     # The pre-shutdown run passes a threshold above the 24h token life so it
     # always renews, sending a full-life token into the overnight gap. There
     # is no cost to renewing early - it simply resets the 24h clock.
@@ -477,12 +488,16 @@ mv -f "$TMP" "$ENV_FILE" || die "atomic replace failed"
 log "token persisted to $ENV_FILE (backup kept)"
 
 # --- Restart the holders -------------------------------------------------
+if [ "$NO_RESTART" = "1" ]; then
+  log "--no-restart: token persisted, services left running on the old one (they read the new token at next boot)"
+else
 systemctl restart option-decode-api option-decode-worker || die "token persisted but restart failed - restart api+worker by hand"
 sleep 5
 for u in option-decode-api option-decode-worker; do
   systemctl is-active --quiet "$u" || die "$u did not come back after restart"
 done
 log "api and worker restarted on the new token"
+fi
 
 # Claims only - decoded from the NEW token so the email states the real expiry
 # rather than "24h from now", which would be an assumption.
