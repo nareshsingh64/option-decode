@@ -693,29 +693,49 @@ is dropped (9.16 GB) by migration
 `20260819170000_drop_unused_optioncontracttick_indexes`. Two more were nearly
 dropped with it, and the near-miss is the part worth keeping.
 
-**Scheduled, not yet applied at time of writing.** The migration lands with the
-next deploy; an `at` job on `dhan-ec2` was queued for **Thu 2026-08-20 08:35
-IST** to do that unattended
-(`/opt/option-decode-native/shared/one-shot-index-drop.sh`, log beside it in
-`logs/`, outcome emailed to `TOKEN_ALERT_EMAIL` as `[INDEX DROP] …`). If the
-index is already gone, it ran. Check `sudo atq` and that log before assuming
-either way.
+**NOT YET APPLIED, and it must not go through `migrate deploy`.** The first
+attempt did, on 2026-08-20, and took the API down for four minutes. The
+migration is currently parked outside the release at
+`shared/deferred-migrations/`, so no service start can reach it. Apply it with
+`shared/apply-index-drop.sh --stop-worker`, which does the DDL directly and
+only then records the migration as applied.
 
-**Picking that window is the instructive part** — an unattended deploy restarts
-all three services, so it has to miss three things at once:
+**Why the deploy path failed, because the mechanism generalises.** The drop
+itself takes 0.14s. But it runs in the API's `ExecStartPre`, and a retention
+DELETE had been holding a metadata lock on `OptionContractTick` since the 08:15
+boot — still going 40 minutes later, 850k rows modified. The DDL queued behind
+it, every later query queued behind the DDL, and the API could not start;
+systemd retried every 90s, stacking more attempts. Prisma then recorded the
+killed migration as failed (`P3009`) and refused to start anything until that
+row was cleared — verify `applied_steps_count = 0` and that the index is still
+present before deleting such a row, since that proves nothing was applied.
+
+**A DDL that can block indefinitely must never gate a service start**, however
+fast the DDL itself is. That is the lesson, not the choice of window.
+
+**The retention prune runs at every boot and takes ~40 minutes.** It is a
+worker job, so any morning maintenance collides with it. `--stop-worker` is
+what makes a clean window; waiting it out costs the better part of an hour.
+
+**Picking a window is harder than it looks** — an unattended deploy restarts
+all three services, so it has to miss four things at once:
 
 | avoid | when |
 |---|---|
+| the boot-time retention prune | 08:15 IST + ~40 min |
 | Dhan token renewal | 02:50 / 04:20 / 18:05 UTC (08:20 / 09:50 / 23:35 IST) |
 | market hours | 09:00–23:30 IST (MCX opens before NSE, closes long after) |
 | the host shutdown | 23:45 IST |
 
-The first draft was scheduled for 23:32 IST — after the MCX close, and **three
-minutes before the 23:35 token renewal**. RenewToken is destructive: a 200
-kills the old token instantly, so a service restarting mid-rotation can come up
-holding a dead credential, and with the box shutting down at 23:45 nobody would
-have seen it until morning. 08:35 IST clears all three by a wide margin. The
-script now refuses and emails if a guard trips rather than proceeding.
+The first draft was scheduled for 23:32 IST — three minutes before the 23:35
+token renewal, which is destructive: a 200 from RenewToken kills the old token
+instantly, so a service restarting mid-rotation can come up holding a dead
+credential. Moving it to 08:35 then walked straight into the retention prune,
+which nobody had checked for. **The box is Mon–Fri only** (`journalctl
+--list-boots` shows no weekend boots), so the genuinely clean window is a
+manually started Saturday: no market, no ingest, no shutdown deadline.
+
+Two things a dry run caught that review had not:
 
 Two things a dry run caught that review had not:
 
