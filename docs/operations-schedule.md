@@ -163,6 +163,35 @@ the driver was measuring nothing. A threshold is only ever as trustworthy as
 the measurement feeding it, so the driver now aborts explicitly when a timing
 batch deletes zero rows rather than treating zero as a legitimate rate.
 
+### `.env.production` cannot be sourced by bash
+
+Line 31 is
+
+```
+EMAIL_FROM=Option Decode <support@pytrade.co.in>
+```
+
+unquoted, so `set -a; . ./.env.production` reads `<` as a redirection, aborts
+the source at that line, and **every variable defined after it — including
+`DATABASE_URL` — is silently left unset**. The shell prints one error and
+carries on, so a script that does not check ends up running Prisma with no
+datasource.
+
+That is how the first run dropped the index but failed to record the migration:
+`prisma migrate resolve --applied` died on a validation error nobody read. An
+unrecorded migration is worse than it sounds — the next deploy re-attempts the
+DROP in the API's `ExecStartPre`, the index is already gone, and the API does
+not start.
+
+Grep the one value out instead of sourcing the file:
+
+```bash
+export DATABASE_URL=$(grep -m1 "^DATABASE_URL=" ./.env.production | cut -d= -f2-)
+```
+
+The driver now does this and verifies afterwards that
+`_prisma_migrations` actually has the row, emailing `CHECK NEEDED` if not.
+
 **Expect the prune to be running when the box comes up.** The retention cron is
 still at a time the box is off, so BullMQ replays it as a missed job at worker
 startup — measured 2026-08-22: 152k rows and growing ~22k/minute seven minutes

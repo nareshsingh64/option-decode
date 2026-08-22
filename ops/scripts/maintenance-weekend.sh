@@ -160,7 +160,32 @@ Nothing was changed; the remaining steps did not run."
   if [ -d "$PARKED" ] && [ ! -d "$REL/packages/db/prisma/migrations/$MIG" ]; then
     sudo cp -r "$PARKED" "$REL/packages/db/prisma/migrations/"
   fi
-  ( cd "$REL" && sudo bash -c 'set -a; . ./.env.production; set +a; /usr/bin/pnpm --filter @option-decode/db exec prisma migrate resolve --applied '"$MIG"' --schema prisma/schema.prisma' ) 2>&1 | tail -2
+  # DATABASE_URL is grepped out, NOT sourced.
+  #
+  # `set -a; . ./.env.production` looks obvious and silently does not work:
+  # line 31 is
+  #     EMAIL_FROM=Option Decode <support@pytrade.co.in>
+  # unquoted, so bash reads `<` as a redirection, aborts the source there, and
+  # every variable defined AFTER line 31 - DATABASE_URL among them - is never
+  # set. Prisma then fails with a validation error on env("DATABASE_URL") and
+  # the migration is left unrecorded, which is worse than it sounds: the next
+  # deploy re-attempts the DROP in the API's ExecStartPre, the index is already
+  # gone, and the API will not start.
+  ( cd "$REL" && sudo bash -c 'export DATABASE_URL=$(grep -m1 "^DATABASE_URL=" ./.env.production | cut -d= -f2-); /usr/bin/pnpm --filter @option-decode/db exec prisma migrate resolve --applied '"$MIG"' --schema prisma/schema.prisma' ) 2>&1 | tail -3
+  RECORDED=$(sql "SELECT COUNT(*) FROM _prisma_migrations WHERE migration_name='$MIG' AND finished_at IS NOT NULL;")
+  if [ "${RECORDED:-0}" -eq 0 ]; then
+    mail_step "[MAINT 2/6] CHECK NEEDED - index dropped but migration not recorded" \
+"The index was dropped at $(ist) but `prisma migrate resolve --applied` did not
+record it in _prisma_migrations.
+
+This must be fixed before the next deploy. An unrecorded migration means
+migrate deploy re-attempts the DROP in the API's ExecStartPre, the index is
+already gone, the statement errors, and the API does not start.
+
+  cd /opt/option-decode-native/current
+  sudo bash -c 'export DATABASE_URL=\$(grep -m1 \"^DATABASE_URL=\" ./.env.production | cut -d= -f2-); pnpm --filter @option-decode/db exec prisma migrate resolve --applied $MIG --schema prisma/schema.prisma'"
+    say "WARN: migration not recorded"
+  fi
   state_set 2
   mail_step "[MAINT 2/6] OK - index dropped" \
 "Dropped $IDX at $(ist).
