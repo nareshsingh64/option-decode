@@ -45,6 +45,17 @@ BATCH=100
 RATE_FULL=1500      # rows/sec at or above which the full catch-up runs
 RATE_PARTIAL=500    # below this, stop and report rather than grind
 
+# The batch is selected by a DERIVED SUBQUERY, never GROUP_CONCAT.
+#
+# The first version built an IN list with GROUP_CONCAT. group_concat_max_len is
+# 1024 on this host and 100 cuids need ~2,700 chars, so the list was silently
+# truncated mid-id: the IN clause matched nothing, every batch deleted 0 rows,
+# and the rate came out as 0. Nothing warned - GROUP_CONCAT truncates quietly.
+#
+# Deleting the parent LAST keeps this stable: the first two statements see the
+# same 100 snapshots because OptionChainSnapshot has not been touched yet.
+OLD_SNAPS="SELECT id FROM (SELECT id FROM OptionChainSnapshot WHERE tradingDate < DATE_SUB(CURDATE(), INTERVAL 30 DAY) ORDER BY tradingDate LIMIT $BATCH) t"
+
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 exec >>"$LOG" 2>&1
 
@@ -224,34 +235,49 @@ fi
 # ---------------------------------------------------------------- step 4
 if [ "$FROM" -le 4 ]; then
   say "STEP 4: measure delete rate"
-  IDS=$(sql "SELECT GROUP_CONCAT(CONCAT('\"',id,'\"')) FROM (SELECT id FROM OptionChainSnapshot WHERE tradingDate < DATE_SUB(CURDATE(), INTERVAL 30 DAY) ORDER BY tradingDate LIMIT $BATCH) t;")
-  if [ -z "$IDS" ] || [ "$IDS" = "NULL" ]; then
+  REMAIN=$(overdue_snaps)
+  if [ "${REMAIN:-0}" -eq 0 ]; then
     say "  nothing overdue - retention is already current"
     state_set 5
     mail_step "[MAINT 4/6] OK - nothing to catch up" \
 "No snapshots are past the 30-day retention window at $(ist). The catch-up is
 not needed. Skipping to verification."
   else
-    T0=$(date +%s%3N)
-    ROWS=$(sudo mysql option_decode -N -e "DELETE FROM PressureScore WHERE snapshotId IN ($IDS); DELETE FROM OptionContractTick WHERE snapshotId IN ($IDS); SELECT ROW_COUNT();" 2>/dev/null | tail -1)
-    sql "DELETE FROM OptionChainSnapshot WHERE id IN ($IDS);"
-    T1=$(date +%s%3N)
-    MS=$(( T1 - T0 )); [ "$MS" -lt 1 ] && MS=1
-    RATE=$(( ROWS * 1000 / MS ))
-    say "  deleted ${ROWS} ticks in ${MS}ms -> ${RATE} rows/sec"
+    ROWS=$(sql "SELECT COUNT(*) FROM OptionContractTick WHERE snapshotId IN ($OLD_SNAPS);")
+    ROWS=${ROWS:-0}
+    T0=$(date +%s)
+    sql "DELETE FROM PressureScore WHERE snapshotId IN ($OLD_SNAPS);"
+    sql "DELETE FROM OptionContractTick WHERE snapshotId IN ($OLD_SNAPS);"
+    T1=$(date +%s)
+    sql "DELETE FROM OptionChainSnapshot WHERE id IN ($OLD_SNAPS);"
+    SECS=$(( T1 - T0 )); [ "$SECS" -lt 1 ] && SECS=1
+    RATE=$(( ROWS / SECS ))
+    say "  deleted ${ROWS} ticks in ${SECS}s -> ${RATE} rows/sec"
+    if [ "$ROWS" -eq 0 ]; then
+      mail_step "[MAINT 4/6] FAILED - measurement returned no rows" \
+"The timing batch deleted 0 rows at $(ist), which means the measurement failed
+rather than the database being slow. The run stopped rather than acting on a
+number it does not trust.
+
+Steps 1-3 are complete and unaffected: the index is dropped and the buffer pool
+is at 768 MB."
+      say "ABORT: measurement returned 0 rows"; exit 1
+    fi
     echo "$RATE" > "${STATE}.rate"
     OVER=$(overdue_snaps)
+    PER_SNAP=$(( ROWS / BATCH ))
+    EST_MIN=$(( OVER * PER_SNAP / RATE / 60 ))
     if [ "$RATE" -lt "$RATE_PARTIAL" ]; then
       state_set 4
       mail_step "[MAINT 4/6] STOPPING - delete rate too low" \
 "Measured $RATE rows/sec, below the $RATE_PARTIAL threshold agreed in advance.
 
-  batch            $BATCH snapshots / $ROWS ticks in ${MS}ms
-  still overdue    $OVER snapshots
+  batch          $BATCH snapshots / $ROWS ticks in ${SECS}s
+  still overdue  $OVER snapshots
 
 The buffer pool increase did not buy enough throughput, so the catch-up is NOT
-being forced - grinding at this rate is what produced Thursday's three-hour
-rollback. The index drop and buffer pool change are both done and kept.
+being forced - grinding at this rate is what produced the three-hour rollback
+on 2026-08-20. The index drop and buffer pool change are both done and kept.
 
 Recommendation: let the corrected daily prune (batch 200, 08:35 IST) run ahead
 of intake and close the gap over the coming week instead."
@@ -262,12 +288,14 @@ of intake and close the gap over the coming week instead."
     mail_step "[MAINT 4/6] OK - measured $RATE rows/sec" \
 "Delete rate measured at $(ist).
 
-  batch          $BATCH snapshots / $ROWS ticks in ${MS}ms
+  batch          $BATCH snapshots / $ROWS ticks in ${SECS}s
   rate           $RATE rows/sec
-  mode           $MODE
+  ticks/snapshot $PER_SNAP
   still overdue  $OVER snapshots
+  estimate       ~${EST_MIN} min to clear the whole backlog
+  mode           $MODE
 
-$( [ "$MODE" = full ] && echo "At or above ${RATE_FULL}/sec, so the full catch-up runs." || echo "Between ${RATE_PARTIAL} and ${RATE_FULL}/sec, so it runs until the 17:00 cutoff and the remainder carries to Sunday." )
+$( [ "$MODE" = full ] && echo "At or above ${RATE_FULL}/sec, so the full catch-up runs." || echo "Between ${RATE_PARTIAL} and ${RATE_FULL}/sec, so it runs to the 17:00 cutoff and the remainder carries to Sunday." )
 
 Next: retention catch-up. It stops cleanly at 17:00 regardless of progress."
   fi
@@ -281,11 +309,11 @@ if [ "$FROM" -le 5 ]; then
   DONE=0; BATCHES=0; T_START=$(date +%s)
   while :; do
     if past_deadline; then say "  deadline reached"; break; fi
-    IDS=$(sql "SELECT GROUP_CONCAT(CONCAT('\"',id,'\"')) FROM (SELECT id FROM OptionChainSnapshot WHERE tradingDate < DATE_SUB(CURDATE(), INTERVAL 30 DAY) ORDER BY tradingDate LIMIT $BATCH) t;")
-    [ -z "$IDS" ] || [ "$IDS" = "NULL" ] && { say "  nothing left overdue"; break; }
-    sql "DELETE FROM PressureScore WHERE snapshotId IN ($IDS);"
-    sql "DELETE FROM OptionContractTick WHERE snapshotId IN ($IDS);"
-    sql "DELETE FROM OptionChainSnapshot WHERE id IN ($IDS);"
+    LEFT_NOW=$(overdue_snaps)
+    [ "${LEFT_NOW:-0}" -eq 0 ] && { say "  nothing left overdue"; break; }
+    sql "DELETE FROM PressureScore WHERE snapshotId IN ($OLD_SNAPS);"
+    sql "DELETE FROM OptionContractTick WHERE snapshotId IN ($OLD_SNAPS);"
+    sql "DELETE FROM OptionChainSnapshot WHERE id IN ($OLD_SNAPS);"
     DONE=$(( DONE + BATCH )); BATCHES=$(( BATCHES + 1 ))
     if [ $(( BATCHES % 25 )) -eq 0 ]; then
       say "  $BATCHES batches, ~$DONE snapshots, $(overdue_snaps) still overdue"

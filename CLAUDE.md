@@ -947,6 +947,30 @@ the report first.
   the FK (0 orphans), but `sync-prod-db.sh` imports through mysqldump with
   foreign-key checks off, so a **dev machine can have `SimAccount` rows with no
   `User`** — this one did, and it crashed the first test run.
+- **A safety threshold is only as good as the measurement feeding it.** The
+  maintenance driver refuses to run a bulk delete when it measures under 500
+  rows/sec, on the reasoning that grinding at that rate is what caused a
+  three-hour rollback. On 2026-08-22 it stopped and emailed "delete rate too
+  low" — and the database was fine. Two bugs in the measurement both surfaced
+  as `0 rows/sec`:
+
+  - **`date +%s%3N` returns 19 digits on this host**, not 13. `%3N` is not
+    truncated to milliseconds, so it appends full nanoseconds and every
+    duration derived from it is garbage. Time long operations in whole seconds.
+  - **`group_concat_max_len` is 1024, and `GROUP_CONCAT` truncates
+    silently.** A batch id list built that way needs ~2,700 characters for 100
+    cuids, so it was cut mid-id. A truncated `IN (...)` list is still valid
+    SQL — it just matches nothing, so every batch deleted zero rows and
+    nothing anywhere raised an error. Select batches with a derived subquery,
+    which has no length limit, and delete the parent row last so the child
+    statements see the same set.
+
+  The guard behaved exactly as designed; it was fed a number that meant "the
+  measurement failed", not "the database is slow". Distinguish those: the
+  driver now aborts explicitly when a timing batch deletes zero rows rather
+  than treating zero as a rate. Real numbers from the same run, once fixed:
+  **8,466 rows/sec** against the ~500 assumed before the buffer pool was
+  raised from its 128 MB default.
 - Comments here explain **why**, especially where a fix encodes a real incident
   ("live NIFTY gave 24500 against a spot of 24367"). Match that: a comment that
   restates the code is noise; one that records the failure it prevents is not.

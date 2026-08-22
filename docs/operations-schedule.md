@@ -128,6 +128,41 @@ because of a specific failure:
 - **Resumable.** Progress is recorded per step in
   `shared/maint-state`, so Sunday continues rather than redoing work.
 
+### Two bugs the first run hit, both in the measurement rather than the database
+
+Recorded because each failed *silently* and the second is a general trap.
+
+**`date +%s%3N` yields 19 digits on this host, not 13.** `%3N` is not truncated
+to milliseconds, so it appends full nanoseconds and every duration computed
+from it is nonsense. Time long steps in whole seconds instead; the precision
+was never needed.
+
+**`group_concat_max_len` is 1024, and GROUP_CONCAT truncates without
+warning.** The batch's id list was built with `GROUP_CONCAT` and needs ~2,700
+characters for 100 cuids, so it was cut mid-id. A truncated `IN` list is still
+valid SQL — it simply matches nothing. Every batch deleted zero rows and no
+error was raised anywhere. Select batches with a **derived subquery**, which
+has no length limit:
+
+```sql
+DELETE FROM OptionContractTick WHERE snapshotId IN (
+  SELECT id FROM (
+    SELECT id FROM OptionChainSnapshot
+    WHERE tradingDate < DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    ORDER BY tradingDate LIMIT 100
+  ) t
+);
+```
+
+Delete the parent **last** so the child statements see the same batch.
+
+**The lesson is not either bug — it is that the guard could not tell.** Both
+faults surfaced as `0 rows/sec`, which tripped the below-threshold rule and
+stopped the run with an email saying the database was too slow. It was not:
+the driver was measuring nothing. A threshold is only ever as trustworthy as
+the measurement feeding it, so the driver now aborts explicitly when a timing
+batch deletes zero rows rather than treating zero as a legitimate rate.
+
 **Expect the prune to be running when the box comes up.** The retention cron is
 still at a time the box is off, so BullMQ replays it as a missed job at worker
 startup — measured 2026-08-22: 152k rows and growing ~22k/minute seven minutes
