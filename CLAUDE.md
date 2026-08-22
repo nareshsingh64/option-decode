@@ -693,12 +693,17 @@ is dropped (9.16 GB) by migration
 `20260819170000_drop_unused_optioncontracttick_indexes`. Two more were nearly
 dropped with it, and the near-miss is the part worth keeping.
 
-**NOT YET APPLIED, and it must not go through `migrate deploy`.** The first
-attempt did, on 2026-08-20, and took the API down for four minutes. The
-migration is currently parked outside the release at
-`shared/deferred-migrations/`, so no service start can reach it. Apply it with
-`shared/apply-index-drop.sh --stop-worker`, which does the DDL directly and
-only then records the migration as applied.
+**It must not go through `migrate deploy`.** The first attempt did, on
+2026-08-20, and took the API down for four minutes. The migration is parked
+outside the release at `shared/deferred-migrations/`, so no service start can
+reach it; the drop happens outside Prisma and only then records the migration
+as applied.
+
+Applied on the 2026-08-22 maintenance weekend by
+`ops/scripts/maintenance-weekend.sh` — see `docs/operations-schedule.md`. That
+driver runs the whole six-step weekend unattended and emails after each step;
+the standalone `shared/apply-index-drop.sh --stop-worker` still exists for
+doing the drop alone.
 
 **Why the deploy path failed, because the mechanism generalises.** The drop
 itself takes 0.14s. But it runs in the API's `ExecStartPre`, and a retention

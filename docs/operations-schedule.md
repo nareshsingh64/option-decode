@@ -89,6 +89,54 @@ collision and no shutdown deadline.
 Saturday is for work that holds locks or needs a MySQL restart. Sunday is the
 buffer — for anything that overran, plus verification.
 
+### The work runs itself: `ops/scripts/maintenance-weekend.sh`
+
+Nobody sits with it. The driver runs the whole six-step sequence unattended and
+emails after **every** step, so silence never means "quietly broken".
+
+```bash
+sudo /opt/option-decode/ops/scripts/maintenance-weekend.sh          # run / resume
+sudo /opt/option-decode/ops/scripts/maintenance-weekend.sh --status # progress only
+sudo /opt/option-decode/ops/scripts/maintenance-weekend.sh --from 3 # force a step
+```
+
+| step | what | subject |
+|---|---|---|
+| 1 | stop the worker, wait for the lock to clear | `[MAINT 1/6]` |
+| 2 | drop the dead index, record the migration as applied | `[MAINT 2/6]` |
+| 3 | raise the buffer pool, restart MySQL | `[MAINT 3/6]` |
+| 4 | time one delete batch | `[MAINT 4/6]` |
+| 5 | retention catch-up | `[MAINT 5/6]` |
+| 6 | verify, restart the worker | `[MAINT 6/6]` |
+
+Four properties are load-bearing rather than convenience, and each one exists
+because of a specific failure:
+
+- **A hard 17:00 cutoff.** The token renewal fires 17:30 and the box powers off
+  at 18:00. Nothing may be in flight when either happens — that collision is
+  what produced the three-hour rollback on 2026-08-20. Long steps check the
+  clock and stop cleanly rather than being interrupted.
+- **Auto-rollback on the MySQL restart.** It is the only step that can leave the
+  host with no database. If MySQL does not answer within 60s the previous
+  config is restored and MySQL restarted again, and the mail says `ROLLED BACK`
+  rather than the run simply dying.
+- **The step-4 threshold is a rule, not a judgement call**, because the point
+  of the driver is that nobody is watching: at or above 1,500 rows/sec it runs
+  the full catch-up; between 500 and 1,500 it works to the cutoff and carries
+  the rest to Sunday; **below 500 it stops and reports**. Grinding at a rate
+  that low is exactly what produced Thursday's rollback.
+- **Resumable.** Progress is recorded per step in
+  `shared/maint-state`, so Sunday continues rather than redoing work.
+
+**Expect the prune to be running when the box comes up.** The retention cron is
+still at a time the box is off, so BullMQ replays it as a missed job at worker
+startup — measured 2026-08-22: 152k rows and growing ~22k/minute seven minutes
+after boot. Step 1 handles it, but note that MySQL keeps executing the DELETE
+server-side after the worker stops; it does not notice the dead client
+mid-statement, so the thread has to be killed explicitly. Catching it at 190k
+rather than 850k was the difference between a seven-minute rollback and a
+three-hour one.
+
 **The Dhan token renews itself on a maintenance weekend.** A cron entry at
 12:00 UTC (17:30 IST) on Sat and Sun — thirty minutes before the weekend stop
 — renews with `--no-restart`. It can only fire when the instance happens to be
