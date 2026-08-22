@@ -797,6 +797,49 @@ copy, since InnoDB secondary-index drops are metadata operations. Rebuilding
 one, by contrast, is a long scan. Cheap to remove, expensive to restore: read
 the report first.
 
+### Retention: it had never once completed, and now does (2026-08-22)
+
+`OptionChainSnapshot`/`OptionContractTick` sat **7 days past** their 30-day
+window — 72,844 snapshots, ~55M ticks. Cleared on the first maintenance
+weekend; oldest data is now exactly the cutoff. Four separate faults, each
+enough on its own to stop it:
+
+| fault | was | now |
+|---|---|---|
+| cron fired while the box was off | `0 30 1 * * *` (01:30 UTC, boot is 02:45) | `0 5 3 * * *` = 08:35 IST |
+| batch counted SNAPSHOTS, ~762 ticks each | 5000 → ~2M rows per transaction | 100 → ~76k rows, ~9s |
+| `$transaction` wrapped the deletes | Prisma's 5000ms default, always exceeded | removed — sequential deletes |
+| loop cap | 50 batches, below the ~10k/day intake | 200 → 20,000/run |
+
+**`innodb_buffer_pool_size` was the enabler and is the number to remember.** It
+was the stock **128 MB against a 57.8 GB table** (hit rate 95.5%, where healthy
+is >99%). Raised to **768 MB**, the delete rate went **~500 → 8,466 rows/sec**,
+a 17x change that turned a 12.8-hour backlog into two hours. Before assuming
+any MySQL work here is inherently slow, check what the buffer pool is set to.
+
+Two things that surprise people afterwards:
+
+- **Disk went UP, 95 GB → 99 GB.** Deleting 55M rows returns pages to the
+  tablespace free list, not the filesystem, and undo/redo grew during the run.
+  The space is reusable, so the `.ibd` should now stop growing for a long
+  while — but only `OPTIMIZE TABLE` would shrink the file, and that means
+  rebuilding 91M rows against 46 GB free. Deliberately not done.
+- **The prune is already running when the box boots**, replayed by BullMQ as a
+  missed cron. Stopping the worker is not enough: MySQL keeps executing the
+  DELETE server-side because it does not notice the dead client mid-statement,
+  so the thread needs an explicit `KILL`. Do it early — rollback cost scales
+  with what has accumulated. Killed at 190k rows it took 7 minutes; the same
+  transaction reached 850k on 2026-08-20 and took **three hours**.
+
+**`.env.production` cannot be sourced by bash.** Line 31 is
+`EMAIL_FROM=Option Decode <support@pytrade.co.in>` unquoted, so `<` reads as a
+redirection, the source aborts there, and every variable after it — including
+`DATABASE_URL` — is silently unset. That is how the index drop succeeded while
+`prisma migrate resolve --applied` failed unnoticed, leaving a migration
+unrecorded that would have failed the next deploy's `ExecStartPre`. Grep the
+one value out instead:
+`export DATABASE_URL=$(grep -m1 "^DATABASE_URL=" ./.env.production | cut -d= -f2-)`.
+
 ## Conventions that bite
 
 - **Runtime values crossing into `apps/web`**: `next.config.ts` carries
