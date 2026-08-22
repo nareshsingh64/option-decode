@@ -1075,7 +1075,24 @@ export async function calculateOiWeightedAverageSellPrices(underlyingSymbol: str
 export async function pruneMarketDataBefore(detailCutoff: Date, snapshotCutoff: Date, batchSize = 500, client: PrismaClient = prisma) {
   const totals = { snapshots: 0, ticks: 0, pressureScores: 0 };
 
-  for (let batch = 0; batch < 50; batch += 1) {
+  // NOT wrapped in $transaction, and the loop cap is 200 rather than 50.
+  //
+  // Both were silently capping retention. Prisma's transaction timeout is
+  // 5000ms and a batch here is far larger than that: measured 2026-08-22, a
+  // snapshot carries ~762 ticks, so even a 200-snapshot batch is ~152k rows and
+  // takes ~18s at the post-tuning rate of 8,466 rows/sec. The worker log was
+  // full of "a commit cannot be executed on an expired transaction ... however
+  // 122949 ms passed" - the deletes ran, then the commit was rejected.
+  //
+  // Atomicity buys nothing here anyway. The parent OptionChainSnapshot is not
+  // removed until the second loop below, so a partial delete leaves no orphans
+  // and the next run simply picks up where this one stopped.
+  //
+  // The cap matters for throughput: intake is ~10,000 snapshots/day, so 50
+  // batches could never keep pace at any safe batch size. 200 x 100 = 20,000
+  // per run is twice intake, which is what lets it close a backlog rather than
+  // merely tread water.
+  for (let batch = 0; batch < 200; batch += 1) {
     const targets = await client.optionChainSnapshot.findMany({
       where: { snapshotTime: { lt: detailCutoff }, ticks: { some: {} } },
       orderBy: { snapshotTime: "asc" },
@@ -1086,10 +1103,8 @@ export async function pruneMarketDataBefore(detailCutoff: Date, snapshotCutoff: 
       break;
     }
     const ids = targets.map((snapshot) => snapshot.id);
-    const [pressureScores, ticks] = await client.$transaction([
-      client.pressureScore.deleteMany({ where: { snapshotId: { in: ids } } }),
-      client.optionContractTick.deleteMany({ where: { snapshotId: { in: ids } } })
-    ]);
+    const pressureScores = await client.pressureScore.deleteMany({ where: { snapshotId: { in: ids } } });
+    const ticks = await client.optionContractTick.deleteMany({ where: { snapshotId: { in: ids } } });
     totals.ticks += ticks.count;
     totals.pressureScores += pressureScores.count;
     if (targets.length < batchSize) {
@@ -1097,7 +1112,7 @@ export async function pruneMarketDataBefore(detailCutoff: Date, snapshotCutoff: 
     }
   }
 
-  for (let batch = 0; batch < 50; batch += 1) {
+  for (let batch = 0; batch < 200; batch += 1) {
     const targets = await client.optionChainSnapshot.findMany({
       where: { snapshotTime: { lt: snapshotCutoff } },
       orderBy: { snapshotTime: "asc" },
