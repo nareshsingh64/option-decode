@@ -62,6 +62,8 @@ model User {
   pushSubscriptions PushSubscription[]
   simAccounts    SimAccount[]
   tabAccess      UserTabAccess?
+  brokerCredentials UserBrokerCredential[]
+  liveAccounts      LiveAccount[]
 }
 
 // Role-based tab access: which dashboard tabs a user may see. No row =
@@ -765,4 +767,242 @@ model BacktestRun {
   createdAt        DateTime @default(now())
   startedAt        DateTime?
   finishedAt       DateTime?
+}
+
+// ============================================================
+// Live Order module - REAL orders on a REAL brokerage account.
+//
+// Additive only, exactly as Sim* was added beside Paper*. Nothing above this
+// line changes. The distinction that matters: Sim* is a simulation whose worst
+// failure is a wrong number on a screen, this is money.
+//
+// Design notes and the measurements behind the caps: docs/live-order-module.md
+// ============================================================
+
+enum LiveOrderStatus {
+  LOCAL_PENDING // persisted, not yet sent - correlationId exists, broker does not know
+  SENT          // request issued, no confirmation yet
+  OPEN          // live at the exchange
+  PARTIAL
+  TRADED
+  CANCELLED
+  REJECTED
+  // We do not know. A timeout or 5xx on placement lands here and it is NEVER
+  // retried blindly - the reconciler probes the order book for our own
+  // correlationId and resolves it to TRADED/OPEN/REJECTED, or leaves it for a
+  // human. Retrying an UNKNOWN is how you end up with two live positions.
+  UNKNOWN
+}
+
+enum LivePositionStatus {
+  OPEN
+  CLOSED
+}
+
+// Per-user brokerage credential. The access token is encrypted at rest and
+// never leaves the server - no route returns it, no log line contains it, no
+// email carries it. A JWT in an inbox is a live credential.
+model UserBrokerCredential {
+  id             String    @id @default(cuid())
+  userId         String
+  broker         String    @default("DHAN")
+  // Not a secret - it is an account number, and storing it plain lets the
+  // admin credential-health view work without decrypting anything.
+  brokerClientId String
+  // AES-256-GCM. keyVersion allows the encryption key to be rotated without
+  // a migration: re-encrypt row by row, bump the version.
+  tokenCipher    Bytes
+  tokenIv        Bytes
+  tokenTag       Bytes
+  keyVersion     Int       @default(1)
+  // Decoded from the JWT at save time so expiry can be listed cheaply. An
+  // `exp` claim cannot know the token was revoked server-side, which is why
+  // verifiedAt exists alongside it - see the 2026-08-17 incident where every
+  // run cheerfully reported "10.98h remaining" about a dead credential.
+  tokenExpiresAt DateTime?
+  verifiedAt     DateTime?
+  verifiedOk     Boolean   @default(false)
+  // A partner-minted token cannot be renewed, only regenerated. Checked on
+  // paste, while the user is still at the keyboard and can fix it.
+  renewable      Boolean   @default(false)
+  lastRenewalAt  DateTime?
+  lastRenewalMsg String?   @db.VarChar(255)
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, broker])
+  @@index([tokenExpiresAt])
+}
+
+model LiveAccount {
+  id             String  @id @default(cuid())
+  userId         String
+  brokerClientId String
+  isActive       Boolean @default(true)
+  // Per-account kill switch, independent of LIVE_TRADING_ENABLED. Having a
+  // credential is not the same as being allowed to trade.
+  tradingEnabled Boolean @default(false)
+
+  // Caps are RUPEES OF MARGIN, not lots and not notional.
+  //
+  // Lots are meaningless as a risk unit across this universe - one lot is 20
+  // contracts on SENSEX and 2500 on COPPER. Notional is meaningless for
+  // spreads, whose notional is huge and whose risk is capped by the wings.
+  //
+  // Defaults are sized against a MEASURED balance of Rs 1,27,539.85 (2026-08-30)
+  // where a one-lot naked short costs Rs 1.78-2.50 lakh on every index and
+  // commodity tested - i.e. more than the whole account. See docs.
+  maxOrderMargin     Decimal @default(40000.00) @db.Decimal(16, 2)
+  maxOpenMargin      Decimal @default(60000.00) @db.Decimal(16, 2)
+  dailyLossLimit     Decimal @default(5000.00) @db.Decimal(16, 2)
+  maxMarginUtilPct   Decimal @default(50.00) @db.Decimal(5, 2)
+  maxOrdersPerMinute Int     @default(6)
+  // Naked/undefined-risk structures are blocked outright rather than merely
+  // capped. At the funding above they cannot be placed anyway, so the block
+  // costs nothing and removes the largest blast radius from the first phase.
+  allowUndefinedRisk Boolean @default(false)
+  // Optional per-underlying lot ceiling ON TOP of the rupee caps, e.g.
+  // { "CRUDEOIL": 1, "NIFTY": 2 }.
+  lotCeilings        Json?
+
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  user      User        @relation(fields: [userId], references: [id])
+  orders    LiveOrder[]
+  positions LivePosition[]
+  margins   LiveMarginSnapshot[]
+
+  @@unique([userId, brokerClientId])
+  @@index([userId, isActive])
+}
+
+model LiveOrder {
+  id        String  @id @default(cuid())
+  accountId String
+  // Multi-leg basket grouping, mirroring PaperOrder.groupId.
+  groupId   String?
+  legRole   String  @default("MAIN")
+  // Generated BEFORE the request and persisted first. Unique, so a retry
+  // physically cannot double-fire, and it is what the reconciler matches on
+  // to resolve an UNKNOWN.
+  correlationId String  @unique @db.VarChar(64)
+  brokerOrderId String? @unique @db.VarChar(64)
+
+  underlyingSymbol String
+  expiryLabel      String
+  optionType       OptionType
+  strikePrice      Decimal    @db.Decimal(12, 2)
+  securityId       String
+  exchangeSegment  String     @db.VarChar(16)
+  transactionType  String     @db.VarChar(8)
+  // Stored, never defaulted. MARGIN is carry-forward; INTRADAY is auto-squared
+  // at the cutoff. The margin figure is identical either way (measured), so the
+  // reason this matters is position management, not sizing.
+  productType      String     @db.VarChar(16)
+  orderType        String     @db.VarChar(24)
+
+  lots     Int
+  // Snapshot at placement. Stored ticks carry no lot size and FnoLotSize varies
+  // by contract month, so an order's rupee value must be reconstructible from
+  // the row alone, years later.
+  lotSize  Int
+  // What was ACTUALLY sent: contracts on NSE/BSE, LOTS on MCX. Always from
+  // toBrokerQuantity(). Stored so a 100x MCX sizing bug is auditable after
+  // the fact rather than only reproducible.
+  quantity Int
+  notional Decimal @db.Decimal(16, 2)
+
+  price        Decimal? @db.Decimal(12, 2)
+  triggerPrice Decimal? @db.Decimal(12, 2)
+
+  status          LiveOrderStatus @default(LOCAL_PENDING)
+  brokerStatusRaw String?         @db.VarChar(64)
+  rejectionReason String?         @db.VarChar(255)
+  filledQty       Int             @default(0)
+  avgFillPrice    Decimal?        @db.Decimal(12, 2)
+
+  // What the user was shown when they confirmed - the two-phase preview.
+  quotedAt     DateTime?
+  quotedPrice  Decimal?  @db.Decimal(12, 2)
+  quotedMargin Decimal?  @db.Decimal(16, 2)
+  signalRef    String?
+
+  placedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account LiveAccount      @relation(fields: [accountId], references: [id])
+  events  LiveOrderEvent[]
+
+  @@index([accountId, status])
+  @@index([groupId])
+  @@index([accountId, placedAt])
+}
+
+// Append-only. Never updated, never deleted. With money involved the audit
+// trail matters more than the current-state row it was derived from.
+model LiveOrderEvent {
+  id         String   @id @default(cuid())
+  orderId    String
+  source     String   @db.VarChar(24) // API_RESPONSE | RECONCILE | LOCAL | WS_UPDATE
+  status     String   @db.VarChar(32)
+  payload    Json
+  observedAt DateTime @default(now())
+
+  order LiveOrder @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, observedAt])
+}
+
+model LivePosition {
+  id        String  @id @default(cuid())
+  accountId String
+  groupId   String?
+
+  securityId       String
+  underlyingSymbol String
+  exchangeSegment  String  @db.VarChar(16)
+  expiryLabel      String?
+  optionType       OptionType?
+  strikePrice      Decimal? @db.Decimal(12, 2)
+  tradingSymbol    String?
+
+  // Signed. A short position is negative.
+  netQty       Int
+  // Dhan's costPrice, NOT buyPrice - buyPrice is wrong for anything partially
+  // closed, and their own portfolio guidance says so explicitly.
+  avgCostPrice Decimal @db.Decimal(12, 2)
+  lotSize      Int?
+  // MCX reports a multiplier instead of a lot size. Using the wrong one is a
+  // silent rescale of every rupee figure on the position.
+  multiplier   Int?
+
+  lastPrice     Decimal? @db.Decimal(12, 2)
+  unrealizedPnl Decimal? @db.Decimal(14, 2)
+  realizedPnl   Decimal  @default(0) @db.Decimal(14, 2)
+
+  status       LivePositionStatus @default(OPEN)
+  openedAt     DateTime           @default(now())
+  closedAt     DateTime?
+  reconciledAt DateTime
+
+  account LiveAccount @relation(fields: [accountId], references: [id])
+
+  @@unique([accountId, securityId, status])
+  @@index([accountId, status])
+}
+
+model LiveMarginSnapshot {
+  id        String   @id @default(cuid())
+  accountId String
+  asOf      DateTime
+  source    String   @db.VarChar(16) // DHAN | MODEL
+  totalMargin Decimal @db.Decimal(16, 2)
+  available   Decimal @db.Decimal(16, 2)
+  payload     Json
+
+  account LiveAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, asOf])
 }

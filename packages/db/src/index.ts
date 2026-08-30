@@ -64,5 +64,31 @@ export { disablePushSubscriptionByEndpoint, disablePushSubscriptionsForUser, lis
 export type { PushSubscriptionDto, PushSubscriptionInput } from "./push-repository.js";
 export { ASSIGNABLE_TABS, DEFAULT_TABS, TAB_LABELS, getUserTabs, sanitizeTabs, setUserTabs } from "./tab-access-repository.js";
 export type { AssignableTab } from "./tab-access-repository.js";
+export {
+  LiveCredentialError,
+  LiveOrderRejectedError,
+  LiveTradingDisabledError,
+  cancelLiveOrder,
+  computeLiveMarginView,
+  getBrokerCredentialStatus,
+  getLiveSummary,
+  invalidateLiveClient,
+  placeLiveOrder,
+  previewLiveOrder,
+  reconcileLiveAccount,
+  revokeBrokerCredential,
+  saveBrokerCredential
+} from "./live-repository.js";
+export type {
+  BrokerCredentialStatus,
+  LiveLegInput,
+  LiveMarginLegView,
+  LiveMarginView,
+  LivePlacementResult,
+  LivePreview,
+  LiveReconcileResult,
+  LiveSummary,
+  LiveTicketInput
+} from "./live-repository.js";
 export { getDefaultWatchlist, updateDefaultWatchlist } from "./watchlist-repository.js";
 export type { WatchlistDto } from "./watchlist-repository.js";

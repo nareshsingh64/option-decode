@@ -76,6 +76,7 @@ import { OiBuildupChart } from "./option-chain-charts";
 import { OptionChainPanel } from "./option-chain-panel";
 import { PaperTradingPanel } from "./paper-trading-panel";
 import type { HedgeLegDraft } from "./paper-trading-panel";
+import { LiveOrderPanel } from "./live-order-panel";
 import { PaperTradingProPanel } from "./paper-trading-pro-panel";
 import { PressureEngine } from "./pressure-engine";
 import { ReplayLab } from "./replay-lab";
@@ -461,7 +462,7 @@ interface LiveDashboardProps {
   onNavigateToView?: (view: DashboardView) => void;
 }
 
-export type DashboardView = "dashboard" | "new-dashboard" | "elliott-wave" | "option-chain" | "pressure" | "replay" | "paper" | "paper-pro" | "alerts" | "account" | "admin" | "settings";
+export type DashboardView = "dashboard" | "new-dashboard" | "elliott-wave" | "option-chain" | "pressure" | "replay" | "paper" | "paper-pro" | "live-order" | "alerts" | "account" | "admin" | "settings";
 type NumberFormatMode = "indian" | "metric";
 type QuantityDisplayMode = "lots" | "numbers";
 type VisibleStrikeMode = "vix" | "atm";
@@ -1988,6 +1989,8 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
       {initialView === "paper-pro" ? (
         <PaperTradingProPanel overview={overview} />
       ) : null}
+
+      {initialView === "live-order" ? <LiveOrderPanel /> : null}
 
       {initialView === "replay" ? (
         <ReplayLab

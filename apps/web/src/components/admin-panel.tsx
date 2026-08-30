@@ -18,6 +18,7 @@ const ASSIGNABLE_TAB_LABELS: Array<[string, string]> = [
   ["replay", "Replay Lab"],
   ["paper", "Paper Trading"],
   ["paper-pro", "Paper Trading Pro"],
+  ["live-order", "Live Orders"],
   ["alerts", "Alerts"]
 ];
 

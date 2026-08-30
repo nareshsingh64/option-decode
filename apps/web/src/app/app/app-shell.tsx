@@ -16,6 +16,7 @@ const protectedNavItems: Array<[DashboardView, string, LucideIcon]> = [
   ["replay", "Replay Lab", Play],
   ["paper", "Paper Trading", WalletCards],
   ["paper-pro", "Paper Trading Pro", FlaskConical],
+  ["live-order", "Live Orders", FlaskConical],
   ["alerts", "Alerts", Bell],
   ["account", "Account", UserCircle],
   ["admin", "Admin", ShieldCheck],

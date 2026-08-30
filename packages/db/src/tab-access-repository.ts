@@ -10,7 +10,11 @@ import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "./index.js";
 
-export const ASSIGNABLE_TABS = ["dashboard", "new-dashboard", "elliott-wave", "option-chain", "pressure", "replay", "paper", "paper-pro", "alerts"] as const;
+// "live-order" is assignable but deliberately NOT in DEFAULT_TABS: it places
+// real orders on a real brokerage account, so it must be granted explicitly,
+// per user, by an admin. A tab that appears by default is a tab someone opens
+// by accident.
+export const ASSIGNABLE_TABS = ["dashboard", "new-dashboard", "elliott-wave", "option-chain", "pressure", "replay", "paper", "paper-pro", "live-order", "alerts"] as const;
 
 export type AssignableTab = (typeof ASSIGNABLE_TABS)[number];
 
@@ -25,6 +29,7 @@ export const TAB_LABELS: Record<AssignableTab, string> = {
   replay: "Replay Lab",
   paper: "Paper Trading",
   "paper-pro": "Paper Trading Pro",
+  "live-order": "Live Orders",
   alerts: "Alerts"
 };
 

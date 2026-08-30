@@ -474,6 +474,50 @@ export function getFallbackLotSize(underlyingSymbol: string | null | undefined):
 }
 
 /**
+ * The `quantity` a Dhan order/margin request must carry for this underlying.
+ *
+ * NSE and BSE want CONTRACTS (lots x lot size). MCX wants LOTS. This is not a
+ * guess - measured against the live margin calculator on 2026-08-30, linear
+ * across three points on CRUDEOIL (lot 100):
+ *
+ *   quantity 1   -> Rs   2,49,675
+ *   quantity 2   -> Rs   4,99,350
+ *   quantity 100 -> Rs 2,49,67,500
+ *
+ * while BANKNIFTY quantity 30 priced as exactly one lot of 30 (leverage 9.78 x
+ * Rs 1,78,392 = Rs 17.4L = 58,000 x 30).
+ *
+ * So the obvious formula - lots * lotSize, correct everywhere else in this repo
+ * - sends an MCX order ONE HUNDRED TIMES too large. It does not error. It fills.
+ * Dhan's own portfolio guidance hints at this ("use the multiplier, not lot
+ * size, for MCX_COMM") and this is what that means at the order layer.
+ *
+ * Never compute an order quantity inline. Call this.
+ */
+export function toBrokerQuantity(underlyingSymbol: string, lots: number): number {
+  if (!Number.isInteger(lots) || lots <= 0) {
+    throw new Error(`toBrokerQuantity needs a positive whole number of lots, got ${lots}`);
+  }
+  if (MCX_UNDERLYINGS.has(String(underlyingSymbol ?? "").toUpperCase())) {
+    return lots;
+  }
+  return lots * getFallbackLotSize(underlyingSymbol);
+}
+
+/**
+ * Inverse of {@link toBrokerQuantity} - what a broker-reported quantity means
+ * in lots. Needed when reconciling against Dhan's own position/order book,
+ * which reports in whatever unit that exchange uses.
+ */
+export function fromBrokerQuantity(underlyingSymbol: string, quantity: number): number {
+  if (MCX_UNDERLYINGS.has(String(underlyingSymbol ?? "").toUpperCase())) {
+    return quantity;
+  }
+  const lotSize = getFallbackLotSize(underlyingSymbol);
+  return lotSize > 0 ? quantity / lotSize : quantity;
+}
+
+/**
  * Short-option margin model. ONE definition, used by Paper Trade Pro's live
  * buying power and by the backtests, because the two disagreeing is precisely
  * how the bug below survived.

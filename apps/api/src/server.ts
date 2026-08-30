@@ -17,6 +17,7 @@ import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureSco
 import { isExpiryInPast, isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
 import { getLiveTicks } from "./live-tick-cache.js";
+import { registerLiveRoutes } from "./live-routes.js";
 import { registerSimRoutes } from "./sim-routes.js";
 
 const config = loadConfig();
@@ -1201,6 +1202,7 @@ app.get("/api/paper/summary", async (request, reply) => {
 // Paper Trading Pro (seller strategy simulator) - separate module, all
 // routes under /api/sim/*. See sim-routes.ts.
 registerSimRoutes(app, getRequestUser);
+registerLiveRoutes(app, getRequestUser);
 
 app.get("/api/watchlist/default", async () => getDefaultWatchlist());
 

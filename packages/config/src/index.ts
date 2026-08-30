@@ -13,6 +13,21 @@ const envSchema = z.object({
   DHAN_ACCESS_TOKEN: z.string().min(1),
   DHAN_API_BASE_URL: z.string().url().default("https://api.dhan.co"),
   MARKET_TIMEZONE: z.string().default("Asia/Kolkata"),
+
+  // --- Live Order module -------------------------------------------------
+  // Master kill switch. Default FALSE, and it must stay false by default:
+  // this is what makes the module safe to merge before it is safe to use.
+  // When false every /api/live/* route 403s and the tab does not render.
+  LIVE_TRADING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase())),
+  // AES-256-GCM key for broker access tokens at rest, 32 bytes as base64 or
+  // hex. Optional here so the app still boots without it - the credential
+  // routes fail loudly instead, which is better than refusing to start the
+  // whole API over a feature that is off by default.
+  //   openssl rand -base64 32
+  LIVE_BROKER_ENCRYPTION_KEY: z.string().trim().optional(),
   FEED_UNDERLYINGS: z.string().default("NIFTY,BANKNIFTY"),
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SNAPSHOT_CRON_PATTERN: z.string().trim().optional(),
