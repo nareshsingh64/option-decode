@@ -413,9 +413,23 @@ export class DhanClient {
       "/v2/margincalculator/multi",
       {
         includePosition: false,
-        includeOrders: false,
+        // `scripList` and `includeOrder`, NOT `scripts` and `includeOrders`.
+        // Both were wrong here until 2026-08-30, which is why no PaperOrder or
+        // PaperPosition row has ever carried a marginRequired figure - 195 and
+        // 180 rows respectively, all NULL. The call failed silently because
+        // this module treats margin as informational and swallows the error.
+        //
+        // Dhan's own docs contradict themselves on this page: the curl example
+        // uses scripList/includeOrder while the structured spec beside it uses
+        // scripts/includeOrders. The official Python client settles it -
+        // dhan-oss/DhanHQ-py, src/dhanhq/_funds.py margin_calculator_multi().
+        // Do NOT "correct" these names back from the documentation.
+        //
+        // Note includePosition IS singular, right next to a flag that is not.
+        // That inconsistency is Dhan's, and it is why the typo read as correct.
+        includeOrder: false,
         dhanClientId: this.options.clientId,
-        scripts: legs.map((leg) => ({
+        scripList: legs.map((leg) => ({
           exchangeSegment: leg.exchangeSegment ?? "NSE_FNO",
           transactionType: leg.transactionType,
           quantity: leg.quantity,
