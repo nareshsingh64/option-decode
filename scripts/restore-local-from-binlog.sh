@@ -1,83 +1,173 @@
 #!/bin/bash
 #
-# Point-in-time restore of the LOCAL option_decode database from binlogs.
+# Recover option-chain history that is OLDER than production's retention, by
+# replaying MySQL binlogs into a scratch database and copying across only the
+# rows the live database is missing.
 #
 # Why this exists
 # ---------------
-# On 2026-08-30 a `prisma migrate dev` run against this database detected drift
-# (the deferred OptionContractTick index drop, applied out-of-band by design)
-# and, with no TTY to prompt, reset the database - dropping and recreating all
-# 38 tables. The local DB is NOT disposable: sync-prod-db.sh appends and never
-# deletes precisely because production prunes at SNAPSHOT_RETENTION_DAYS=30, so
-# for anything older than ~30 days local is the only copy in existence.
+# On 2026-08-30 a `prisma migrate dev` run against the local database detected
+# drift (the deferred OptionContractTick index drop, applied outside Prisma by
+# design) and, with no TTY to prompt on, reset it - all 38 tables dropped and
+# recreated empty.
 #
-# NEVER run `prisma migrate dev` against this database. Use
-# `prisma migrate diff` to generate the SQL and apply it directly - that is what
-# the accompanying Live Order migration did, safely, minutes later.
+# NEVER run `prisma migrate dev` against this database. Generate the SQL with
+# `prisma migrate diff` and apply it directly.
 #
-# What it does
-# ------------
-# Replays every binlog from the start of retained history up to the instant
-# BEFORE the reset, restoring the database to its 2026-08-30 19:55:00 state.
+# sync-prod-db.sh recovered everything production still holds, which on
+# 2026-08-30 reached back to 2026-07-23. It cannot go further, because
+# production prunes at SNAPSHOT_RETENTION_DAYS=30 and local is the only archive
+# beyond that. The binlogs, however, still contain inserts back to ~2026-06-22 -
+# roughly a month of history that exists nowhere else.
 #
-#   --database=option_decode   drops the prisma shadow-database DDL on the floor
-#   no --force                 a restore that silently skips failing statements
-#                              is worse than one that stops and says so
+# Why a scratch database rather than a direct replay
+# --------------------------------------------------
+# The live database is no longer empty: the sync restored 2026-07-23 onwards.
+# Replaying binlog INSERTs straight back in would collide on primary keys and
+# abort partway, and `mysqlbinlog --idempotent` would "fix" that by REPLACING
+# freshly-synced rows with older copies of themselves - trading one corruption
+# for a quieter one. So the replay lands in a scratch database and only rows
+# strictly older than what the live database already has are copied over, with
+# INSERT IGNORE, parents before children.
 #
-# Binlogs are ROW format with a 30-day retention (binlog_expire_logs_seconds),
-# so this window closes around 2026-09-02. After that the only recovery is
-# sync-prod-db.sh, which cannot reach further back than production's own 30 days.
+# Requires MySQL SUPER or REPLICATION_APPLIER: mysqlbinlog's output sets session
+# GTID variables. The application user deliberately has neither, so this runs as
+# an administrator and is not something the app can do to itself.
 #
-# Usage:  scripts/restore-local-from-binlog.sh [stop-datetime]
+# The window closes with binlog retention (binlog_expire_logs_seconds, 30 days
+# here) - around 2026-09-02 for the oldest data.
+#
+# Usage:
+#   scripts/restore-local-from-binlog.sh --dry-run
+#   scripts/restore-local-from-binlog.sh
+#   scripts/restore-local-from-binlog.sh --keep-scratch    # leave it for inspection
 #
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$REPO_ROOT/.env.local"
 BINLOG_DIR="${BINLOG_DIR:-/opt/homebrew/var/mysql}"
-STOP_AT="${1:-2026-08-30 19:55:00}"
+DB_NAME="${DB_NAME:-option_decode}"
+SCRATCH="${SCRATCH_DB:-option_decode_binlog_restore}"
+ADMIN_USER="${MYSQL_ADMIN_USER:-root}"
+# Everything at or after the reset is the reset itself, so the replay stops here.
+STOP_AT="${STOP_AT:-2026-08-30 19:55:00}"
 LOG="${RESTORE_LOG:-$REPO_ROOT/.restore-binlog.log}"
 
-# .env.local cannot be sourced - the same trap .env.production has, where an
-# unquoted value containing a shell metacharacter aborts the source and leaves
-# everything after it silently unset. Grep the one value out instead.
-DB_URL="$(grep -m1 '^DATABASE_URL=' "$ENV_FILE" | cut -d= -f2-)"
-if [ -z "$DB_URL" ]; then
-  echo "No DATABASE_URL in $ENV_FILE" >&2
-  exit 1
-fi
-DB_USER="$(printf '%s' "$DB_URL" | sed 's|.*://||; s|:.*||')"
-DB_PASS="$(printf '%s' "$DB_URL" | sed 's|.*://[^:]*:||; s|@.*||')"
-DB_NAME="$(printf '%s' "$DB_URL" | sed 's|.*/||; s|?.*||')"
-
-# Keep the password out of the process list and off the command line.
-MYCNF="$(mktemp)"
-trap 'rm -f "$MYCNF"' EXIT
-printf '[client]\nuser=%s\npassword=%s\nhost=127.0.0.1\n' "$DB_USER" "$DB_PASS" > "$MYCNF"
-chmod 600 "$MYCNF"
-
-log () { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
-
-log "restore starting -> $DB_NAME, stopping before $STOP_AT"
-
-for n in $(seq -f "%06g" 1 24); do
-  f="$BINLOG_DIR/binlog.$n"
-  [ -f "$f" ] || continue
-  started=$(date +%s)
-  if ! mysqlbinlog --database="$DB_NAME" "$f" 2>>"$LOG" \
-       | mysql --defaults-extra-file="$MYCNF" "$DB_NAME" 2>>"$LOG"; then
-    log "FAILED on binlog.$n - stopping"
-    exit 1
-  fi
-  log "done binlog.$n ($(( $(date +%s) - started ))s)"
+DRY_RUN=0
+KEEP_SCRATCH=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)      DRY_RUN=1 ;;
+    --keep-scratch) KEEP_SCRATCH=1 ;;
+    *) echo "unknown flag: $arg" >&2; exit 2 ;;
+  esac
 done
 
-# The final file straddles the reset, so it is the only one that needs a stop.
-log "final file: binlog.000025, stopping before the reset"
-if ! mysqlbinlog --database="$DB_NAME" --stop-datetime="$STOP_AT" "$BINLOG_DIR/binlog.000025" 2>>"$LOG" \
-     | mysql --defaults-extra-file="$MYCNF" "$DB_NAME" 2>>"$LOG"; then
-  log "FAILED on binlog.000025 - stopping"
+log () { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
+adm () { mysql -u "$ADMIN_USER" "$@"; }
+# Scratch replay only. Writing ~32GB of binlog to reconstruct a throwaway
+# database is pure waste, and it would push the retention window - the very
+# thing this script is racing - along faster. The final copy into the LIVE
+# database deliberately keeps binlogging ON, so the recovered rows are
+# themselves recoverable.
+adm_nobinlog () { mysql -u "$ADMIN_USER" --init-command="SET sql_log_bin=0" "$@"; }
+
+adm -e "SELECT 1" >/dev/null 2>&1 || {
+  echo "Cannot connect as '$ADMIN_USER'. This script needs SUPER or REPLICATION_APPLIER:" >&2
+  echo "mysqlbinlog's stream sets session GTID variables, which the app user cannot do." >&2
+  exit 1
+}
+
+# What is the live database actually missing? Everything strictly older than its
+# own oldest snapshot. Computing this rather than hardcoding a date means the
+# script stays correct as sync-prod-db.sh moves the boundary.
+CUTOFF="$(adm -N -e "SELECT DATE_FORMAT(MIN(tradingDate),'%Y-%m-%d') FROM \`$DB_NAME\`.OptionChainSnapshot;" 2>/dev/null)"
+if [ -z "$CUTOFF" ] || [ "$CUTOFF" = "NULL" ]; then
+  log "the live database has no snapshots at all - run sync-prod-db.sh first"
   exit 1
 fi
+log "live database currently starts at $CUTOFF; recovering rows strictly older than that"
 
-log "REPLAY COMPLETE"
+if [ "$DRY_RUN" = "1" ]; then
+  log "dry run: would replay $(ls "$BINLOG_DIR"/binlog.0* 2>/dev/null | grep -c .) binlog files into $SCRATCH"
+  log "dry run: would then copy rows with tradingDate < $CUTOFF into $DB_NAME"
+  exit 0
+fi
+
+# --- 1. Scratch database with the live schema, no data ---------------------
+log "creating scratch database $SCRATCH"
+adm -e "DROP DATABASE IF EXISTS \`$SCRATCH\`; CREATE DATABASE \`$SCRATCH\`;" || exit 1
+mysqldump -u "$ADMIN_USER" --no-data --routines=FALSE --triggers=FALSE "$DB_NAME" \
+  | adm_nobinlog "$SCRATCH" || { log "schema clone failed"; exit 1; }
+log "schema cloned"
+
+# --- 2. Replay every binlog into the scratch database ----------------------
+# --rewrite-db keeps the real database untouched no matter what the stream
+# contains. --force so a row event for a table whose shape has since changed
+# skips rather than aborting the whole restore.
+for f in "$BINLOG_DIR"/binlog.0*; do
+  case "$f" in *.index) continue ;; esac
+  [ -f "$f" ] || continue
+  started=$(date +%s)
+  # --database MUST name the POST-rewrite database. mysqlbinlog applies
+  # --rewrite-db first and then filters, so filtering on the original name
+  # silently discards every event and the restore "succeeds" having done
+  # nothing at all - which is exactly what happened on the first run here.
+  mysqlbinlog --rewrite-db="$DB_NAME->$SCRATCH" \
+              --database="$SCRATCH" \
+              --stop-datetime="$STOP_AT" \
+              "$f" 2>>"$LOG" \
+    | adm_nobinlog --force "$SCRATCH" 2>>"$LOG"
+  log "replayed $(basename "$f") ($(( $(date +%s) - started ))s)"
+done
+
+RECOVERED="$(adm -N -e "SELECT COUNT(*) FROM \`$SCRATCH\`.OptionChainSnapshot WHERE tradingDate < '$CUTOFF';" 2>/dev/null || echo 0)"
+log "scratch holds $RECOVERED snapshot rows older than $CUTOFF"
+if [ "${RECOVERED:-0}" -eq 0 ]; then
+  log "nothing older than the live database was recovered - leaving it untouched"
+  [ "$KEEP_SCRATCH" = "1" ] || adm -e "DROP DATABASE \`$SCRATCH\`;"
+  exit 0
+fi
+
+# --- 3. Copy across, parents before children -------------------------------
+# INSERT IGNORE throughout: anything already present wins, so a freshly synced
+# row is never overwritten by an older copy of itself from the binlog.
+log "copying rows older than $CUTOFF into $DB_NAME"
+adm "$DB_NAME" <<SQL 2>>"$LOG"
+INSERT IGNORE INTO \`$DB_NAME\`.Underlying  SELECT * FROM \`$SCRATCH\`.Underlying;
+INSERT IGNORE INTO \`$DB_NAME\`.Expiry      SELECT * FROM \`$SCRATCH\`.Expiry;
+INSERT IGNORE INTO \`$DB_NAME\`.OptionContract SELECT * FROM \`$SCRATCH\`.OptionContract;
+
+INSERT IGNORE INTO \`$DB_NAME\`.OptionChainSnapshot
+  SELECT * FROM \`$SCRATCH\`.OptionChainSnapshot WHERE tradingDate < '$CUTOFF';
+
+-- Restricted to the OLD snapshots specifically. Joining on the live snapshot
+-- table alone would match every tick whose parent now exists - including the
+-- Jul 23+ rows the sync already restored - so INSERT IGNORE would grind through
+-- tens of millions of rows to discard nearly all of them.
+INSERT IGNORE INTO \`$DB_NAME\`.OptionContractTick
+  SELECT t.* FROM \`$SCRATCH\`.OptionContractTick t
+  JOIN \`$DB_NAME\`.OptionChainSnapshot s
+    ON s.id = t.snapshotId AND s.tradingDate < '$CUTOFF';
+
+INSERT IGNORE INTO \`$DB_NAME\`.PressureScore
+  SELECT p.* FROM \`$SCRATCH\`.PressureScore p
+  JOIN \`$DB_NAME\`.OptionChainSnapshot s
+    ON s.id = p.snapshotId AND s.tradingDate < '$CUTOFF';
+SQL
+
+adm -e "
+SELECT COUNT(*) AS snapshots, MIN(tradingDate) AS oldest, MAX(tradingDate) AS newest
+FROM \`$DB_NAME\`.OptionChainSnapshot;
+SELECT COUNT(*) AS ticks FROM \`$DB_NAME\`.OptionContractTick;
+SELECT COUNT(*) AS orphaned_ticks FROM \`$DB_NAME\`.OptionContractTick t
+  LEFT JOIN \`$DB_NAME\`.OptionChainSnapshot s ON s.id = t.snapshotId WHERE s.id IS NULL;" | tee -a "$LOG"
+
+if [ "$KEEP_SCRATCH" = "1" ]; then
+  log "leaving $SCRATCH in place (--keep-scratch)"
+else
+  adm -e "DROP DATABASE \`$SCRATCH\`;"
+  log "scratch database dropped"
+fi
+
+log "RESTORE COMPLETE"
