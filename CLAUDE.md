@@ -799,10 +799,34 @@ the report first.
 
 ### Retention: it had never once completed, and now does (2026-08-22)
 
+**Measure it by TICKS DELETED PER RUN, not by snapshot count.** This trips
+people up, including on 2026-08-29 when a count of "54,126 snapshots overdue"
+was read as the prune having silently stopped. It had not — it was completing
+every weekday and removing ~4.1M ticks a night.
+
+`pruneMarketDataBefore` uses **two different cutoffs**, and that is the whole
+confusion:
+
+| loop | deletes | cutoff | days |
+|---|---|---|---|
+| 1 | `PressureScore` + `OptionContractTick` | `detailCutoff` = `SNAPSHOT_RETENTION_DAYS` | 30 |
+| 2 | `OptionChainSnapshot` rows | `snapshotCutoff` = `SPOT_PRICE_RETENTION_DAYS` | **180** |
+
+So `snapshots: 0` in the completion log is **correct behaviour**, not a
+failure: the parent rows are tiny and are deliberately kept six months so a
+snapshot's own metadata outlives its detail. Capture began ~2026-07-14, so
+nothing qualifies for loop 2 until January. Counting
+`OptionChainSnapshot WHERE tradingDate < now - 30 days` therefore measures a
+cutoff that does not apply to those rows, and the number only ever grows.
+
+The healthy signal is the `ticks` figure on
+`Snapshot retention cleanup completed` — ~4M a night through late August.
+
+The history below is what it took to get there.
+
 `OptionChainSnapshot`/`OptionContractTick` sat **7 days past** their 30-day
 window — 72,844 snapshots, ~55M ticks. Cleared on the first maintenance
-weekend; oldest data is now exactly the cutoff. Four separate faults, each
-enough on its own to stop it:
+weekend. Four separate faults, each enough on its own to stop it:
 
 | fault | was | now |
 |---|---|---|
