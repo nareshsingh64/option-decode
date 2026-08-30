@@ -175,23 +175,56 @@ failure path — a JWT is ~300 chars, and truncating there could destroy the
 only copy in existence. That is not hypothetical: the first probe run consumed
 a live token and it was recovered by pasting from the log.
 
-**Renewal runs at 08:20 and 23:35 IST, Mon–Fri — not every 12 hours.** The
-times are pinned to the EC2 window (08:15 boot, **23:45** shutdown — this file
-said 23:55 until 2026-08-20; the real figure is from `journalctl --list-boots`,
-where `poweroff.target` is reached at 18:15:34 UTC on every single boot, so the
-renewal has a **10**-minute margin rather than 20), not to a
-clock. 23:35 is 20 minutes before shutdown specifically so a full-life token
-goes into the overnight gap; a literal 12-hourly cadence would put one run in
-the middle of the night when the box is off, and it would simply never fire.
-Both runs pass `--threshold-hours 25` so they renew unconditionally.
+**Four renewal runs, and none of them is a 12-hourly cadence.** Times are
+pinned to the EC2 window (08:15 boot, 23:50 shutdown), not to a clock — a
+literal 12-hourly schedule would put a run in the middle of the night when the
+box is off, and it would simply never fire.
 
-**Monday morning always needs a manual token, and no cron can fix that.**
-Friday's 23:35 renewal produces a token good until Saturday 23:35; the box is
-off from Friday 23:45 to Monday 08:15, which is 56 hours against a 24-hour
-token. An expired token cannot be renewed, only regenerated at web.dhan.co.
+| cron (UTC) | IST | flags | why |
+|---|---|---|---|
+| `47 2 * * 1-5` | 08:17 | `--threshold-hours 25` | restarts api+worker, **before** the 08:35 prune |
+| `20 4 * * 1-5` | 09:50 | `--threshold-hours 14` | safety net; exits quietly if 08:17 worked |
+| `2 18 * * 1-5` | 23:32 | `25`, **`--no-restart`** | after the 23:30 MCX close, clears the 23:40 settlement pass |
+| `0 12 * * 6,0` | **17:30 Sat + Sun** | `25`, **`--no-restart`** | maintenance weekends only |
+
+`--threshold-hours 25` exceeds the 24h token life, so those runs renew
+unconditionally. Renewing early costs nothing and resets the clock well before
+it can run down.
+
+**08:17, not 08:20.** The renewal restarts api and worker, and it used to fire
+five minutes *after* the boot-time retention prune began — killing it
+mid-transaction every weekday. On 2026-08-20 that produced a three-hour
+rollback. It now lands before the prune starts.
+
+**`--no-restart` on the evening and weekend runs is load-bearing.** The restart
+exists only so running services pick up the new token, which is pointless 18
+minutes before a shutdown that re-reads the file at boot anyway — and during
+maintenance it is actively dangerous, because restarting the worker kills
+whatever long database work is in flight.
+
+**The weekend entry can only fire when it is wanted.** 17:30 on a Saturday is a
+time the instance is running only if someone deliberately started it, i.e. on a
+maintenance weekend (`docs/operations-schedule.md`). On the other three
+weekends the box is off and the entry is never reached, so it costs nothing. It
+sits 30 minutes before `option-decode-weekend-stop` at 18:00, which is enough
+margin for the retries and the email.
+
+**Monday normally needs a manual token, and a maintenance weekend removes
+that.** Friday's 23:32 renewal produces a token good until Saturday 23:32; the
+box is off from Friday 23:50 to Monday 08:15, which is 56.5 hours against a
+24-hour token. An expired token cannot be renewed, only regenerated at
+web.dhan.co, so an ordinary weekend still needs a Sunday-evening paste. But on
+a weekend the box *is* running, Sunday's 17:30 run carries a full-life token
+into Monday and no paste is needed.
+
+Two practical notes from 2026-08-30: starting the box after 17:30 means the
+cron has already passed, so run
+`sudo /opt/option-decode/ops/scripts/dhan-token-renew.sh --threshold-hours 25`
+by hand. And `--dry-run` reports hours remaining without touching the token,
+which is the safe way to check before deciding whether to spend one.
+
 The post-boot run is written to fail loudly with `MANUAL ACTION REQUIRED`
-rather than leave a wall of 401s. A Sunday-evening paste covers Monday and
-lets cron carry the rest of the week.
+rather than leave a wall of 401s.
 
 A token is only renewable if it was minted from Dhan Web: `tokenConsumerType`
 `SELF` and an empty `partnerId`. The script's preflight refuses a partner
@@ -235,7 +268,8 @@ response is judged the OPPOSITE way round there — before RenewToken the old
 token is still alive, so a 4xx is real news and stops the run, while a 5xx must
 NOT block a legitimate renewal.
 
-**Schedule note.** Both 502s hit the 08:20 IST run and both 23:35 runs were
+**Schedule note** (times here are the pre-2026-08-20 schedule, 08:20/23:35 —
+now 08:17/23:32). Both 502s hit the 08:20 IST run and both 23:35 runs were
 clean, which looks like a Dhan maintenance window — but the cron only ever
 probes at those two times, so that is 2 observations against 2, not evidence.
 The app's own Dhan calls show 5 5xx across ~127k requests over six days, and
@@ -728,9 +762,9 @@ all three services, so it has to miss four things at once:
 | avoid | when |
 |---|---|
 | the boot-time retention prune | 08:15 IST + ~40 min |
-| Dhan token renewal | 02:50 / 04:20 / 18:05 UTC (08:20 / 09:50 / 23:35 IST) |
+| Dhan token renewal | 02:47 / 04:20 / 18:02 UTC (08:17 / 09:50 / 23:32 IST), plus 12:00 UTC (17:30 IST) Sat+Sun |
 | market hours | 09:00–23:30 IST (MCX opens before NSE, closes long after) |
-| the host shutdown | 23:45 IST |
+| the host shutdown | 23:50 IST |
 
 The first draft was scheduled for 23:32 IST — three minutes before the 23:35
 token renewal, which is destructive: a 200 from RenewToken kills the old token
@@ -949,8 +983,9 @@ one value out instead:
   - A **second EOD pass at 23:40 IST** (`sim-eod-mtm:mark-mcx`). The 15:45 run
     is four minutes after the NSE close but *before* MCX has finished trading,
     so without an evening pass a commodity still could not settle until the
-    next day. 23:40 clears the 23:30 close and beats the host's 23:45 shutdown
-    — by **five minutes**, not the fifteen this file used to imply. Verified
+    next day. 23:40 clears the 23:30 close and beats the host's 23:50 shutdown
+    — by **ten minutes**. It was five until the EventBridge stop was moved from
+    23:45 on 2026-08-20, precisely because five was too thin. Verified
     still completing (2026-08-20: `sim-eod-mtm:mark-mcx` present in the worker
     log, no OPEN sim trade past its expiry), but it is a thin margin and any
     work added to that pass eats into it.
@@ -1107,7 +1142,7 @@ Sign off with the `Co-Authored-By` trailer. Commit and push only when asked.
   - **Nothing restarts the worker any more.** Every number in this whole entry,
     including the 45 minutes above, is a peak reached *within* a bounded
     generation. From 2026-08-20 the worker runs from the 08:15 IST boot to the
-    23:45 shutdown — roughly a 15-hour generation. Slow accumulation that
+    23:50 shutdown — roughly a 15-hour generation. Slow accumulation that
     7-minute restarts were concealing gets its first chance to appear. The
     figure to read is the trend in per-scan before→after deltas across that
     whole generation, not any single peak.
