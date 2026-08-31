@@ -36,7 +36,10 @@ import {
   revokeBrokerCredential,
   saveBrokerCredential
 } from "@option-decode/db";
-import type { AuthUserDto } from "@option-decode/db";
+import type { AuthUserDto, LiveMarkLookup } from "@option-decode/db";
+import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
+import type Redis from "ioredis";
+import { getLiveTicks } from "./live-tick-cache.js";
 
 // securityId and price are OPTIONAL: the browser identifies a leg by strike and
 // the server resolves the contract. Keeping Dhan security ids out of the client
@@ -86,6 +89,39 @@ const consentCallbackSchema = z.object({
 type GetRequestUser = (cookieHeader: string | undefined) => Promise<AuthUserDto | null>;
 
 /**
+ * Builds the live-mark lookup the summary uses to price open positions.
+ *
+ * Reads the worker's Redis tick cache, so a 1-second poll costs one MGET and no
+ * broker call. Positions the feed has nothing fresh for simply keep Dhan's own
+ * unrealised figure from the last reconcile - a cold cache degrades to the
+ * slower number rather than to a blank.
+ */
+async function buildMarkLookup(
+  positions: Array<Record<string, unknown>>,
+  redis: Redis
+): Promise<LiveMarkLookup | undefined> {
+  const keys = positions
+    .map((position) => ({
+      segment: String(position.exchangeSegment ?? "") as DhanLiveFeedExchangeSegment,
+      securityId: Number(position.securityId ?? 0)
+    }))
+    .filter((key) => key.segment && Number.isFinite(key.securityId) && key.securityId > 0);
+  if (!keys.length) return undefined;
+
+  const ticks = await getLiveTicks(redis, keys);
+  if (!ticks.size) return undefined;
+
+  const bySecurityId = new Map<string, number>();
+  for (const [key, tick] of ticks) {
+    const ltp = tick.ltp;
+    if (ltp !== undefined && Number.isFinite(ltp)) {
+      bySecurityId.set(String(key.split(":")[1] ?? ""), ltp);
+    }
+  }
+  return (securityId: string) => bySecurityId.get(securityId);
+}
+
+/**
  * Map our error classes onto status codes.
  *
  *   403 - the switch is off, or this account is not cleared
@@ -109,7 +145,11 @@ function sendError(reply: FastifyReply, error: unknown): FastifyReply | undefine
   return undefined;
 }
 
-export function registerLiveRoutes(app: FastifyInstance, getRequestUser: GetRequestUser): void {
+export function registerLiveRoutes(
+  app: FastifyInstance,
+  getRequestUser: GetRequestUser,
+  redisCache: Redis
+): void {
   // Wraps the auth check so no handler can forget it. Returns null when the
   // response has already been sent.
   const requireUser = async (cookieHeader: string | undefined, reply: FastifyReply): Promise<AuthUserDto | null> => {
@@ -228,7 +268,12 @@ export function registerLiveRoutes(app: FastifyInstance, getRequestUser: GetRequ
     const user = await requireUser(request.headers.cookie, reply);
     if (!user) return;
     try {
-      return await getLiveSummary(user);
+      // Two passes: the first to learn which contracts are open, the second to
+      // price them from the feed. The cost is one extra Redis MGET, which is
+      // what makes a 1-second refresh affordable.
+      const base = await getLiveSummary(user);
+      const markFor = await buildMarkLookup(base.positions, redisCache);
+      return markFor ? await getLiveSummary(user, undefined, markFor) : base;
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }

@@ -67,7 +67,9 @@ export type { AssignableTab } from "./tab-access-repository.js";
 export {
   beginBrokerConsent,
   completeBrokerConsent,
+  invalidateLiveFundsCache,
   listLiveChainStrikes,
+  listLivePositionInstruments,
   modifyLiveOrder,
   partnerLoginAvailable,
   LiveCredentialError,
@@ -92,6 +94,7 @@ export type {
   LiveLegInput,
   LiveMarginLegView,
   LiveMarginView,
+  LiveMarkLookup,
   LivePlacementResult,
   LivePreview,
   LiveReconcileResult,

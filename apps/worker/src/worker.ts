@@ -1,6 +1,8 @@
 import { calculatePressureScore, generateMarketAlerts } from "@option-decode/analytics";
 import { loadConfig } from "@option-decode/config";
-import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, getUserAlertThreshold, listActiveFnoStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot } from "@option-decode/db";
+import { buildDemoSnapshot, disablePushSubscriptionByEndpoint, getOpenPositionsForMarginGroup, getOptionChainTrackedStocks, getUserAlertThreshold, listActiveFnoStocks, listActivePushSubscriptions, listExpiriesNeedingLiveData, logDhanApiRequest, monitorPaperTradingForSnapshot, pruneMarketDataBefore, recordPositionMargin, saveOptionChainSnapshot,
+  listLivePositionInstruments
+} from "@option-decode/db";
 import type { FilledPaperLeg } from "@option-decode/db";
 import { DhanClient, DhanLiveFeedClient, getFnoExchangeSegment, getUnderlyingDefinition, normalizeUnderlyingKey } from "@option-decode/dhan";
 import type { DhanLiveFeedExchangeSegment, DhanLiveFeedInstrument, DhanOhlcQuote } from "@option-decode/dhan";
@@ -125,7 +127,12 @@ console.log("Option Decode worker starting", {
 // LIVE_MARKET_FEED_ENABLED) - keeping the client itself unconditional
 // avoids threading an `| undefined` through every call site that reads
 // from its tick cache.
-const LIVE_FEED_RESYNC_INTERVAL_MS = 30 * 60 * 1000;
+// 30 minutes was fine when the set was indices plus a stock universe that
+// changes weekly. It now also carries live option positions, and a contract
+// filled at 10:00 must not wait until 10:30 for a tick source - so the resync
+// runs every 2 minutes. subscribe() is idempotent, so a resync that changes
+// nothing costs one local set comparison.
+const LIVE_FEED_RESYNC_INTERVAL_MS = 2 * 60 * 1000;
 const KNOWN_LIVE_FEED_SEGMENTS = new Set<DhanLiveFeedExchangeSegment>(["IDX_I", "NSE_EQ", "NSE_FNO", "NSE_CURRENCY", "BSE_EQ", "MCX_COMM", "BSE_CURRENCY", "BSE_FNO"]);
 
 function toLiveFeedSegment(segment: string): DhanLiveFeedExchangeSegment | undefined {
@@ -171,7 +178,28 @@ async function resyncLiveFeedSubscriptions() {
       .filter((stock): stock is typeof stock & { securityId: number } => stock.securityId !== undefined)
       .map((stock) => ({ exchangeSegment: "NSE_EQ" as const, securityId: stock.securityId }));
 
-    liveFeed.subscribe([...indexInstruments, ...stockInstruments]);
+    // Option contracts held live. Until this, the feed carried only indices and
+    // cash stocks, so a live OPTION position had no tick source faster than the
+    // 30s chain capture - which is what made sub-second P&L impossible.
+    //
+    // The union across all accounts, not per user: market data is not
+    // account-specific, so a contract held by three traders is one subscription.
+    // subscribe() is additive and idempotent, so this simply re-asserts the set
+    // on every resync and picks up new fills without diffing anything.
+    let positionInstruments: DhanLiveFeedInstrument[] = [];
+    try {
+      positionInstruments = (await listLivePositionInstruments())
+        .map((row) => {
+          const segment = toLiveFeedSegment(row.exchangeSegment);
+          return segment ? { exchangeSegment: segment, securityId: row.securityId } : undefined;
+        })
+        .filter((instrument): instrument is DhanLiveFeedInstrument => Boolean(instrument));
+    } catch (error) {
+      // A failure here must not cost us the index and stock subscriptions.
+      console.warn("Unable to list live position instruments for the feed", { error });
+    }
+
+    liveFeed.subscribe([...indexInstruments, ...stockInstruments, ...positionInstruments]);
   } catch (error) {
     console.warn("Unable to resync Dhan live feed subscriptions", { error });
   }

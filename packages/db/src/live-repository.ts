@@ -1369,6 +1369,36 @@ export async function reconcileAllLiveAccounts(client: PrismaClient = prisma): P
 // Summary
 // ------------------------------------------------------------------
 
+/**
+ * Every option contract this deployment currently holds live, for the feed.
+ *
+ * Union across ALL accounts, because market data is not account-specific: the
+ * same contract held by three users is one subscription, not three. Dhan caps
+ * instruments per feed connection, so the union is also the only shape that
+ * scales past a handful of traders.
+ */
+export async function listLivePositionInstruments(
+  client: PrismaClient = prisma
+): Promise<Array<{ exchangeSegment: string; securityId: number }>> {
+  const rows = await client.livePosition.findMany({
+    where: { status: "OPEN" },
+    select: { securityId: true, exchangeSegment: true },
+    distinct: ["securityId", "exchangeSegment"]
+  });
+  return rows
+    .map((row) => ({ exchangeSegment: row.exchangeSegment, securityId: Number(row.securityId) }))
+    .filter((row) => Number.isFinite(row.securityId) && row.securityId > 0);
+}
+
+/**
+ * A live last-traded price per securityId, however the caller can supply it.
+ *
+ * Passed in rather than fetched here so this package stays free of Redis - the
+ * tick cache belongs to the apps, and @option-decode/db has no business opening
+ * a second connection to it.
+ */
+export type LiveMarkLookup = (securityId: string) => number | undefined;
+
 export interface LiveSummary {
   enabled: boolean;
   credential: BrokerCredentialStatus;
@@ -1387,15 +1417,35 @@ export interface LiveSummary {
   positions: Array<Record<string, unknown>>;
 }
 
-export async function getLiveSummary(user: AuthUserDto, client: PrismaClient = prisma): Promise<LiveSummary> {
+// Funds barely move, and this endpoint is polled once a second. Without a cache
+// that is 60 Dhan calls a minute per user for a number that changes on fills -
+// which is both wasteful and a good way to meet a rate limit.
+const FUNDS_CACHE_MS = 10_000;
+const fundsCache = new Map<string, { funds: DhanFundLimit; fetchedAt: number }>();
+
+export function invalidateLiveFundsCache(userId: string): void {
+  fundsCache.delete(userId);
+}
+
+export async function getLiveSummary(
+  user: AuthUserDto,
+  client: PrismaClient = prisma,
+  markFor?: LiveMarkLookup
+): Promise<LiveSummary> {
   const credential = await getBrokerCredentialStatus(user, client);
   const account = await client.liveAccount.findFirst({ where: { userId: user.id, isActive: true } });
 
   let funds: DhanFundLimit | null = null;
   if (credential.present && credential.verifiedOk) {
     try {
-      const dhan = await getUserDhanClient(user.id, client);
-      funds = await dhan.getFundLimit("live:summary:funds");
+      const cached = fundsCache.get(user.id);
+      if (cached && Date.now() - cached.fetchedAt < FUNDS_CACHE_MS) {
+        funds = cached.funds;
+      } else {
+        const dhan = await getUserDhanClient(user.id, client);
+        funds = await dhan.getFundLimit("live:summary:funds");
+        fundsCache.set(user.id, { funds, fetchedAt: Date.now() });
+      }
     } catch {
       // A funds read failing must not blank the whole panel - the user still
       // needs to see their open positions, especially if the token has died.
@@ -1427,7 +1477,40 @@ export async function getLiveSummary(user: AuthUserDto, client: PrismaClient = p
       : null,
     funds,
     orders: orders.map(serializeOrder),
-    positions: positions.map(serializePosition)
+    positions: positions.map(serializePosition).map((position) => applyLiveMark(position, markFor))
+  };
+}
+
+/**
+ * Overlay a live price onto a reconciled position and recompute its unrealised
+ * P&L.
+ *
+ * The reconciler refreshes positions from Dhan every 20 seconds; this makes the
+ * MARK as fresh as the tick feed, without a broker call per refresh. Dhan's own
+ * unrealised figure is kept whenever no live tick is available, so a quiet
+ * contract or a cold cache degrades to the slower number rather than to a blank.
+ *
+ * Sign matters: netQty is negative for a short, so (last - cost) * netQty is
+ * correct in both directions without a special case.
+ */
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function applyLiveMark(position: Record<string, unknown>, markFor?: LiveMarkLookup): Record<string, unknown> {
+  if (!markFor) return position;
+  const last = markFor(String(position.securityId ?? ""));
+  if (last === undefined || !Number.isFinite(last)) return position;
+
+  const netQty = Number(position.netQty ?? 0);
+  const cost = Number(position.avgCostPrice ?? 0);
+  if (!netQty) return position;
+
+  return {
+    ...position,
+    lastPrice: last,
+    unrealizedPnl: round2((last - cost) * netQty),
+    markSource: "LIVE_FEED"
   };
 }
 

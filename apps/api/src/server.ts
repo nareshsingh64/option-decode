@@ -1202,7 +1202,7 @@ app.get("/api/paper/summary", async (request, reply) => {
 // Paper Trading Pro (seller strategy simulator) - separate module, all
 // routes under /api/sim/*. See sim-routes.ts.
 registerSimRoutes(app, getRequestUser);
-registerLiveRoutes(app, getRequestUser);
+registerLiveRoutes(app, getRequestUser, redisCache);
 
 app.get("/api/watchlist/default", async () => getDefaultWatchlist());
 

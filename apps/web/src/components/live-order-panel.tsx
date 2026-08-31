@@ -155,13 +155,34 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
     }
   }, []);
 
+  // 1 second. Affordable only because /api/live/summary no longer costs a broker
+  // call per request: funds are cached for 10s server-side, and position marks
+  // come from the worker's Redis tick cache, so a refresh is one DB read plus
+  // one MGET. Do not raise this expecting fresher data - the mark is as fresh as
+  // the feed, and the ORDER state is as fresh as the 20s reconciler.
+  //
+  // Paused while the tab is hidden. A background tab polling a live-money
+  // endpoint once a second, all day, is pure waste - and browsers throttle it
+  // unpredictably anyway, so the data would not even be reliable.
   useEffect(() => {
-    void refresh();
-    // 30s is fine for this panel today. The SSE delta channel described in
-    // docs/live-order-module.md replaces this poll when it lands; do NOT keep
-    // both, or the poll re-introduces the staleness the stream exists to fix.
-    const interval = setInterval(() => void refresh(), 30_000);
-    return () => clearInterval(interval);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const start = () => {
+      if (timer) return;
+      void refresh();
+      timer = setInterval(() => void refresh(), 1_000);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    };
+    const onVisibility = () => (document.visibilityState === "visible" ? start() : stop());
+
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+    };
   }, [refresh]);
 
   useEffect(() => {
