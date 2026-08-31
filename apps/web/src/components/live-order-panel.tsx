@@ -146,28 +146,6 @@ export function LiveOrderPanel() {
     return null;
   }, [summary, credential, account]);
 
-  const runPreview = useCallback(async (ticket: unknown) => {
-    setBusy(true);
-    setPreviewError(null);
-    setPlaceResult(null);
-    try {
-      const response = await fetch(`${API_URL}/api/live/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(ticket)
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
-      setPreview(body as Preview);
-    } catch (err) {
-      setPreview(null);
-      setPreviewError(err instanceof Error ? err.message : "Preview failed.");
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
   const confirmPlace = useCallback(async () => {
     if (!preview) return;
     setBusy(true);
@@ -267,18 +245,100 @@ export function LiveOrderPanel() {
         </div>
       ) : null}
 
+      {/* The gate message above tells the user to add a token "below", so the
+          form has to actually be here. It was not, until a run through the real
+          UI caught the panel promising something it did not provide. */}
+      {!credential?.present ? <CredentialForm onSaved={refresh} /> : null}
+
       <OpenPositions positions={summary?.positions ?? []} />
       <RecentOrders orders={summary?.orders ?? []} />
+
+      {/* Stated plainly rather than hidden: the ticket builder is not built.
+          /api/live/preview and /api/live/orders both work, but nothing in this
+          panel composes a basket yet, so an order cannot be placed from here. */}
+      <p className="rounded border border-dashed border-slate-300 p-2 text-xs text-slate-600">
+        Order entry is not built yet. This panel shows account state, positions and orders; composing a
+        basket still has to come from the Strike Matrix hand-off (see docs/live-order-module.md, phase 2).
+      </p>
 
       <p className="text-xs text-slate-500">
         Margin figures come from Dhan&apos;s calculator and are estimates: the exchange revalues SPAN six times a
         trading day. Treat them as ±20%.
       </p>
-
-      {/* runPreview is wired by the ticket builder; referenced here so the
-          callback is not dropped while the builder is being assembled. */}
-      <span className="hidden" aria-hidden data-preview-ready={typeof runPreview === "function"} />
     </section>
+  );
+}
+
+function CredentialForm({ onSaved }: { onSaved: () => Promise<void> | void }) {
+  const [clientId, setClientId] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/credential`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ brokerClientId: clientId.trim(), accessToken: token.trim() })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      // Clear immediately on success. The token is verified and encrypted
+      // server-side; there is no reason for it to linger in component state.
+      setToken("");
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the credential.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded border border-slate-300 p-3">
+      <h3 className="text-sm font-semibold">Add your Dhan access token</h3>
+      <p className="text-xs text-slate-600">
+        Verified against Dhan before it is stored, then encrypted at rest. It is never returned by any
+        endpoint, logged, or emailed. Tokens live 24 hours and an expired one cannot be renewed — only
+        regenerated at web.dhan.co.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-xs">
+          <span className="text-slate-500">Dhan client id</span>
+          <input
+            value={clientId}
+            onChange={(event) => setClientId(event.target.value)}
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            placeholder="1100000001"
+            autoComplete="off"
+          />
+        </label>
+        <label className="text-xs">
+          <span className="text-slate-500">Access token</span>
+          <input
+            type="password"
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            placeholder="eyJ0eXAiOi…"
+            autoComplete="off"
+          />
+        </label>
+      </div>
+      {error ? <p className="text-xs text-red-700">{error}</p> : null}
+      <button
+        type="button"
+        disabled={busy || !clientId.trim() || !token.trim()}
+        onClick={() => void submit()}
+        className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+      >
+        {busy ? "Verifying with Dhan…" : "Verify and save"}
+      </button>
+    </div>
   );
 }
 
