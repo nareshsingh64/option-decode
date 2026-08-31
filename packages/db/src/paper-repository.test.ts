@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { PrismaClient } from "@prisma/client";
 import type { AuthUserDto } from "./auth-repository.ts";
 import type { PaperOrderLegInput } from "./paper-repository.ts";
-import { applyFillSlippage, validatePaperOrderCapacity } from "./paper-repository.ts";
+import { applyFillSlippage, settleExpiredPaperPositions, validatePaperOrderCapacity } from "./paper-repository.ts";
 
 const user: AuthUserDto = {
   id: "user-1",
@@ -83,4 +83,143 @@ test("applyFillSlippage is always against the trader, never in their favor", () 
     assert.ok(applyFillSlippage("BUY", price) > price);
     assert.ok(applyFillSlippage("SELL", price) < price);
   }
+});
+
+// --- Expiry settlement -------------------------------------------------
+//
+// The live case these are built from: a SILVER 188000 CE sold at 34,415.60,
+// quantity 30, on the 2026-08-28 expiry. MCX settled at 23:30 IST (18:00 UTC)
+// with spot 236,703, so the short call was 48,703 in the money - while its
+// last traded print was a stale 34,588.50. Settling at the print instead of at
+// intrinsic understates the loss 82x, and in the flattering direction.
+const SILVER_POSITION = {
+  id: "pos-silver",
+  underlyingSymbol: "SILVER",
+  expiryLabel: "2026-08-28",
+  optionType: "CE" as const,
+  strikePrice: decimal(188_000),
+  entryPrice: decimal(34_415.6),
+  currentPrice: decimal(34_588.5),
+  quantity: 30,
+  action: "SELL",
+  status: "OPEN"
+};
+
+function settlementClient(
+  positions: unknown[],
+  snapshots: { snapshotTime: Date; spotPrice: { toNumber: () => number } }[],
+  pendingOrders: unknown[] = []
+) {
+  const closed: { id: string; exitReason: string; exitPrice: number; realizedPnl: number }[] = [];
+  const cancelledOrderIds: string[] = [];
+  const client = {
+    paperPosition: {
+      findMany: async () => positions,
+      updateMany: async ({ where, data }: { where: { id: string }; data: { exitReason: string; currentPrice: number; realizedPnl: number } }) => {
+        closed.push({ id: where.id, exitReason: data.exitReason, exitPrice: data.currentPrice, realizedPnl: data.realizedPnl });
+        return { count: 1 };
+      }
+    },
+    paperOrder: {
+      findMany: async () => pendingOrders,
+      updateMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+        cancelledOrderIds.push(...where.id.in);
+        return { count: where.id.in.length };
+      }
+    },
+    paperTrade: { create: async () => ({}) },
+    // Only snapshots at or before the settlement moment are eligible; the
+    // filter is the function's own, so the mock hands back everything and
+    // lets it choose.
+    optionChainSnapshot: {
+      findFirst: async ({ where }: { where: { snapshotTime: { lte: Date } } }) => {
+        const eligible = snapshots.filter((snapshot) => snapshot.snapshotTime.getTime() <= where.snapshotTime.lte.getTime()).sort((left, right) => right.snapshotTime.getTime() - left.snapshotTime.getTime());
+        return eligible[0] ?? null;
+      }
+    },
+    $transaction: async (callback: (tx: unknown) => Promise<boolean>) => callback(client)
+  };
+  return { client: client as unknown as PrismaClient, closed, cancelledOrderIds };
+}
+
+test("settleExpiredPaperPositions prices an expired short at intrinsic, not at its last traded price", async () => {
+  const { client, closed } = settlementClient(
+    [SILVER_POSITION],
+    [{ snapshotTime: new Date("2026-08-28T17:59:30.000Z"), spotPrice: decimal(236_703) }]
+  );
+
+  const result = await settleExpiredPaperPositions(new Date("2026-08-31T05:00:00.000Z"), client);
+
+  assert.equal(result.settledPositions, 1);
+  assert.equal(closed[0].exitReason, "EXPIRED_ITM");
+  assert.equal(closed[0].exitPrice, 48_703);
+  // The stale print would have booked roughly -5,187 instead.
+  assert.ok(closed[0].realizedPnl < -420_000, `expected a six-figure loss, got ${closed[0].realizedPnl}`);
+});
+
+test("settleExpiredPaperPositions ignores a spot printed after the contract stopped trading", async () => {
+  // 18:00:42 UTC is 42 seconds past the MCX close - a real snapshot from the
+  // stranded position's own history. Settlement must not use it, nor any of
+  // the days of spot movement that followed.
+  const { client, closed } = settlementClient(
+    [SILVER_POSITION],
+    [
+      { snapshotTime: new Date("2026-08-28T17:59:30.000Z"), spotPrice: decimal(236_703) },
+      { snapshotTime: new Date("2026-08-28T18:00:42.000Z"), spotPrice: decimal(236_651) },
+      { snapshotTime: new Date("2026-08-31T04:00:00.000Z"), spotPrice: decimal(999_999) }
+    ]
+  );
+
+  await settleExpiredPaperPositions(new Date("2026-08-31T05:00:00.000Z"), client);
+  assert.equal(closed[0].exitPrice, 48_703);
+});
+
+test("settleExpiredPaperPositions leaves a contract that is still trading alone", async () => {
+  // 15:45 IST on expiry day, when the first EOD pass runs. MCX has nearly
+  // eight hours left, which is what the second 23:40 pass exists for.
+  const { client, closed } = settlementClient(
+    [SILVER_POSITION],
+    [{ snapshotTime: new Date("2026-08-28T09:00:00.000Z"), spotPrice: decimal(236_703) }]
+  );
+
+  const result = await settleExpiredPaperPositions(new Date("2026-08-28T10:15:00.000Z"), client);
+  assert.equal(result.settledPositions, 0);
+  assert.equal(closed.length, 0);
+});
+
+test("settleExpiredPaperPositions settles an OTM short at zero", async () => {
+  const { client, closed } = settlementClient(
+    [{ ...SILVER_POSITION, strikePrice: decimal(300_000) }],
+    [{ snapshotTime: new Date("2026-08-28T17:59:30.000Z"), spotPrice: decimal(236_703) }]
+  );
+
+  await settleExpiredPaperPositions(new Date("2026-08-31T05:00:00.000Z"), client);
+  assert.equal(closed[0].exitReason, "EXPIRED_WORTHLESS");
+  assert.equal(closed[0].exitPrice, 0);
+});
+
+test("settleExpiredPaperPositions skips rather than guesses when no spot was captured before settlement", async () => {
+  // Settling at a guessed price writes a wrong realised P&L that nothing later
+  // corrects; leaving the position OPEN keeps it visible and exitable by hand.
+  const { client, closed } = settlementClient([SILVER_POSITION], []);
+
+  const result = await settleExpiredPaperPositions(new Date("2026-08-31T05:00:00.000Z"), client);
+  assert.equal(result.skippedPositions, 1);
+  assert.equal(result.settledPositions, 0);
+  assert.equal(closed.length, 0);
+});
+
+test("settleExpiredPaperPositions cancels a pending order on a dead contract but not on a live one", async () => {
+  const { client, cancelledOrderIds } = settlementClient(
+    [],
+    [],
+    [
+      { id: "order-dead", underlyingSymbol: "SILVER", expiryLabel: "2026-08-28" },
+      { id: "order-live", underlyingSymbol: "NIFTY", expiryLabel: "2026-09-08" }
+    ]
+  );
+
+  const result = await settleExpiredPaperPositions(new Date("2026-08-31T05:00:00.000Z"), client);
+  assert.equal(result.cancelledOrders, 1);
+  assert.deepEqual(cancelledOrderIds, ["order-dead"]);
 });

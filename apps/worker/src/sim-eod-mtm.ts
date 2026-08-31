@@ -7,8 +7,16 @@
 // (idempotent per trade per day), evaluates the seller exit rules
 // (profit target / 3x hard stop / DTE<=7 gamma window) as FLAGGED events,
 // and settles trades whose expiry has passed at intrinsic value.
+//
+// It also settles the Dashboard's OTHER paper module (PaperPosition /
+// PaperOrder), which had no expiry handling of its own at all. The two are
+// separate stores with separate repositories, so this pass covering SimTrade
+// was never covering PaperPosition - a SILVER position on the 2026-08-28
+// expiry sat OPEN indefinitely because of it. Same schedule for both, because
+// the thing that decides WHEN a contract settles is its exchange session, not
+// which module happens to hold it.
 
-import { runSimEodMarkToMarket, runSimIntradayEngine } from "@option-decode/db";
+import { runSimEodMarkToMarket, runSimIntradayEngine, settleExpiredPaperPositions } from "@option-decode/db";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 
@@ -79,6 +87,17 @@ export async function startSimEodScheduler(redisConnection: { url: string; maxRe
       });
       const result = await runSimEodMarkToMarket();
       console.log("Sim EOD mark-to-market finished", result);
+
+      // Run after the sim pass rather than before it, and in its own try, so a
+      // failure in the newer of the two modules cannot cost the older one its
+      // settlement - the whole reason the CRUDEOIL incident hurt was that a
+      // real loss stayed unrealised while nobody could see it.
+      try {
+        const paperResult = await settleExpiredPaperPositions();
+        console.log("Paper trading expiry settlement finished", paperResult);
+      } catch (error) {
+        console.error("Paper trading expiry settlement failed", { jobId: job.id, error });
+      }
     },
     {
       connection: redisConnection,

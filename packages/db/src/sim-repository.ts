@@ -19,7 +19,7 @@
 //   expiry settlement (intrinsic value, EXPIRED status).
 
 import { classifyDrcr } from "@option-decode/analytics";
-import { getFallbackLotSize, getSessionCloseIstMinutes, shortLegMarginPerUnit } from "@option-decode/types";
+import { getFallbackLotSize, hasContractExpired, shortLegMarginPerUnit } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -418,37 +418,12 @@ async function resolveExpiryDate(underlyingSymbol: string, expiryLabel: string, 
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-// IST is UTC+5:30. expiryDate is a @db.Date, so it arrives as UTC midnight of
-// the expiry day.
-const IST_OFFSET_MINUTES = 330;
-
-/**
- * The instant a contract stops trading on its expiry day.
- *
- * This replaced `expiryDate + 24 hours`, which was wrong in both directions
- * and cost a full day of stale state. Because expiryDate is UTC midnight, that
- * rule did not come true until 00:00 UTC the day AFTER expiry - and the only
- * job that acts on it runs at 15:45 IST, so an expired position stayed OPEN,
- * with its margin still counted, for roughly 24 hours. A Friday expiry waited
- * until Monday, because the job is weekdays-only. Seen live: two CRUDEOIL
- * trades that expired 2026-08-17 settled at 15:45 on 2026-08-18, both ITM, so
- * a real loss sat unrealised the whole time.
- *
- * The 24 hours was a blunt guard against settling before the contract had
- * finished trading, and it existed because ONE NSE-shaped schedule was being
- * applied to MCX contracts too: the 15:45 IST job runs four minutes after the
- * NSE close but nearly eight hours before MCX's 23:30. Asking each contract
- * for its own session close is the honest version of that guard.
- */
-function expirySettlementMoment(expiryDate: Date, underlyingSymbol: string): Date {
-  const closeIst = getSessionCloseIstMinutes(underlyingSymbol);
-  return new Date(expiryDate.getTime() + (closeIst - IST_OFFSET_MINUTES) * 60_000);
-}
-
-/** True once the contract has finished trading on its expiry day. */
-function isPastExpiry(expiryDate: Date, underlyingSymbol: string, asOf: Date): boolean {
-  return asOf.getTime() >= expirySettlementMoment(expiryDate, underlyingSymbol).getTime();
-}
+// Settlement timing (`hasContractExpired`) lives in @option-decode/types
+// beside the session constants it depends on. It used to be a private pair of
+// helpers here, but it is not only settlement's business: the worker asks the
+// same question before fetching a chain from Dhan (see
+// captureExtraExpiriesForPaperTrading), and a dead contract there is an
+// HTTP 400 every capture cycle rather than a stale position.
 
 function daysToExpiry(expiryDate: Date, asOf = new Date()): number {
   const ms = expiryDate.getTime() - asOf.getTime();
@@ -1301,7 +1276,7 @@ export async function runSimEodMarkToMarket(asOf = new Date(), client: PrismaCli
   const ts = new Date(`${asOf.toISOString().slice(0, 10)}T00:00:00.000Z`);
 
   for (const trade of openTrades) {
-    if (isPastExpiry(trade.expiryDate, trade.underlyingSymbol, asOf)) {
+    if (hasContractExpired(trade.expiryDate, trade.underlyingSymbol, asOf)) {
       await settleExpiredSimTrade(trade, client);
       result.expiredTrades += 1;
       continue;
@@ -1550,7 +1525,7 @@ export async function runSimIntradayEngine(asOf = new Date(), client: PrismaClie
 
   for (const trade of openTrades) {
     // Trades past expiry are the EOD job's business (intrinsic settlement).
-    if (isPastExpiry(trade.expiryDate, trade.underlyingSymbol, asOf)) {
+    if (hasContractExpired(trade.expiryDate, trade.underlyingSymbol, asOf)) {
       continue;
     }
     const closeCost = await computeTradeCloseCost(trade, client);

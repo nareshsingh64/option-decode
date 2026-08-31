@@ -996,6 +996,56 @@ one value out instead:
 
   Net effect: NSE settles same day +4 minutes, MCX same day +10 minutes, and a
   Friday expiry no longer waits for Monday.
+
+  **That fix covered Paper Trade Pro only, and there are TWO paper modules
+  (2026-08-31).** `SimTrade` (Paper Trade Pro, `/api/sim/*`, sim-repository)
+  and `PaperPosition`/`PaperOrder` (the Dashboard's order ticket,
+  `/api/paper/*`, paper-repository) are separate stores with separate
+  repositories, and the EOD pass above only ever queried `simTrade` —
+  sim-repository's own header says so. The Dashboard module had **no expiry
+  handling at all**: its only exits were a stop/target crossing read from live
+  ticks and a manual Exit click. 151 closed positions in production, exit
+  reasons `STOP_LOSS` 101 / `MANUAL` 28 / `TARGET` 22, and not one `EXPIRED`.
+
+  A SILVER 188000 CE on the 2026-08-28 expiry became the first position to
+  outlive its contract, and it could not get out. The last tick that contract
+  ever printed is still the newest row in the table, so it was re-marked every
+  cycle against a price frozen at the 23:30 IST close — 34,588.50, sitting
+  between a 40,641.55 stop and a 22,482.55 target on a SELL, so neither could
+  ever trigger. `dangerSignalStreak` reached **348**. Its other symptom was an
+  HTTP 400 `Invalid Expiry Date` from `/v2/optionchain` on every capture cycle,
+  because `listExpiriesNeedingLiveData` kept asking Dhan for a dead contract's
+  chain — a wasted request against an endpoint rate-limited to 1/sec.
+
+  **Settle at intrinsic, never at the last traded price, and on this position
+  the difference was 82x.** Spot settled at 236,703, so the short call was
+  48,703 ITM, while its last print was a stale 34,588.50 — deep-ITM commodity
+  options barely trade into the close. Closing at the print books **−₹5,187**
+  where the real loss is **−₹4,29,352**. Note the direction: the cheap reuse of
+  `currentPrice` is the flattering error, which is the kind that survives
+  review (see the rupees-vs-points entry for the same lesson).
+
+  **Use the spot at or before the contract's own settlement moment, not the
+  latest spot.** Same-day these are the same value, so `settleExpiredSimTrade`'s
+  `getLatestSpot` was never wrong in practice — but a backlog settled days
+  later must not be priced off a spot that has kept moving. On this position the
+  snapshot 42 seconds *after* the 23:30 close reads 236,651 against 236,703 at
+  the close; three days later it is a different number entirely.
+
+  `hasContractExpired()` / `expirySettlementMoment()` now live in
+  `@option-decode/types` beside the session constants, because the question
+  "has this contract stopped trading" is not only settlement's business — the
+  worker asks it before calling Dhan too. Three guards hang off it:
+  `listExpiriesNeedingLiveData` drops dead expiries, and both
+  `refreshOpenPositionPrices` and `refreshPendingPaperOrders` skip them. That
+  last pair matters: without it the dynamic trailing stop can ratchet onto the
+  frozen tick and close the position at exactly the stale price settlement
+  exists to avoid, and a pending order can fill into a contract that no longer
+  trades.
+
+  When no spot was captured before settlement, the position is **skipped, not
+  settled**. A guessed price writes a wrong realised P&L that nothing later
+  corrects; an OPEN position stays visible and can be exited by hand.
 - **A job-level session gate is not a per-symbol one**, and the wave screener
   ran for weeks on the difference. Its gate had been widened from `NSE_EQ` to
   "either NSE_EQ or MCX_COMM open" so commodities kept being screened past

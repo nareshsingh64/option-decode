@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getFallbackLotSize } from "@option-decode/types";
+import { expirySettlementMoment, getFallbackLotSize, hasContractExpired } from "@option-decode/types";
 import type { OptionType } from "@option-decode/types";
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -540,7 +540,20 @@ export async function listExpiriesNeedingLiveData(underlyingSymbol: string, clie
     })
   ]);
 
-  return [...new Set([...pendingOrders.map((order) => order.expiryLabel), ...openPositions.map((position) => position.expiryLabel)])];
+  const expiries = [...new Set([...pendingOrders.map((order) => order.expiryLabel), ...openPositions.map((position) => position.expiryLabel)])];
+
+  // An expiry whose contract has already stopped trading has no live data left
+  // to fetch, and asking for it is not free: Dhan answers /v2/optionchain with
+  // HTTP 400 "Invalid Expiry Date", which costs a request against an endpoint
+  // rate-limited to 1/sec shared with the LTP/OHLC calls, and logs a stack
+  // trace on every capture cycle. Seen live from 2026-08-28 onward - a SILVER
+  // 188000 CE position on the 2026-08-28 expiry stayed OPEN past settlement,
+  // so the worker retried a dead contract roughly every 30 seconds.
+  //
+  // Note this hides nothing: a position sitting past its expiry could never
+  // have been marked from live ticks anyway, since the contract had stopped
+  // printing them. Dropping it here only stops the pointless call.
+  return expiries.filter((expiryLabel) => !hasContractExpired(expiryLabel, underlyingSymbol));
 }
 
 export async function monitorPaperTradingForSnapshot(underlyingSymbol: string, expiryLabel: string, client: PrismaClient = prisma) {
@@ -682,6 +695,14 @@ async function refreshPendingPaperOrders(where: Prisma.PaperOrderWhereInput, cli
 
   const results = await Promise.all(
     pendingOrders.map(async (order) => {
+      // Same frozen-tick trap as the position loop above: an order on an
+      // expired contract would otherwise fill against the last price the dead
+      // contract ever printed, opening a brand-new position in something that
+      // no longer trades. settleExpiredPaperPositions cancels these instead.
+      if (hasContractExpired(order.expiryLabel, order.underlyingSymbol)) {
+        return null;
+      }
+
       const latestTick = await client.optionContractTick.findFirst({
         where: {
           underlyingSymbol: order.underlyingSymbol,
@@ -796,6 +817,18 @@ async function refreshOpenPositionPrices(where: Prisma.PaperPositionWhereInput, 
 
   const results = await Promise.all(
     positions.map(async (position) => {
+      // An expired contract stops printing ticks, but the last one it printed
+      // is still the newest row in the table, so this loop would go on marking
+      // the position against a frozen price forever. That is not merely idle:
+      // the danger-signal streak keeps climbing (it reached 348 on the stranded
+      // SILVER position) and the dynamic trailing stop can ratchet onto that
+      // frozen price and close the trade at it - which is the stale last-traded
+      // price settleExpiredPaperPositions exists to avoid, 82x wrong on that
+      // very contract. Expired positions belong to the settlement pass alone.
+      if (hasContractExpired(position.expiryLabel, position.underlyingSymbol)) {
+        return { checked: false, closed: false };
+      }
+
       const latestTick = await client.optionContractTick.findFirst({
         where: {
           underlyingSymbol: position.underlyingSymbol,
@@ -895,10 +928,15 @@ async function closePositionRecord(
     action: string;
   },
   exitReason: string,
-  client: PrismaClient
+  client: PrismaClient,
+  // Settlement prices the position at intrinsic rather than at its last
+  // traded price, so this cannot read `currentPrice` the way the stop/target
+  // paths do. See settleExpiredPaperPositions for why the difference is not
+  // academic.
+  exitPriceOverride?: number
 ): Promise<boolean> {
   const entryPrice = position.entryPrice.toNumber();
-  const exitPrice = position.currentPrice.toNumber();
+  const exitPrice = exitPriceOverride ?? position.currentPrice.toNumber();
   const direction = position.action === "BUY" ? 1 : -1;
   const grossPnl = (exitPrice - entryPrice) * position.quantity * direction;
   const charges = Math.max(1, Math.abs(exitPrice * position.quantity) * 0.0005);
@@ -916,7 +954,8 @@ async function closePositionRecord(
         status: "CLOSED",
         realizedPnl: netPnl,
         closedAt: now,
-        exitReason
+        exitReason,
+        currentPrice: exitPrice
       }
     });
 
@@ -941,6 +980,113 @@ async function closePositionRecord(
 
     return true;
   });
+}
+
+export interface PaperExpirySettlementResult {
+  settledPositions: number;
+  cancelledOrders: number;
+  skippedPositions: number;
+}
+
+/**
+ * Settle every open paper position whose contract has finished trading, and
+ * cancel every pending order on one.
+ *
+ * The Dashboard's paper module had NO expiry handling at all - the gap is not
+ * a hole in Paper Trade Pro's settle pass, which only ever queries SimTrade
+ * (see sim-repository's header). Its only exits were a stop/target crossing
+ * read from live ticks and a manual Exit click, and once a contract expires no
+ * new ticks arrive, so a position that had not already crossed one of its
+ * levels froze there permanently. Across 151 closed positions in production
+ * the exit reasons were STOP_LOSS, MANUAL and TARGET only; a SILVER 188000 CE
+ * on the 2026-08-28 expiry became the first to outlive its contract and simply
+ * stayed OPEN, re-marked every cycle against a tick frozen at the 23:30 IST
+ * MCX close.
+ *
+ * SETTLEMENT IS AT INTRINSIC, NOT AT THE LAST TRADED PRICE, and on this very
+ * position the difference was 82x. Spot settled at 236,651, so the short call
+ * was 48,651 in the money, while its last print was a stale 34,588.50 - deep
+ * ITM commodity options barely trade near the close. Closing at that print
+ * would have booked a Rs 5,187 loss in place of a real Rs 4,27,062 one. The
+ * cheap reuse of `currentPrice` errs in the flattering direction, which is
+ * exactly the kind of error that survives review.
+ *
+ * The spot used is the last one captured AT OR BEFORE the contract's own
+ * settlement moment, not the latest spot now. Same-day this is the same value,
+ * but a backlog settled days later must not be priced off a spot that has kept
+ * moving since the contract died.
+ */
+export async function settleExpiredPaperPositions(asOf = new Date(), client: PrismaClient = prisma): Promise<PaperExpirySettlementResult> {
+  const result: PaperExpirySettlementResult = { settledPositions: 0, cancelledOrders: 0, skippedPositions: 0 };
+
+  const openPositions = await client.paperPosition.findMany({ where: { status: "OPEN" } });
+  const settlementSpotCache = new Map<string, Promise<number | null>>();
+
+  for (const position of openPositions) {
+    const settlementMoment = expirySettlementMoment(position.expiryLabel, position.underlyingSymbol);
+    if (!settlementMoment || asOf.getTime() < settlementMoment.getTime()) {
+      continue;
+    }
+
+    const cacheKey = `${position.underlyingSymbol}:${position.expiryLabel}`;
+    let pendingSpot = settlementSpotCache.get(cacheKey);
+    if (!pendingSpot) {
+      pendingSpot = getSpotAtSettlement(position.underlyingSymbol, settlementMoment, client);
+      settlementSpotCache.set(cacheKey, pendingSpot);
+    }
+    const spotPrice = await pendingSpot;
+
+    // No spot at settlement means no honest intrinsic. Leaving the position
+    // OPEN is the lesser evil: it stays visible and can be exited by hand,
+    // where settling it at a guessed price silently writes a wrong realised
+    // P&L that nothing later corrects.
+    if (spotPrice === null) {
+      result.skippedPositions += 1;
+      continue;
+    }
+
+    const strikePrice = position.strikePrice.toNumber();
+    const intrinsic = position.optionType === "CE" ? Math.max(0, spotPrice - strikePrice) : Math.max(0, strikePrice - spotPrice);
+    const settled = await closePositionRecord(position, intrinsic > 0 ? "EXPIRED_ITM" : "EXPIRED_WORTHLESS", client, normalizeTradablePrice(intrinsic));
+    if (settled) {
+      result.settledPositions += 1;
+    }
+  }
+
+  // A pending order on a dead contract is stuck the same way: shouldFillPaperOrder
+  // is driven by live ticks that will never arrive again. Cancelling is the
+  // honest outcome - it never filled, so it has no P&L to settle.
+  const pendingOrders = await client.paperOrder.findMany({
+    where: { status: "PENDING" },
+    select: { id: true, underlyingSymbol: true, expiryLabel: true }
+  });
+  const expiredOrderIds = pendingOrders.filter((order) => hasContractExpired(order.expiryLabel, order.underlyingSymbol, asOf)).map((order) => order.id);
+  if (expiredOrderIds.length > 0) {
+    const cancelled = await client.paperOrder.updateMany({
+      where: { id: { in: expiredOrderIds }, status: "PENDING" },
+      data: { status: "CANCELLED" }
+    });
+    result.cancelledOrders = cancelled.count;
+  }
+
+  return result;
+}
+
+/**
+ * The underlying's spot as at the moment the contract stopped trading.
+ *
+ * Reads the last OptionChainSnapshot at or before that instant rather than the
+ * newest one, so settling a backlog does not price a dead contract off a spot
+ * that has moved on since. Returns null when nothing was captured before then,
+ * which the caller treats as "do not settle" rather than "settle at zero".
+ */
+async function getSpotAtSettlement(underlyingSymbol: string, settlementMoment: Date, client: PrismaClient): Promise<number | null> {
+  const snapshot = await client.optionChainSnapshot.findFirst({
+    where: { underlyingSymbol, snapshotTime: { lte: settlementMoment } },
+    orderBy: { snapshotTime: "desc" },
+    select: { spotPrice: true }
+  });
+  return snapshot ? snapshot.spotPrice.toNumber() : null;
 }
 
 async function mapOrder(

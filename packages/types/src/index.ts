@@ -423,6 +423,66 @@ export function getSessionCloseIstMinutes(underlyingSymbol: string): number {
     : NSE_SESSION_CLOSE_IST_MINUTES;
 }
 
+/** IST is UTC+5:30. */
+export const IST_OFFSET_MINUTES = 330;
+
+/**
+ * The instant a contract stops trading on its expiry day.
+ *
+ * `expiryDate` is a Prisma `@db.Date` (or a plain `YYYY-MM-DD` label), so it
+ * arrives as UTC midnight of the expiry day. Adding the underlying's own
+ * session close - NSE 15:41, MCX 23:30 - gives the moment the contract is
+ * actually dead.
+ *
+ * This replaced `expiryDate + 24 hours`, which was wrong in both directions
+ * and cost a full day of stale state. Because expiryDate is UTC midnight, that
+ * rule did not come true until 00:00 UTC the day AFTER expiry - and the only
+ * job that acts on it runs at 15:45 IST, so an expired position stayed OPEN,
+ * with its margin still counted, for roughly 24 hours. A Friday expiry waited
+ * until Monday, because the job is weekdays-only. Seen live: two CRUDEOIL
+ * trades that expired 2026-08-17 settled at 15:45 on 2026-08-18, both ITM, so
+ * a real loss sat unrealised the whole time.
+ *
+ * The 24 hours was a blunt guard against settling before the contract had
+ * finished trading, and it existed because ONE NSE-shaped schedule was being
+ * applied to MCX contracts too: the 15:45 IST job runs four minutes after the
+ * NSE close but nearly eight hours before MCX's 23:30. Asking each contract
+ * for its own session close is the honest version of that guard.
+ *
+ * Lives here rather than in a repository because it is not only settlement's
+ * business: anything that asks Dhan for a chain needs the same answer, and a
+ * second copy of this rule is a fact that can disagree with itself.
+ */
+export function expirySettlementMoment(expiryDate: Date | string, underlyingSymbol: string): Date | null {
+  const expiryUtcMidnight = typeof expiryDate === "string" ? parseExpiryLabel(expiryDate) : expiryDate;
+  if (!expiryUtcMidnight || Number.isNaN(expiryUtcMidnight.getTime())) {
+    return null;
+  }
+  const closeIst = getSessionCloseIstMinutes(underlyingSymbol);
+  return new Date(expiryUtcMidnight.getTime() + (closeIst - IST_OFFSET_MINUTES) * 60_000);
+}
+
+/**
+ * True once the contract has finished trading on its expiry day.
+ *
+ * Fails OPEN - an unparseable expiry reads as "not expired". The callers here
+ * either settle a position or stop fetching its live data, and both of those
+ * are worse to do wrongly to a live contract than to skip on a dead one.
+ */
+export function hasContractExpired(expiryDate: Date | string, underlyingSymbol: string, asOf: Date = new Date()): boolean {
+  const settlementMoment = expirySettlementMoment(expiryDate, underlyingSymbol);
+  return settlementMoment !== null && asOf.getTime() >= settlementMoment.getTime();
+}
+
+/** `YYYY-MM-DD` (the `expiryLabel` shape) to UTC midnight; null if it isn't that shape. */
+function parseExpiryLabel(label: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    return null;
+  }
+  const parsed = new Date(`${label}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export const DRCR_BANDS = {
   bullishAbove: 1.5,
   bearishBelow: 0.6,
