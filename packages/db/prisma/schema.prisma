@@ -285,54 +285,6 @@ model WavePricePoint {
   @@unique([underlyingSymbol, time])
 }
 
-// End-of-day OHLCV bars from the NSE UDiFF bhavcopy archive - the only
-// source of REAL daily candles in this app. Everything else here is
-// synthesized from 1-minute LTP ticks, which cannot express a true daily
-// high/low and only reaches back as far as capture has been running.
-//
-// Why this exists: the daily regime filter in
-// docs/high-winrate-fno-strategy-plan.md needs ~50 daily bars for an EMA50
-// and ADX(14). Nine days of intraday ticks cannot produce one, and Dhan's
-// client exposes no historical-candle endpoint. Bhavcopy is free, public and
-// RETROACTIVE - one backfill gets years at once instead of waiting for
-// capture to accumulate.
-//
-// Prices are stored EXACTLY as published, i.e. NOT adjusted for splits or
-// bonuses. Adjustment is derived at read time from `prevClose`: NSE restates
-// PrvsClsgPric on an ex-date, so a mismatch between this row's prevClose and
-// the previous row's close is a precise corporate-action marker. Storing raw
-// keeps the table faithful to the source; see the DuckDB analysis script.
-model DailyBar {
-  symbol    String   @db.VarChar(32)
-  date      DateTime @db.Date
-  open      Decimal  @db.Decimal(14, 2)
-  high      Decimal  @db.Decimal(14, 2)
-  low       Decimal  @db.Decimal(14, 2)
-  close     Decimal  @db.Decimal(14, 2)
-  // NSE's own previous close for this scrip, restated on ex-dates. The
-  // corporate-action detector compares it against the prior row's close.
-  prevClose Decimal? @db.Decimal(14, 2)
-  volume    BigInt
-  trades    BigInt?
-  turnover  Decimal? @db.Decimal(20, 2)
-  // NSE series: EQ is the normal rolling-settlement board, BE is trade-to-
-  // trade. Kept so a BE-only stock can be excluded from a tradeable universe.
-  series    String   @db.VarChar(4)
-  source    String   @default("NSE_UDIFF") @db.VarChar(16)
-  createdAt DateTime @default(now())
-
-  // Composite primary key rather than a cuid surrogate: it is the natural key,
-  // it makes the ingest idempotent by construction, and it lets the loader
-  // write rows directly without Prisma being in the path to mint ids. In
-  // InnoDB the PK is clustered, so per-symbol date-range scans - which is
-  // every read this table has - are sequential.
-  @@id([symbol, date])
-  // Not redundant against the PK: the PK's btree is (symbol, date), so it
-  // cannot serve a scan across ALL symbols for one date, which is what the
-  // ingest's "which dates do I already have" check does.
-  @@index([date])
-}
-
 enum WaveAlertType {
   WAVE2_REVERSAL
   WAVE3_IMPULSE
