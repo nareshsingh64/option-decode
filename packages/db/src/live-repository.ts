@@ -71,6 +71,10 @@ const MIN_TOKEN_HOURS_TO_OPEN = 2;
 /** A preview goes stale fast - prices move and the margin was computed against them. */
 const CONFIRM_TOKEN_TTL_MS = 10_000;
 /** Undefined-risk structures. Blocked unless LiveAccount.allowUndefinedRisk. */
+// Structures whose loss is unbounded. All are SHORTS - a naked long is not
+// here, and must never be added: buying an option risks the premium and
+// nothing more, which is the definition of defined risk. The names below all
+// mean the sold version, matching SimStrategyType.
 const UNDEFINED_RISK_STRUCTURES = new Set(["SHORT_STRADDLE", "SHORT_STRANGLE", "NAKED_CALL", "NAKED_PUT"]);
 
 function liveTradingEnabledGlobally(): boolean {

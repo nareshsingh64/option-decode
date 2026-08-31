@@ -100,6 +100,12 @@ type LegTemplate = { side: "BUY" | "SELL"; optionType: "CE" | "PE"; label: strin
 // short needs more margin than the measured account balance - so offering them
 // would just be a menu of things that get rejected.
 const STRUCTURES: Record<string, LegTemplate[]> = {
+  // Single bought leg. Risk is the premium paid and nothing more, so these are
+  // NOT caught by the naked-short block - that exists for unbounded loss, which
+  // a long option cannot have. Worth being explicit, because "naked" reads as
+  // dangerous and here means only "unhedged".
+  LONG_CALL: [{ side: "BUY", optionType: "CE", label: "Long call" }],
+  LONG_PUT: [{ side: "BUY", optionType: "PE", label: "Long put" }],
   BEAR_CALL_SPREAD: [
     { side: "SELL", optionType: "CE", label: "Short call" },
     { side: "BUY", optionType: "CE", label: "Long call (wing)" }
@@ -847,11 +853,13 @@ function OpenPositions({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
 
-  const squareOff = async (id: string, label: string) => {
-    // Confirmed, because this sends a MARKET order against a real position and
-    // there is no undo. The label names the contract so the dialog is not a
-    // generic "are you sure".
-    if (!window.confirm(`Square off ${label} at market? This places a real order.`)) return;
+  // limitPrice undefined = market. Both are offered rather than one being a
+  // hidden mode: a market exit is certain but pays the spread, a limit exit
+  // controls the price but may not fill, and which one is right depends on why
+  // the trader is closing.
+  const squareOff = async (id: string, label: string, limitPrice?: number) => {
+    const how = limitPrice ? `with a limit of ${limitPrice}` : "at market";
+    if (!window.confirm(`Square off ${label} ${how}? This places a real order.`)) return;
     setBusyId(id);
     setCloseError(null);
     try {
@@ -859,7 +867,7 @@ function OpenPositions({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({})
+        body: JSON.stringify(limitPrice ? { limitPrice } : {})
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
@@ -981,16 +989,37 @@ function OpenPositions({
                   </td>
                   <td className="whitespace-nowrap pl-2">
                     {canClose ? (
-                      <button
-                        type="button"
-                        disabled={busyId === id}
-                        onClick={() =>
-                          void squareOff(id, String(position.tradingSymbol ?? position.securityId))
-                        }
-                        className="text-red-700 underline disabled:opacity-50"
-                      >
-                        {busyId === id ? "Closing…" : "Square off"}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          disabled={busyId === id}
+                          onClick={() =>
+                            void squareOff(id, String(position.tradingSymbol ?? position.securityId))
+                          }
+                          className="mr-2 text-red-700 underline disabled:opacity-50"
+                        >
+                          {busyId === id ? "Closing…" : "Mkt"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === id}
+                          onClick={() => {
+                            // Seeded with the current LTP: the trader is almost
+                            // always adjusting from there, not typing blind.
+                            const raw = window.prompt("Limit price to close at", ltp === null ? "" : ltp.toFixed(2));
+                            if (raw === null) return;
+                            const price = Number(raw);
+                            if (!Number.isFinite(price) || price <= 0) {
+                              setCloseError("That is not a valid limit price.");
+                              return;
+                            }
+                            void squareOff(id, String(position.tradingSymbol ?? position.securityId), price);
+                          }}
+                          className="text-slate-700 underline disabled:opacity-50"
+                        >
+                          Lmt
+                        </button>
+                      </>
                     ) : null}
                   </td>
                 </tr>

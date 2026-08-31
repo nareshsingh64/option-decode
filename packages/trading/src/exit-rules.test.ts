@@ -159,6 +159,38 @@ test("a zero or negative credit cannot trigger profit or stop rules", () => {
   assert.equal(decision, null);
 });
 
+// A bought option is a DEBIT: netCredit is negative. The seller rules are
+// expressed as percentages of a credit received, so they must not fire on one -
+// a "50% of credit" target against a negative credit is meaningless arithmetic,
+// and a 3x stop would trigger immediately.
+function longCall(overrides: Partial<ExitInput> = {}): ExitInput {
+  return {
+    structure: "LONG_CALL",
+    netCredit: -6.0 * 65,
+    quantity: 65,
+    daysToExpiry: 28,
+    legs: [{ side: "BUY", entryPrice: 6.0, lastPrice: 6.0 }],
+    ...overrides
+  };
+}
+
+test("seller rules never fire on a bought option", () => {
+  assert.equal(evaluateExit(longCall()), null);
+  // Even when it has lost most of its value - which for a long is simply the
+  // trade going wrong, not a stop being breached.
+  assert.equal(evaluateExit(longCall({ legs: [{ side: "BUY", entryPrice: 6.0, lastPrice: 0.5 }] })), null);
+  // And even when it has multiplied, which is profit rather than a hard stop.
+  assert.equal(evaluateExit(longCall({ legs: [{ side: "BUY", entryPrice: 6.0, lastPrice: 40 }] })), null);
+});
+
+test("expiry rules still apply to a bought option", () => {
+  // These are about time rather than about credit, so they hold in both
+  // directions - a long left to expire worthless is the same mistake as a short
+  // left to be assigned.
+  assert.equal(evaluateExit(longCall({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
+  assert.equal(evaluateExit(longCall({ daysToExpiry: 3 }))?.rule, "DTE_GAMMA");
+});
+
 test("an empty or zero-quantity position is never actioned", () => {
   assert.equal(evaluateExit(spread({ legs: [] })), null);
   assert.equal(evaluateExit(spread({ quantity: 0 })), null);
