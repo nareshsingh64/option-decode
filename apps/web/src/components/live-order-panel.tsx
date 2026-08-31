@@ -80,6 +80,7 @@ interface LiveSummary {
   funds: FundLimit | null;
   orders: Array<Record<string, unknown>>;
   positions: Array<Record<string, unknown>>;
+  closedToday?: Array<Record<string, unknown>>;
   exitAlerts?: Array<{ groupId: string; rule: string; action: string; detail: string | null; createdAt: string }>;
 }
 
@@ -128,6 +129,69 @@ const STRUCTURES: Record<string, LegTemplate[]> = {
   ]
 };
 
+function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> }) {
+  if (!positions.length) {
+    return <p className="text-sm text-slate-500">Nothing closed today.</p>;
+  }
+
+  // Realised only. An unrealised figure on a closed position is meaningless -
+  // there is nothing left to mark.
+  const realised = positions.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
+        <span className="text-xs uppercase text-slate-500">Realised today</span>
+        <span className={`text-lg font-semibold ${realised < 0 ? "text-red-700" : "text-emerald-700"}`}>
+          {realised < 0 ? "-" : "+"}
+          {rupees(Math.abs(realised))}
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase text-slate-500">
+              {/* No S/B column: netQty is 0 once flat, so the direction is not
+                  recoverable from the position row, and a column of dashes is
+                  worse than no column. */}
+              <th className="py-1">Contract</th>
+              <th className="text-right">Avg cost</th>
+              <th className="text-right">Realised</th>
+              <th className="text-right">Closed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((position) => {
+              const closedAt = position.closedAt ? new Date(String(position.closedAt)) : null;
+              const realisedRow = Number(position.realizedPnl ?? 0);
+              return (
+                <tr key={String(position.id)} className="border-t border-slate-100">
+                  <td className="py-1">{String(position.tradingSymbol ?? position.securityId)}</td>
+                  <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
+                  <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                    {rupees(realisedRow)}
+                  </td>
+                  <td className="text-right text-xs text-slate-500">
+                    {closedAt
+                      ? closedAt.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })
+                      : "--"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-slate-500">
+        Closed since midnight IST. Realised P&amp;L comes from Dhan; a position squared off outside this app
+        appears here too, because the reconciler treats the broker as the source of truth.
+      </p>
+    </div>
+  );
+}
+
 // Which states the broker will still accept a change or a cancel for. Anything
 // else - TRADED, REJECTED, CANCELLED - is finished, and offering a control that
 // can only fail is worse than offering none. Module scope so the Orders tab
@@ -149,7 +213,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
   // Counts the confirm window down so the button cannot be pressed against a
   // preview whose prices have moved.
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [tab, setTab] = useState<"positions" | "orders" | "place" | "token">("positions");
+  const [tab, setTab] = useState<"positions" | "closed" | "orders" | "place" | "token">("positions");
 
   const refresh = useCallback(async () => {
     try {
@@ -404,6 +468,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       <nav className="flex flex-wrap gap-1 border-b border-slate-200">
         {([
           ["positions", `Positions${summary?.positions.length ? ` (${summary.positions.length})` : ""}`],
+          ["closed", `Closed today${summary?.closedToday?.length ? ` (${summary.closedToday.length})` : ""}`],
           ["orders", `Orders${workingOrderCount ? ` (${workingOrderCount})` : ""}`],
           ["place", "Place order"],
           ["token", "Broker token"]
@@ -477,6 +542,8 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       {tab === "positions" ? (
         <OpenPositions positions={summary?.positions ?? []} onChanged={refresh} canClose={!gateMessage} />
       ) : null}
+
+      {tab === "closed" ? <ClosedToday positions={summary?.closedToday ?? []} /> : null}
 
       {tab === "orders" ? <RecentOrders orders={summary?.orders ?? []} onChanged={refresh} /> : null}
 

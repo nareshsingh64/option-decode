@@ -1404,7 +1404,29 @@ export async function reconcileLiveAccount(
   // it does not report has been closed elsewhere.
   const seen = new Set<string>();
   for (const position of brokerPositions) {
-    if (position.netQty === 0) continue;
+    // A netQty of 0 is how Dhan reports a position CLOSED today, and it carries
+    // the realised P&L. Skipping it threw that number away and then let the
+    // stale-position pass below mark our row closed with whatever realised
+    // figure we last happened to see - usually zero. So a flat row updates the
+    // realised P&L and closes the position, rather than being ignored.
+    if (position.netQty === 0) {
+      const closed = await client.livePosition.updateMany({
+        where: { accountId: account.id, securityId: position.securityId, status: "OPEN" },
+        data: {
+          netQty: 0,
+          realizedPnl: position.realizedProfit,
+          unrealizedPnl: 0,
+          status: "CLOSED",
+          closedAt: new Date(),
+          reconciledAt: new Date()
+        }
+      });
+      if (closed.count) {
+        result.positionsClosed += closed.count;
+      }
+      seen.add(position.securityId);
+      continue;
+    }
     seen.add(position.securityId);
     const underlying = guessUnderlyingFromSymbol(position.tradingSymbol) ?? "";
     await client.livePosition.upsert({
@@ -1727,6 +1749,8 @@ export interface LiveSummary {
   funds: DhanFundLimit | null;
   orders: Array<Record<string, unknown>>;
   positions: Array<Record<string, unknown>>;
+  /** Positions closed since midnight IST, with realised P&L. */
+  closedToday: Array<Record<string, unknown>>;
   /** Exit rules that have fired and not yet been acted on. */
   exitAlerts: Array<{ groupId: string; rule: string; action: string; detail: string | null; createdAt: string }>;
 }
@@ -1788,6 +1812,26 @@ export async function getLiveSummary(
       ]
     : [[], []];
 
+  // Closed TODAY only. The whole history would grow without bound and is not
+  // what anyone opens this panel for; the question being answered is "how did
+  // today go".
+  // Midnight IST, expressed as the UTC instant it corresponds to. Shifting into
+  // IST, truncating the date there, then shifting back is the only version of
+  // this that is obviously correct - mutating a Date with setUTCHours twice is
+  // not, and the first draft of this was wrong.
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const istNow = new Date(Date.now() + IST_OFFSET_MS);
+  const startOfDayIst = new Date(
+    Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()) - IST_OFFSET_MS
+  );
+
+  const closedToday = account
+    ? await client.livePosition.findMany({
+        where: { accountId: account.id, status: "CLOSED", closedAt: { gte: startOfDayIst } },
+        orderBy: { closedAt: "desc" }
+      })
+    : [];
+
   // Recent exit flags. Capped and recent-first: this is a "what needs my
   // attention now" list, not a history.
   const exitAlerts = account
@@ -1828,6 +1872,7 @@ export async function getLiveSummary(
     funds,
     orders: orders.map(serializeOrder),
     positions: serializedPositions.map((position) => applyLiveMark(position, markFor)),
+    closedToday: closedToday.map(serializePosition),
     exitAlerts: exitAlerts.map((event) => ({
       groupId: event.groupId,
       rule: event.rule,
