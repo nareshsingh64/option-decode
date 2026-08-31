@@ -659,6 +659,14 @@ export interface LiveTicketInput {
   lots: number;
   legs: LiveLegInput[];
   signalRef?: string;
+  /**
+   * LIMIT (default) or MARKET.
+   *
+   * LIMIT stays the default deliberately. A market order on an option book is
+   * how you discover the spread the hard way, and the liquidity gate that lets
+   * a strike through does not promise a tight one - it only refuses the worst.
+   */
+  orderType?: "LIMIT" | "MARKET";
 }
 
 /**
@@ -932,6 +940,7 @@ export async function placeLiveOrder(
   const quantity = toBrokerQuantity(ticket.underlyingSymbol, ticket.lots);
   const dhan = await getUserDhanClient(user.id, client);
   const groupId = randomUUID();
+  const orderType = ticket.orderType === "MARKET" ? "MARKET" : "LIMIT";
 
   const results: LivePlacementResult["orders"] = [];
 
@@ -953,12 +962,12 @@ export async function placeLiveOrder(
         exchangeSegment: segment,
         transactionType: leg.side,
         productType: "MARGIN",
-        orderType: "LIMIT",
+        orderType,
         lots: ticket.lots,
         lotSize,
         quantity,
         notional: leg.strikePrice * lotSize * ticket.lots,
-        price: leg.price,
+        price: orderType === "MARKET" ? null : leg.price,
         status: "LOCAL_PENDING",
         quotedAt: new Date(preview.createdAt),
         quotedPrice: leg.price,
@@ -977,10 +986,12 @@ export async function placeLiveOrder(
           transactionType: leg.side,
           exchangeSegment: segment,
           productType: "MARGIN",
-          orderType: "LIMIT",
+          orderType,
           securityId: leg.securityId,
           quantity,
-          price: leg.price,
+          // A market order carries no price. Sending the resolved last price
+          // alongside MARKET would look like a limit that was ignored.
+          price: orderType === "MARKET" ? 0 : leg.price,
           validity: "DAY"
         },
         "live:order:place"
@@ -1431,6 +1442,10 @@ export async function reconcileLiveAccount(
           netQty: 0,
           realizedPnl: position.realizedProfit,
           unrealizedPnl: 0,
+          // Parsed here too, or a position that closes before it is ever seen
+          // open keeps null contract fields forever.
+          optionType: parseBrokerTradingSymbol(position.tradingSymbol).optionType ?? undefined,
+          strikePrice: parseBrokerTradingSymbol(position.tradingSymbol).strikePrice ?? undefined,
           status: "CLOSED",
           closedAt: new Date(),
           reconciledAt: new Date()
@@ -1870,13 +1885,42 @@ export async function getLiveSummary(
 
   // Recent exit flags. Capped and recent-first: this is a "what needs my
   // attention now" list, not a history.
-  const exitAlerts = account
-    ? await client.liveExitEvent.findMany({
-        where: { accountId: account.id },
-        orderBy: { createdAt: "desc" },
-        take: 10
-      })
-    : [];
+  // Only for structures still OPEN. A rule that fired on a spread you have
+  // since closed is history, not something needing attention - and leaving it
+  // on screen trains people to ignore the one banner that must never be
+  // ignored. Groups are matched through the orders that opened them, since a
+  // reconciled position carries no groupId of its own.
+  const openGroupIds = account
+    ? new Set(
+        (
+          await client.liveOrder.findMany({
+            where: {
+              accountId: account.id,
+              groupId: { not: null },
+              status: "TRADED",
+              securityId: {
+                in: (
+                  await client.livePosition.findMany({
+                    where: { accountId: account.id, status: "OPEN" },
+                    select: { securityId: true }
+                  })
+                ).map((p) => p.securityId)
+              }
+            },
+            select: { groupId: true }
+          })
+        ).map((o) => o.groupId as string)
+      )
+    : new Set<string>();
+
+  const exitAlerts =
+    account && openGroupIds.size
+      ? await client.liveExitEvent.findMany({
+          where: { accountId: account.id, groupId: { in: [...openGroupIds] } },
+          orderBy: { createdAt: "desc" },
+          take: 10
+        })
+      : [];
 
   const accountDto = account
     ? {

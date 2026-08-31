@@ -64,7 +64,8 @@ const ticketSchema = z.object({
   structure: z.string().trim().min(1),
   lots: z.coerce.number().int().positive().max(100),
   legs: z.array(legSchema).min(1).max(4),
-  signalRef: z.string().trim().max(191).optional()
+  signalRef: z.string().trim().max(191).optional(),
+  orderType: z.enum(["LIMIT", "MARKET"]).optional()
 });
 
 const credentialSchema = z.object({

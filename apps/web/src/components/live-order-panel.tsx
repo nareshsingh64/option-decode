@@ -540,7 +540,12 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       ) : null}
 
       {tab === "positions" ? (
-        <OpenPositions positions={summary?.positions ?? []} onChanged={refresh} canClose={!gateMessage} />
+        <OpenPositions
+          positions={summary?.positions ?? []}
+          closedToday={summary?.closedToday ?? []}
+          onChanged={refresh}
+          canClose={!gateMessage}
+        />
       ) : null}
 
       {tab === "closed" ? <ClosedToday positions={summary?.closedToday ?? []} /> : null}
@@ -585,6 +590,10 @@ function TicketBuilder({
 }) {
   const [structure, setStructure] = useState<string>("BEAR_CALL_SPREAD");
   const [lots, setLots] = useState(1);
+  // LIMIT by default. A market order on an option book is how you find out what
+  // the spread was, and the liquidity gate only refuses the worst strikes - it
+  // does not promise a tight one on the rest.
+  const [orderType, setOrderType] = useState<"LIMIT" | "MARKET">("LIMIT");
   const [strikes, setStrikes] = useState<Record<number, number | "">>({});
   const [chain, setChain] = useState<ChainStrike[]>([]);
   const [chainError, setChainError] = useState<string | null>(null);
@@ -630,7 +639,7 @@ function TicketBuilder({
     }));
     // securityId and price are deliberately absent - the server resolves the
     // contract from the strike. See legSchema in apps/api/src/live-routes.ts.
-    void onPreview({ underlyingSymbol, expiryLabel, structure, lots, legs });
+    void onPreview({ underlyingSymbol, expiryLabel, structure, lots, legs, orderType });
   };
 
   return (
@@ -648,6 +657,17 @@ function TicketBuilder({
                 {key.replace(/_/g, " ")}
               </option>
             ))}
+          </select>
+        </label>
+        <label className="text-xs">
+          <span className="text-slate-500">Order type</span>
+          <select
+            value={orderType}
+            onChange={(event) => setOrderType(event.target.value as "LIMIT" | "MARKET")}
+            className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
+          >
+            <option value="LIMIT">Limit (at last traded)</option>
+            <option value="MARKET">Market</option>
           </select>
         </label>
         <label className="text-xs">
@@ -706,6 +726,9 @@ function TicketBuilder({
       <p className="text-xs text-slate-500">
         Preview prices the basket and runs every cap. Nothing reaches the broker until you confirm, and the
         confirmation expires after 10 seconds.
+        {orderType === "MARKET"
+          ? " A market order fills at whatever the book offers - the margin below is priced off the last traded price, not your fill."
+          : " A limit order is placed at each leg's last traded price, and may not fill."}
       </p>
     </div>
   );
@@ -910,10 +933,12 @@ function Stat({ label, value }: { label: string; value: string | undefined }) {
 
 function OpenPositions({
   positions,
+  closedToday,
   onChanged,
   canClose
 }: {
   positions: Array<Record<string, unknown>>;
+  closedToday: Array<Record<string, unknown>>;
   onChanged: () => Promise<void> | void;
   canClose: boolean;
 }) {
@@ -966,16 +991,26 @@ function OpenPositions({
   // Realised and unrealised together: a position partly closed during the day
   // has both, and showing only the unrealised half understates what the day
   // actually did.
-  const net = positions.reduce(
+  // Today's realised is included, so this is the day's P&L rather than only the
+  // open book's. Closing a losing leg otherwise made the number jump upwards,
+  // which is exactly backwards from what happened.
+  const openPnl = positions.reduce(
     (sum, p) => sum + Number(p.unrealizedPnl ?? 0) + Number(p.realizedPnl ?? 0),
     0
   );
+  const realisedToday = closedToday.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
+  const net = openPnl + realisedToday;
 
   return (
     <div className="space-y-2">
       {closeError ? <p className="rounded bg-red-50 p-2 text-xs text-red-800">{closeError}</p> : null}
-      <div className="flex items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
-        <span className="text-xs uppercase text-slate-500">Net P&amp;L (realised + unrealised)</span>
+      <div className="flex flex-wrap items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
+        <span className="text-xs uppercase text-slate-500">
+          Net P&amp;L today
+          <span className="ml-2 normal-case text-slate-400">
+            open {rupees(openPnl)} + closed {rupees(realisedToday)}
+          </span>
+        </span>
         <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
           {net < 0 ? "-" : "+"}
           {rupees(Math.abs(net))}
@@ -988,6 +1023,7 @@ function OpenPositions({
             <tr className="text-left text-xs uppercase text-slate-500">
               <th className="py-1 pr-2">S/B</th>
               <th>Contract</th>
+              <th>Expiry</th>
               <th className="text-right">Qty</th>
               <th className="text-right">Avg cost</th>
               <th className="text-right">LTP</th>
@@ -1018,6 +1054,14 @@ function OpenPositions({
               // Dhan's slower reconciled figure - worth surfacing, because a
               // stale mark and a live one look identical otherwise.
               const live = position.markSource === "LIVE_FEED";
+              // Days to expiry, highlighted at <= 1. An option expiring today
+              // or tomorrow behaves nothing like the same contract a month out,
+              // and the date alone does not make that obvious at a glance.
+              const dte = position.expiryLabel
+                ? Math.ceil(
+                    (new Date(`${String(position.expiryLabel)}T00:00:00Z`).getTime() - Date.now()) / 86_400_000
+                  )
+                : null;
               return (
                 <tr key={String(position.id)} className="border-t border-slate-100">
                   <td className="py-1 pr-2">
@@ -1029,6 +1073,10 @@ function OpenPositions({
                     </span>
                   </td>
                   <td>{String(position.tradingSymbol ?? position.securityId)}</td>
+                  <td className={dte !== null && dte <= 1 ? "font-semibold text-red-700" : "text-slate-600"}>
+                    {position.expiryLabel ? String(position.expiryLabel) : "--"}
+                    {dte === null ? "" : dte <= 0 ? " (today)" : ` (${dte}d)`}
+                  </td>
                   <td className="text-right">{Math.abs(qty)}</td>
                   <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
                   <td
