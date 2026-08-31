@@ -121,6 +121,12 @@ const STRUCTURES: Record<string, LegTemplate[]> = {
   ]
 };
 
+// Which states the broker will still accept a change or a cancel for. Anything
+// else - TRADED, REJECTED, CANCELLED - is finished, and offering a control that
+// can only fail is worse than offering none. Module scope so the Orders tab
+// badge and the row buttons cannot drift apart on what "working" means.
+const WORKING_STATES = new Set(["SENT", "OPEN", "PARTIAL"]);
+
 const rupees = (value: number | null | undefined): string =>
   value === null || value === undefined || Number.isNaN(value)
     ? "--"
@@ -136,6 +142,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
   // Counts the confirm window down so the button cannot be pressed against a
   // preview whose prices have moved.
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [tab, setTab] = useState<"positions" | "orders" | "place" | "token">("positions");
 
   const refresh = useCallback(async () => {
     try {
@@ -175,6 +182,9 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
   const credential = summary?.credential;
   const account = summary?.account;
 
+  // Only states the broker will still act on count as "working" for the badge.
+  const workingOrderCount = (summary?.orders ?? []).filter((o) => WORKING_STATES.has(String(o.status))).length;
+
   const gateMessage = useMemo(() => {
     if (!summary) return null;
     if (!summary.enabled) return "Live trading is disabled on this deployment (LIVE_TRADING_ENABLED=false).";
@@ -184,6 +194,40 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
     if (!account.tradingEnabled) return "Live trading is not enabled on this account.";
     return null;
   }, [summary, credential, account]);
+
+  // Completing a Dhan consent redirect must not depend on which tab is open.
+  // It lived inside the credential form until the page gained tabs, at which
+  // point the form stopped being mounted most of the time - and a redirect that
+  // lands on the Positions tab would have been silently dropped.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tokenId = params.get("tokenId");
+    const state = params.get("state");
+    if (!tokenId || !state) return;
+    setTab("token");
+    void (async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/live/credential/consume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ tokenId, state })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+        await refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not complete the Dhan login.");
+      } finally {
+        // Strip the single-use exchange code out of the address bar whatever
+        // happened - it is spent, and leaving it in history is gratuitous.
+        params.delete("tokenId");
+        params.delete("state");
+        const query = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+      }
+    })();
+  }, [refresh]);
 
   const runPreview = useCallback(async (ticket: unknown) => {
     setBusy(true);
@@ -250,8 +294,9 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         <p className="rounded border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">{gateMessage}</p>
       ) : null}
 
-      {/* Token life. Always visible, because a lapsed token means you cannot
-          close a position, not merely that you cannot open one. */}
+      {/* Token life stays OUTSIDE the tabs. A lapsed token means you cannot
+          close a position, not merely that you cannot open one, so it must be
+          visible from whichever tab the trader happens to be on. */}
       {credential?.present ? (
         <div className="rounded border border-slate-200 p-3 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
@@ -272,12 +317,38 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           <Stat label="Available" value={rupees(summary.funds.availableBalance)} />
           <Stat label="Utilised" value={rupees(summary.funds.utilizedAmount)} />
           <Stat label="Withdrawable" value={rupees(summary.funds.withdrawableBalance)} />
-          <Stat label="Per-order cap" value={rupees(account?.maxOrderMargin)} />
+          <Stat
+            label="Per-order cap"
+            value={account && account.maxOrderMargin > 0 ? rupees(account.maxOrderMargin) : "available margin"}
+          />
         </div>
       ) : null}
 
-      {/* Preview -> confirm. The confirm button only exists once a preview has
-          returned, and it disappears when the 10s window closes. */}
+      <nav className="flex flex-wrap gap-1 border-b border-slate-200">
+        {([
+          ["positions", `Positions${summary?.positions.length ? ` (${summary.positions.length})` : ""}`],
+          ["orders", `Orders${workingOrderCount ? ` (${workingOrderCount})` : ""}`],
+          ["place", "Place order"],
+          ["token", "Broker token"]
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${
+              tab === key
+                ? "border-slate-800 font-semibold text-slate-900"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {/* The preview/confirm block sits above the tabs on purpose. Once a
+          preview exists it is a ten-second decision, and it must not be
+          possible to navigate away from it by accident. */}
       {previewError ? <p className="rounded bg-red-50 p-2 text-sm text-red-800">{previewError}</p> : null}
       {placeResult ? <p className="rounded bg-emerald-50 p-2 text-sm text-emerald-900">{placeResult}</p> : null}
 
@@ -288,7 +359,10 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             <Stat label={`Margin (${preview.margin.productType})`} value={rupees(preview.margin.requirement.total)} />
             <Stat label="Hedge benefit" value={rupees(preview.margin.hedge.benefitAmount)} />
             <Stat label="Utilisation" value={`${preview.margin.headroom.utilizationPct.toFixed(0)}%`} />
-            <Stat label="Quantity sent" value={`${preview.quantity} (${preview.exchangeSegment === "MCX_COMM" ? "lots" : "contracts"})`} />
+            <Stat
+              label="Quantity sent"
+              value={`${preview.quantity} (${preview.exchangeSegment === "MCX_COMM" ? "lots" : "contracts"})`}
+            />
           </div>
           {preview.warnings.map((warning) => (
             <p key={warning} className="text-xs text-amber-900">
@@ -306,24 +380,26 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         </div>
       ) : null}
 
-      {/* Always available, never only when the credential is missing. Dhan
-          tokens live 24 hours and have to be regenerated whenever the IP
-          allowlist changes, so "replace my token" is routine, not an edge case.
-          Hiding this once a credential existed left the only route to a new
-          token going through the database. */}
-      <CredentialForm onSaved={refresh} hasCredential={Boolean(credential?.present)} />
+      {tab === "positions" ? <OpenPositions positions={summary?.positions ?? []} /> : null}
 
-      <OpenPositions positions={summary?.positions ?? []} />
-      <RecentOrders orders={summary?.orders ?? []} onChanged={refresh} />
+      {tab === "orders" ? <RecentOrders orders={summary?.orders ?? []} onChanged={refresh} /> : null}
 
-      {!gateMessage && underlyingSymbol && expiryLabel ? (
-        <TicketBuilder
-          underlyingSymbol={underlyingSymbol}
-          expiryLabel={expiryLabel}
-          busy={busy}
-          onPreview={runPreview}
-        />
+      {tab === "place" ? (
+        gateMessage ? (
+          <p className="text-sm text-slate-600">Order entry opens once the account is ready — see Broker token.</p>
+        ) : underlyingSymbol && expiryLabel ? (
+          <TicketBuilder
+            underlyingSymbol={underlyingSymbol}
+            expiryLabel={expiryLabel}
+            busy={busy}
+            onPreview={runPreview}
+          />
+        ) : (
+          <p className="text-sm text-slate-600">Pick an underlying and expiry in Market Controls above.</p>
+        )
       ) : null}
+
+      {tab === "token" ? <CredentialForm onSaved={refresh} hasCredential={Boolean(credential?.present)} /> : null}
 
       <p className="text-xs text-slate-500">
         Margin figures come from Dhan&apos;s calculator and are estimates: the exchange revalues SPAN six times a
@@ -507,40 +583,6 @@ function CredentialForm({
     };
   }, []);
 
-  // Completes the flow when Dhan redirects back with ?tokenId=&state=.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tokenId = params.get("tokenId");
-    const state = params.get("state");
-    if (!tokenId || !state) return;
-
-    void (async () => {
-      setBusy(true);
-      try {
-        const response = await fetch(`${API_URL}/api/live/credential/consume`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ tokenId, state })
-        });
-        const body = await response.json();
-        if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
-        await onSaved();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not complete the Dhan login.");
-      } finally {
-        // Strip the one-time exchange code out of the address bar whatever
-        // happened. It is single-use, but leaving it in history and in any
-        // copied URL is gratuitous.
-        params.delete("tokenId");
-        params.delete("state");
-        const query = params.toString();
-        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-        setBusy(false);
-      }
-    })();
-  }, [onSaved]);
-
   const startPartnerLogin = async () => {
     setBusy(true);
     setError(null);
@@ -707,38 +749,80 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
   if (!positions.length) {
     return <p className="text-sm text-slate-500">No open live positions.</p>;
   }
+
+  // Realised and unrealised together: a position partly closed during the day
+  // has both, and showing only the unrealised half understates what the day
+  // actually did.
+  const net = positions.reduce(
+    (sum, p) => sum + Number(p.unrealizedPnl ?? 0) + Number(p.realizedPnl ?? 0),
+    0
+  );
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-xs uppercase text-slate-500">
-            <th className="py-1">Symbol</th>
-            <th>Net qty</th>
-            <th>Avg cost</th>
-            <th>Unrealised</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((position) => (
-            <tr key={String(position.id)} className="border-t border-slate-100">
-              <td className="py-1">{String(position.tradingSymbol ?? position.securityId)}</td>
-              <td>{String(position.netQty)}</td>
-              <td>{rupees(position.avgCostPrice as number)}</td>
-              <td className={Number(position.unrealizedPnl) < 0 ? "text-red-700" : "text-emerald-700"}>
-                {rupees(position.unrealizedPnl as number)}
-              </td>
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
+        <span className="text-xs uppercase text-slate-500">Net P&amp;L (realised + unrealised)</span>
+        <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
+          {net < 0 ? "-" : "+"}
+          {rupees(Math.abs(net))}
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase text-slate-500">
+              <th className="py-1 pr-2">S/B</th>
+              <th>Contract</th>
+              <th className="text-right">Qty</th>
+              <th className="text-right">Avg cost</th>
+              <th className="text-right">Unrealised</th>
+              <th className="text-right">Realised</th>
+              <th className="text-right">Net</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {positions.map((position) => {
+              // netQty carries the direction: negative is short. Deriving the
+              // marker from the sign rather than from a stored side means it
+              // cannot disagree with the quantity beside it.
+              const qty = Number(position.netQty ?? 0);
+              const isShort = qty < 0;
+              const rowNet = Number(position.unrealizedPnl ?? 0) + Number(position.realizedPnl ?? 0);
+              return (
+                <tr key={String(position.id)} className="border-t border-slate-100">
+                  <td className="py-1 pr-2">
+                    <span
+                      className={`font-bold ${isShort ? "text-red-700" : "text-emerald-700"}`}
+                      title={isShort ? "Short - sold to open" : "Long - bought to open"}
+                    >
+                      {isShort ? "S" : "B"}
+                    </span>
+                  </td>
+                  <td>{String(position.tradingSymbol ?? position.securityId)}</td>
+                  <td className="text-right">{Math.abs(qty)}</td>
+                  <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
+                  <td className={`text-right ${Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                    {rupees(position.unrealizedPnl as number)}
+                  </td>
+                  <td className="text-right">{rupees(position.realizedPnl as number)}</td>
+                  <td className={`text-right font-medium ${rowNet < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                    {rupees(rowNet)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-slate-500">
+        Positions come from Dhan and are refreshed by the reconciler every 20s while a market is open. Anything
+        held on this broker account appears here, including positions not opened through this app.
+      </p>
     </div>
   );
 }
-
-// Which states the broker will still accept a change or a cancel for. Anything
-// else - TRADED, REJECTED, CANCELLED - is finished, and offering a button that
-// can only fail is worse than offering none.
-const WORKING_STATES = new Set(["SENT", "OPEN", "PARTIAL"]);
 
 function RecentOrders({
   orders,
