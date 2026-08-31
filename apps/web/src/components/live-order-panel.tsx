@@ -14,7 +14,7 @@
 //   - The token countdown is always visible. A position you cannot close
 //     because your token lapsed is the worst outcome this module has.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -767,7 +767,20 @@ function Stat({ label, value }: { label: string; value: string | undefined }) {
 }
 
 function OpenPositions({ positions }: { positions: Array<Record<string, unknown>> }) {
+  // Last seen price per position, and the direction of the last CHANGE.
+  //
+  // The direction is remembered rather than recomputed from "is this render's
+  // price different from the previous one", because at a 1-second poll most
+  // refreshes return the same price - so a naive comparison would flash the
+  // colour off between ticks. Holding the last real move means green stays
+  // green until the price actually falls.
+  //
+  // A ref, not state: this must not itself trigger a render, and it is read
+  // during render purely to colour a cell.
+  const marks = useRef(new Map<string, { price: number; dir: "up" | "down" | "flat" }>());
+
   if (!positions.length) {
+    marks.current.clear();
     return <p className="text-sm text-slate-500">No open live positions.</p>;
   }
 
@@ -797,6 +810,7 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
               <th>Contract</th>
               <th className="text-right">Qty</th>
               <th className="text-right">Avg cost</th>
+              <th className="text-right">LTP</th>
               <th className="text-right">Unrealised</th>
               <th className="text-right">Realised</th>
               <th className="text-right">Net</th>
@@ -810,6 +824,19 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
               const qty = Number(position.netQty ?? 0);
               const isShort = qty < 0;
               const rowNet = Number(position.unrealizedPnl ?? 0) + Number(position.realizedPnl ?? 0);
+
+              const id = String(position.id);
+              const ltp = position.lastPrice === null || position.lastPrice === undefined ? null : Number(position.lastPrice);
+              const previous = marks.current.get(id);
+              let dir: "up" | "down" | "flat" = previous?.dir ?? "flat";
+              if (ltp !== null && previous && ltp !== previous.price) {
+                dir = ltp > previous.price ? "up" : "down";
+              }
+              if (ltp !== null) marks.current.set(id, { price: ltp, dir });
+              // markSource says whether this came from the live feed or from
+              // Dhan's slower reconciled figure - worth surfacing, because a
+              // stale mark and a live one look identical otherwise.
+              const live = position.markSource === "LIVE_FEED";
               return (
                 <tr key={String(position.id)} className="border-t border-slate-100">
                   <td className="py-1 pr-2">
@@ -823,6 +850,22 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
                   <td>{String(position.tradingSymbol ?? position.securityId)}</td>
                   <td className="text-right">{Math.abs(qty)}</td>
                   <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
+                  <td
+                    className={`text-right tabular-nums font-medium ${
+                      dir === "up" ? "text-emerald-700" : dir === "down" ? "text-red-700" : "text-slate-700"
+                    }`}
+                    title={
+                      ltp === null
+                        ? "No price yet"
+                        : live
+                          ? "Live from the Dhan feed"
+                          : "From the last reconcile - the feed has nothing fresh for this contract"
+                    }
+                  >
+                    {ltp === null ? "--" : ltp.toFixed(2)}
+                    {dir === "up" ? " \u25b2" : dir === "down" ? " \u25bc" : ""}
+                    {ltp !== null && !live ? <span className="text-slate-400"> *</span> : null}
+                  </td>
                   <td className={`text-right ${Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(position.unrealizedPnl as number)}
                   </td>
@@ -838,8 +881,9 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
       </div>
 
       <p className="text-xs text-slate-500">
-        Positions come from Dhan and are refreshed by the reconciler every 20s while a market is open. Anything
-        held on this broker account appears here, including positions not opened through this app.
+        LTP updates every second from the Dhan feed; an asterisk means the feed has nothing fresh for that
+        contract and the price is from the last reconcile. Positions themselves come from Dhan and are
+        refreshed every 20s, including any held on this account but not opened through this app.
       </p>
     </div>
   );
