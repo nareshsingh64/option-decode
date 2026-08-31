@@ -992,29 +992,49 @@ export async function placeLiveOrder(
       await recordOrderEvent(row.id, "API_RESPONSE", placed.orderStatus ?? "PLACED", placed as unknown as Record<string, unknown>, client);
       results.push({ id: row.id, correlationId, brokerOrderId: placed.orderId, status: mapBrokerStatus(placed.orderStatus) });
     } catch (error) {
-      // THE IMPORTANT BRANCH. We do not know whether the order exists.
+      // Establish what the failure MEANS before reacting to it - the same
+      // discipline the RenewToken 5xx handling uses, and the reason these two
+      // branches must not be collapsed.
       //
-      // Retrying blindly risks a duplicate live position; giving up risks an
-      // unmanaged one. So: mark UNKNOWN, then probe the broker's own book for
-      // OUR correlationId. Same "establish what the failure MEANS before
-      // reacting to it" discipline as the RenewToken 5xx handling.
+      // A 4xx is NEWS: Dhan looked at the request and refused it, so no order
+      // was created and there is nothing to find. Recording that as UNKNOWN is
+      // wrong twice over - it tells the trader we lost track of a live order
+      // when we did not, and it spends two order-book probes hunting for
+      // something that cannot exist. That is exactly what happened on the first
+      // real placement here, a DH-905 "Invalid IP" shown to the user as UNKNOWN.
+      //
+      // A 5xx, a timeout or a transport error is AMBIGUITY: the request may
+      // have been processed and the reply lost. Only then is the order book
+      // probed for our own correlationId, because only then might it be there.
       const message = error instanceof Error ? error.message : String(error);
-      await client.liveOrder.update({
-        where: { id: row.id },
-        data: { status: "UNKNOWN", rejectionReason: message.slice(0, 255) }
-      });
-      await recordOrderEvent(row.id, "API_RESPONSE", "UNKNOWN", { error: message }, client);
+      const status = error instanceof DhanApiError ? error.statusCode : undefined;
+      const definitivelyRejected = status !== undefined && status >= 400 && status < 500;
 
-      const resolved = await resolveUnknownOrder(row.id, correlationId, dhan, client);
-      results.push({
-        id: row.id,
-        correlationId,
-        brokerOrderId: resolved?.orderId,
-        status: resolved ? mapBrokerStatus(resolved.orderStatus) : "UNKNOWN",
-        message: resolved
-          ? "Placement reply was lost but the order exists at the broker - adopted it."
-          : `Placement failed and no matching order is in the book: ${message}`
-      });
+      if (definitivelyRejected) {
+        await client.liveOrder.update({
+          where: { id: row.id },
+          data: { status: "REJECTED", rejectionReason: message.slice(0, 255) }
+        });
+        await recordOrderEvent(row.id, "API_RESPONSE", "REJECTED", { error: message, statusCode: status }, client);
+        results.push({ id: row.id, correlationId, status: "REJECTED", message });
+      } else {
+        await client.liveOrder.update({
+          where: { id: row.id },
+          data: { status: "UNKNOWN", rejectionReason: message.slice(0, 255) }
+        });
+        await recordOrderEvent(row.id, "API_RESPONSE", "UNKNOWN", { error: message, statusCode: status ?? null }, client);
+
+        const resolved = await resolveUnknownOrder(row.id, correlationId, dhan, client);
+        results.push({
+          id: row.id,
+          correlationId,
+          brokerOrderId: resolved?.orderId,
+          status: resolved ? mapBrokerStatus(resolved.orderStatus) : "UNKNOWN",
+          message: resolved
+            ? "Placement reply was lost but the order exists at the broker - adopted it."
+            : `Placement outcome is UNKNOWN and no matching order is in the book: ${message}`
+        });
+      }
 
       // A failed leg means the basket is incomplete. Stop rather than placing
       // the remaining legs into a structure that is no longer the one priced.

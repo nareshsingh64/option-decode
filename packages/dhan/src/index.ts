@@ -210,9 +210,19 @@ function toBrokerOrder(row: Record<string, unknown>): DhanBrokerOrder {
 }
 
 export class DhanApiError extends Error {
-  constructor(message: string) {
+  /**
+   * The HTTP status, when the failure came from a response rather than from the
+   * transport. This is the difference between "Dhan said no" and "we do not know
+   * what Dhan did", and on the order path those demand opposite reactions - see
+   * placeLiveOrder. Undefined for timeouts and network errors, which are
+   * ambiguous by nature.
+   */
+  readonly statusCode?: number;
+
+  constructor(message: string, statusCode?: number) {
     super(message);
     this.name = "DhanApiError";
+    this.statusCode = statusCode;
   }
 }
 
@@ -823,7 +833,10 @@ export class DhanClient {
       }
 
       if (!response.ok) {
-        throw new DhanApiError(`Dhan request ${path} failed: HTTP ${response.status} ${JSON.stringify(decoded).slice(0, 500)}`);
+        throw new DhanApiError(
+          `Dhan request ${path} failed: HTTP ${response.status} ${JSON.stringify(decoded).slice(0, 500)}`,
+          response.status
+        );
       }
 
       this.recordRequestAudit({ endpoint: path, caller, statusCode, success: true, durationMs: Date.now() - startedAt });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DhanClient, type DhanMarginLegInput } from "./index.js";
+import { DhanApiError, DhanClient, type DhanMarginLegInput } from "./index.js";
 
 // Guards the request field names on POST /v2/margincalculator/multi.
 //
@@ -141,6 +141,54 @@ test("an empty basket is rejected before any request is made", async () => {
     globalThis.fetch = realFetch;
   }
   assert.equal(called, false, "an empty basket must not cost a Dhan request");
+});
+
+test("an HTTP failure carries its status onto the error", async () => {
+  // The order path branches on this: a 4xx means Dhan refused the request and
+  // no order exists, while a 5xx or a timeout means the outcome is unknown and
+  // the order book has to be probed. Collapsing the two showed a real DH-905
+  // "Invalid IP" rejection to the trader as UNKNOWN.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    status: 400,
+    ok: false,
+    text: async () => JSON.stringify({ errorType: "Input_Exception", errorCode: "DH-905", errorMessage: "Invalid IP" })
+  })) as unknown as typeof globalThis.fetch;
+
+  try {
+    const client = new DhanClient({ baseUrl: "https://api.dhan.co", clientId: "TESTCLIENT", accessToken: "not-a-jwt-token" });
+    await client.calculateMultiOrderMargin(TWO_LEG_SPREAD, "test:status").then(
+      () => assert.fail("expected a rejection"),
+      (error: unknown) => {
+        assert.ok(error instanceof DhanApiError);
+        assert.equal((error as DhanApiError).statusCode, 400, "a 4xx must be distinguishable from a timeout");
+        assert.match((error as Error).message, /DH-905/);
+      }
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a transport failure has NO status, so it reads as ambiguous", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("socket hang up");
+  }) as unknown as typeof globalThis.fetch;
+
+  try {
+    const client = new DhanClient({ baseUrl: "https://api.dhan.co", clientId: "TESTCLIENT", accessToken: "not-a-jwt-token" });
+    await client.calculateMultiOrderMargin(TWO_LEG_SPREAD, "test:status").then(
+      () => assert.fail("expected a rejection"),
+      (error: unknown) => {
+        // Undefined, not 0 or 500: we genuinely do not know what happened, and
+        // the order path must treat that as UNKNOWN rather than as a rejection.
+        assert.equal((error as DhanApiError).statusCode, undefined);
+      }
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("the response is decoded from Dhan's snake_case field names", async () => {
