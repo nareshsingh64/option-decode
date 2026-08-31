@@ -82,12 +82,51 @@ interface LiveSummary {
   positions: Array<Record<string, unknown>>;
 }
 
+interface ChainStrike {
+  optionType: "CE" | "PE";
+  strikePrice: number;
+  securityId: string;
+  lastPrice: number;
+  openInterest: number | null;
+  tradeable: boolean;
+  reason?: string;
+}
+
+type LegTemplate = { side: "BUY" | "SELL"; optionType: "CE" | "PE"; label: string };
+
+// Only DEFINED-RISK structures are offered. Undefined-risk ones are blocked
+// server-side by LiveAccount.allowUndefinedRisk anyway - a one-lot naked index
+// short needs more margin than the measured account balance - so offering them
+// would just be a menu of things that get rejected.
+const STRUCTURES: Record<string, LegTemplate[]> = {
+  BEAR_CALL_SPREAD: [
+    { side: "SELL", optionType: "CE", label: "Short call" },
+    { side: "BUY", optionType: "CE", label: "Long call (wing)" }
+  ],
+  BULL_PUT_SPREAD: [
+    { side: "SELL", optionType: "PE", label: "Short put" },
+    { side: "BUY", optionType: "PE", label: "Long put (wing)" }
+  ],
+  IRON_CONDOR: [
+    { side: "SELL", optionType: "PE", label: "Short put" },
+    { side: "BUY", optionType: "PE", label: "Long put (wing)" },
+    { side: "SELL", optionType: "CE", label: "Short call" },
+    { side: "BUY", optionType: "CE", label: "Long call (wing)" }
+  ],
+  IRON_BUTTERFLY: [
+    { side: "SELL", optionType: "PE", label: "Short put (ATM)" },
+    { side: "BUY", optionType: "PE", label: "Long put (wing)" },
+    { side: "SELL", optionType: "CE", label: "Short call (ATM)" },
+    { side: "BUY", optionType: "CE", label: "Long call (wing)" }
+  ]
+};
+
 const rupees = (value: number | null | undefined): string =>
   value === null || value === undefined || Number.isNaN(value)
     ? "--"
     : `₹${Math.round(value).toLocaleString("en-IN")}`;
 
-export function LiveOrderPanel() {
+export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSymbol?: string; expiryLabel?: string }) {
   const [summary, setSummary] = useState<LiveSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -145,6 +184,28 @@ export function LiveOrderPanel() {
     if (!account.tradingEnabled) return "Live trading is not enabled on this account.";
     return null;
   }, [summary, credential, account]);
+
+  const runPreview = useCallback(async (ticket: unknown) => {
+    setBusy(true);
+    setPreviewError(null);
+    setPlaceResult(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(ticket)
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      setPreview(body as Preview);
+    } catch (err) {
+      setPreview(null);
+      setPreviewError(err instanceof Error ? err.message : "Preview failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const confirmPlace = useCallback(async () => {
     if (!preview) return;
@@ -253,19 +314,159 @@ export function LiveOrderPanel() {
       <OpenPositions positions={summary?.positions ?? []} />
       <RecentOrders orders={summary?.orders ?? []} />
 
-      {/* Stated plainly rather than hidden: the ticket builder is not built.
-          /api/live/preview and /api/live/orders both work, but nothing in this
-          panel composes a basket yet, so an order cannot be placed from here. */}
-      <p className="rounded border border-dashed border-slate-300 p-2 text-xs text-slate-600">
-        Order entry is not built yet. This panel shows account state, positions and orders; composing a
-        basket still has to come from the Strike Matrix hand-off (see docs/live-order-module.md, phase 2).
-      </p>
+      {!gateMessage && underlyingSymbol && expiryLabel ? (
+        <TicketBuilder
+          underlyingSymbol={underlyingSymbol}
+          expiryLabel={expiryLabel}
+          busy={busy}
+          onPreview={runPreview}
+        />
+      ) : null}
 
       <p className="text-xs text-slate-500">
         Margin figures come from Dhan&apos;s calculator and are estimates: the exchange revalues SPAN six times a
         trading day. Treat them as ±20%.
       </p>
     </section>
+  );
+}
+
+function TicketBuilder({
+  underlyingSymbol,
+  expiryLabel,
+  busy,
+  onPreview
+}: {
+  underlyingSymbol: string;
+  expiryLabel: string;
+  busy: boolean;
+  onPreview: (ticket: unknown) => Promise<void>;
+}) {
+  const [structure, setStructure] = useState<string>("BEAR_CALL_SPREAD");
+  const [lots, setLots] = useState(1);
+  const [strikes, setStrikes] = useState<Record<number, number | "">>({});
+  const [chain, setChain] = useState<ChainStrike[]>([]);
+  const [chainError, setChainError] = useState<string | null>(null);
+
+  const template = STRUCTURES[structure] ?? [];
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const url = `${API_URL}/api/live/chain?underlying=${encodeURIComponent(underlyingSymbol)}&expiry=${encodeURIComponent(expiryLabel)}`;
+        const response = await fetch(url, { credentials: "include", cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+        if (!cancelled) {
+          setChain((body.strikes ?? []) as ChainStrike[]);
+          setChainError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setChainError(err instanceof Error ? err.message : "Could not load the chain.");
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [underlyingSymbol, expiryLabel]);
+
+  // Changing structure invalidates the strikes: a bear call spread's picks are
+  // meaningless as an iron condor's.
+  useEffect(() => setStrikes({}), [structure]);
+
+  const optionsFor = (optionType: "CE" | "PE") =>
+    chain.filter((row) => row.optionType === optionType).sort((a, b) => a.strikePrice - b.strikePrice);
+
+  const complete = template.length > 0 && template.every((_, index) => Number(strikes[index]) > 0);
+
+  const submit = () => {
+    const legs = template.map((leg, index) => ({
+      side: leg.side,
+      optionType: leg.optionType,
+      strikePrice: Number(strikes[index])
+    }));
+    // securityId and price are deliberately absent - the server resolves the
+    // contract from the strike. See legSchema in apps/api/src/live-routes.ts.
+    void onPreview({ underlyingSymbol, expiryLabel, structure, lots, legs });
+  };
+
+  return (
+    <div className="space-y-3 rounded border border-slate-300 p-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs">
+          <span className="text-slate-500">Structure</span>
+          <select
+            value={structure}
+            onChange={(event) => setStructure(event.target.value)}
+            className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
+          >
+            {Object.keys(STRUCTURES).map((key) => (
+              <option key={key} value={key}>
+                {key.replace(/_/g, " ")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs">
+          <span className="text-slate-500">Lots</span>
+          <input
+            type="number"
+            min={1}
+            value={lots}
+            onChange={(event) => setLots(Math.max(1, Number(event.target.value) || 1))}
+            className="mt-1 block w-20 rounded border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <span className="text-xs text-slate-500">
+          {underlyingSymbol} · {expiryLabel}
+        </span>
+      </div>
+
+      {chainError ? <p className="text-xs text-red-700">{chainError}</p> : null}
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        {template.map((leg, index) => (
+          <label key={`${leg.side}-${leg.optionType}-${index}`} className="text-xs">
+            <span className="text-slate-500">
+              {leg.label} · {leg.side} {leg.optionType}
+            </span>
+            <select
+              value={strikes[index] ?? ""}
+              onChange={(event) =>
+                setStrikes((prev) => ({ ...prev, [index]: event.target.value ? Number(event.target.value) : "" }))
+              }
+              className="mt-1 block w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            >
+              <option value="">Select strike…</option>
+              {optionsFor(leg.optionType).map((row) => (
+                // Untradeable strikes are shown but disabled, with the reason.
+                // Hiding them would leave the trader wondering where a strike
+                // went; the server would refuse it anyway.
+                <option key={row.strikePrice} value={row.strikePrice} disabled={!row.tradeable}>
+                  {row.strikePrice} · ₹{row.lastPrice}
+                  {row.tradeable ? "" : ` — ${row.reason}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        disabled={busy || !complete}
+        onClick={submit}
+        className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+      >
+        {busy ? "Pricing…" : "Preview margin"}
+      </button>
+      <p className="text-xs text-slate-500">
+        Preview prices the basket and runs every cap. Nothing reaches the broker until you confirm, and the
+        confirmation expires after 10 seconds.
+      </p>
+    </div>
   );
 }
 

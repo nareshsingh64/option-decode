@@ -25,6 +25,7 @@ import {
   computeLiveMarginView,
   getBrokerCredentialStatus,
   getLiveSummary,
+  listLiveChainStrikes,
   placeLiveOrder,
   previewLiveOrder,
   reconcileLiveAccount,
@@ -33,12 +34,19 @@ import {
 } from "@option-decode/db";
 import type { AuthUserDto } from "@option-decode/db";
 
+// securityId and price are OPTIONAL: the browser identifies a leg by strike and
+// the server resolves the contract. Keeping Dhan security ids out of the client
+// means a ticket can never be composed against a contract the server cannot
+// name, which is the one thing that must not happen before a real order.
 const legSchema = z.object({
   side: z.enum(["BUY", "SELL"]),
   optionType: z.enum(["CE", "PE"]),
   strikePrice: z.coerce.number().positive(),
-  securityId: z.string().trim().min(1),
-  price: z.coerce.number().nonnegative()
+  // Genuinely optional, NOT defaulted: zod validates default values, so a
+  // default of "" against .min(1) rejects every ticket that omits the field -
+  // which is every ticket the browser sends.
+  securityId: z.string().trim().min(1).optional(),
+  price: z.coerce.number().positive().optional()
 });
 
 const ticketSchema = z.object({
@@ -139,6 +147,24 @@ export function registerLiveRoutes(app: FastifyInstance, getRequestUser: GetRequ
   });
 
   // --- Read ---------------------------------------------------------------
+
+  // Feeds the ticket's strike picker. Carries the liquidity verdict per strike
+  // so the UI can grey out what the server would refuse anyway, rather than
+  // letting the user compose a ticket that is going to be rejected.
+  app.get<{ Querystring: { underlying?: string; expiry?: string } }>(
+    "/api/live/chain",
+    async (request, reply) => {
+      const user = await requireUser(request.headers.cookie, reply);
+      if (!user) return;
+      const underlying = (request.query.underlying ?? "").trim();
+      const expiry = (request.query.expiry ?? "").trim();
+      if (!underlying || !expiry) {
+        return reply.status(400).send({ message: "underlying and expiry are both required." });
+      }
+      const strikes = await listLiveChainStrikes(underlying, expiry);
+      return { underlying, expiry, strikes };
+    }
+  );
 
   app.get("/api/live/summary", async (request, reply) => {
     const user = await requireUser(request.headers.cookie, reply);

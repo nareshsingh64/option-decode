@@ -349,8 +349,175 @@ export interface LiveLegInput {
   side: "BUY" | "SELL";
   optionType: OptionType;
   strikePrice: number;
+  // Both optional from the client. The browser has no business knowing Dhan
+  // security ids, so resolveTicketLegs fills these in server-side from the
+  // captured chain and refuses the ticket if it cannot.
+  securityId?: string;
+  price?: number;
+}
+
+/** A leg after resolveTicketLegs: contract named, price known. */
+interface ResolvedLeg extends LiveLegInput {
   securityId: string;
   price: number;
+}
+
+// Omit-then-replace, NOT an intersection: `LiveTicketInput & { legs: ResolvedLeg[] }`
+// intersects the two legs arrays rather than overriding, so element access still
+// widens securityId back to string | undefined.
+type ResolvedTicket = Omit<LiveTicketInput, "legs"> & { legs: ResolvedLeg[] };
+
+// ------------------------------------------------------------------
+// Leg resolution + the strike picker's data source
+// ------------------------------------------------------------------
+
+/** One tradeable strike, with everything the ticket and the liquidity gate need. */
+export interface LiveChainStrike {
+  optionType: OptionType;
+  strikePrice: number;
+  securityId: string;
+  lastPrice: number;
+  bidPrice: number | null;
+  askPrice: number | null;
+  openInterest: number | null;
+  volume: number | null;
+  delta: number | null;
+  /** False when this strike fails the liquidity gate - see MIN_LIVE_OPEN_INTEREST. */
+  tradeable: boolean;
+  reason?: string;
+}
+
+// Same gate Paper Trade Pro applies. A strike the app NAMES as tradeable has to
+// clear the same bar everywhere, or there are two standards and the stricter one
+// is decorative.
+const MIN_LIVE_OPEN_INTEREST = 500;
+const MAX_LIVE_SPREAD_RATIO = 0.15;
+
+/**
+ * The strikes that can actually be traded for this underlying/expiry.
+ *
+ * Reads the most recent tick per contract. Deliberately server-side: the browser
+ * has no business knowing Dhan security ids, and resolving them in one place is
+ * what stops a ticket being composed against a contract we cannot name.
+ */
+export async function listLiveChainStrikes(
+  underlyingSymbol: string,
+  expiryLabel: string,
+  client: PrismaClient = prisma
+): Promise<LiveChainStrike[]> {
+  const rows = await client.$queryRaw<Array<{
+    optionType: string; strikePrice: unknown; securityId: string | null;
+    lastPrice: unknown; bidPrice: unknown; askPrice: unknown;
+    openInterest: unknown; volume: unknown; deltaValue: unknown;
+  }>>`
+    SELECT t.optionType, t.strikePrice, t.securityId, t.lastPrice, t.bidPrice, t.askPrice,
+           t.openInterest, t.volume, t.deltaValue
+    FROM OptionContractTick t
+    JOIN (
+      SELECT optionType, strikePrice, MAX(tickTime) AS latest
+      FROM OptionContractTick
+      WHERE underlyingSymbol = ${underlyingSymbol} AND expiryLabel = ${expiryLabel}
+      GROUP BY optionType, strikePrice
+    ) newest
+      ON newest.optionType = t.optionType
+     AND newest.strikePrice = t.strikePrice
+     AND newest.latest = t.tickTime
+    WHERE t.underlyingSymbol = ${underlyingSymbol} AND t.expiryLabel = ${expiryLabel}
+    ORDER BY t.strikePrice ASC`;
+
+  const num = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    const parsed = typeof value === "object" && value !== null && "toNumber" in value
+      ? (value as { toNumber(): number }).toNumber()
+      : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  return rows.map((row) => {
+    const lastPrice = num(row.lastPrice) ?? 0;
+    const bid = num(row.bidPrice);
+    const ask = num(row.askPrice);
+    const oi = num(row.openInterest);
+    const volume = num(row.volume);
+    const spreadRatio = bid && ask && ask > 0 ? (ask - bid) / ask : null;
+
+    let tradeable = true;
+    let reason: string | undefined;
+    if (!row.securityId) {
+      tradeable = false;
+      reason = "no Dhan security id - cannot be ordered";
+    } else if (lastPrice <= 0) {
+      tradeable = false;
+      reason = "no traded price";
+    } else if (oi !== null && oi < MIN_LIVE_OPEN_INTEREST) {
+      tradeable = false;
+      reason = `open interest ${Math.round(oi)} is below ${MIN_LIVE_OPEN_INTEREST}`;
+    } else if (volume !== null && volume <= 0) {
+      // Open interest alone is not liquidity. A deep-ITM strike can carry large
+      // OI from positions opened weeks ago and trade nothing today, and a real
+      // order into it gets a terrible fill. Caught by looking at live output:
+      // NIFTY 22000 CE passed this gate on OI 4,875 with volume 0.
+      //
+      // This also keeps the module to the SAME standard as the rest of the app -
+      // MIN_RECOMMENDATION_OPEN_INTEREST plus volume > 0. Anything the app names
+      // as tradeable clears one bar, not two different ones.
+      tradeable = false;
+      reason = "no volume traded today";
+    } else if (spreadRatio !== null && spreadRatio > MAX_LIVE_SPREAD_RATIO) {
+      tradeable = false;
+      reason = `bid/ask spread ${(spreadRatio * 100).toFixed(0)}% is wider than ${MAX_LIVE_SPREAD_RATIO * 100}%`;
+    }
+
+    return {
+      optionType: row.optionType as OptionType,
+      strikePrice: num(row.strikePrice) ?? 0,
+      securityId: row.securityId ?? "",
+      lastPrice,
+      bidPrice: bid,
+      askPrice: ask,
+      openInterest: oi,
+      volume,
+      delta: num(row.deltaValue),
+      tradeable,
+      reason
+    };
+  });
+}
+
+/**
+ * Fill in securityId and price for legs the caller specified only by strike.
+ *
+ * Refuses rather than guessing. A leg whose contract cannot be named, or which
+ * fails the liquidity gate, stops the whole ticket - the alternative is placing
+ * a real order against a contract we could not price.
+ */
+async function resolveTicketLegs(
+  ticket: LiveTicketInput,
+  client: PrismaClient
+): Promise<ResolvedTicket> {
+  if (ticket.legs.every((leg) => leg.securityId && (leg.price ?? 0) > 0)) {
+    return ticket as ResolvedTicket;
+  }
+  const chain = await listLiveChainStrikes(ticket.underlyingSymbol, ticket.expiryLabel, client);
+  const byKey = new Map(chain.map((row) => [`${row.optionType}|${row.strikePrice}`, row]));
+
+  const legs: ResolvedLeg[] = ticket.legs.map((leg) => {
+    if (leg.securityId && (leg.price ?? 0) > 0) return leg as ResolvedLeg;
+    const match = byKey.get(`${leg.optionType}|${leg.strikePrice}`);
+    if (!match) {
+      throw new LiveOrderRejectedError(
+        `No ${ticket.underlyingSymbol} ${ticket.expiryLabel} ${leg.optionType} ${leg.strikePrice} in the captured chain - it cannot be priced or ordered.`
+      );
+    }
+    if (!match.tradeable) {
+      throw new LiveOrderRejectedError(
+        `${leg.optionType} ${leg.strikePrice} is not tradeable: ${match.reason}.`
+      );
+    }
+    return { ...leg, securityId: match.securityId, price: match.lastPrice };
+  });
+
+  return { ...ticket, legs };
 }
 
 export interface LiveTicketInput {
@@ -383,12 +550,13 @@ export async function computeLiveMarginView(
   ticket: LiveTicketInput,
   client: PrismaClient = prisma
 ): Promise<LiveMarginView> {
+  const resolved = await resolveTicketLegs(ticket, client);
   const dhan = await getUserDhanClient(user.id, client);
   const account = await client.liveAccount.findFirst({ where: { userId: user.id, isActive: true } });
-  const segment = getFnoExchangeSegment(ticket.underlyingSymbol);
-  const quantity = toBrokerQuantity(ticket.underlyingSymbol, ticket.lots);
+  const segment = getFnoExchangeSegment(resolved.underlyingSymbol);
+  const quantity = toBrokerQuantity(resolved.underlyingSymbol, resolved.lots);
 
-  const marginLegs: DhanMarginLegInput[] = ticket.legs.map((leg) => ({
+  const marginLegs: DhanMarginLegInput[] = resolved.legs.map((leg) => ({
     transactionType: leg.side,
     quantity,
     securityId: leg.securityId,
@@ -405,8 +573,8 @@ export async function computeLiveMarginView(
   // (the getAtmCallIvHistory lesson), and these are external calls anyway.
   const legViews: LiveMarginLegView[] = [];
   let grossMargin = 0;
-  for (let index = 0; index < ticket.legs.length; index += 1) {
-    const leg = ticket.legs[index];
+  for (let index = 0; index < resolved.legs.length; index += 1) {
+    const leg = resolved.legs[index];
     const single = await dhan.calculateMultiOrderMargin([marginLegs[index]], "live:margin:leg");
     grossMargin += single.totalMargin;
     legViews.push({
@@ -483,7 +651,10 @@ export interface LivePreview {
 
 interface PendingPreview {
   userId: string;
-  ticket: LiveTicketInput;
+  // The RESOLVED ticket, so placement uses the exact contracts and prices that
+  // were priced and shown - never a re-resolution that could pick up a moved
+  // price between preview and confirm.
+  ticket: ResolvedTicket;
   marginTotal: number;
   createdAt: number;
 }
@@ -510,19 +681,23 @@ export async function previewLiveOrder(
   if (!ticket.legs.length) {
     throw new LiveOrderRejectedError("A ticket needs at least one leg.");
   }
-  if (UNDEFINED_RISK_STRUCTURES.has(ticket.structure) && !account.allowUndefinedRisk) {
+  // Resolve securityId/price BEFORE any cap is evaluated, so a ticket that
+  // cannot be named is refused for that reason rather than for a margin figure
+  // computed against a contract we could not identify.
+  const resolvedTicket = await resolveTicketLegs(ticket, client);
+  if (UNDEFINED_RISK_STRUCTURES.has(resolvedTicket.structure) && !account.allowUndefinedRisk) {
     throw new LiveOrderRejectedError(
-      `${ticket.structure} is an undefined-risk structure and is not enabled on this account. A one-lot naked index short requires more margin than the account holds.`
+      `${resolvedTicket.structure} is an undefined-risk structure and is not enabled on this account. A one-lot naked index short requires more margin than the account holds.`
     );
   }
 
-  const lotSize = getFallbackLotSize(ticket.underlyingSymbol);
-  const quantity = toBrokerQuantity(ticket.underlyingSymbol, ticket.lots);
-  const segment = getFnoExchangeSegment(ticket.underlyingSymbol);
+  const lotSize = getFallbackLotSize(resolvedTicket.underlyingSymbol);
+  const quantity = toBrokerQuantity(resolvedTicket.underlyingSymbol, resolvedTicket.lots);
+  const segment = getFnoExchangeSegment(resolvedTicket.underlyingSymbol);
   const margin = await computeLiveMarginView(user, ticket, client);
 
   const warnings: string[] = [];
-  const notional = ticket.legs.reduce((sum, leg) => sum + leg.strikePrice * lotSize * ticket.lots, 0);
+  const notional = resolvedTicket.legs.reduce((sum, leg) => sum + leg.strikePrice * lotSize * resolvedTicket.lots, 0);
 
   // Dhan's own shortfall first - it accounts for collateral and blocked
   // payouts that we do not model, so it is a better gate than anything local.
@@ -543,9 +718,9 @@ export async function previewLiveOrder(
   }
 
   const ceilings = (account.lotCeilings ?? {}) as Record<string, number>;
-  const ceiling = ceilings[ticket.underlyingSymbol.toUpperCase()];
-  if (ceiling !== undefined && ticket.lots > ceiling) {
-    throw new LiveOrderRejectedError(`This account is limited to ${ceiling} lot(s) of ${ticket.underlyingSymbol}.`);
+  const ceiling = ceilings[resolvedTicket.underlyingSymbol.toUpperCase()];
+  if (ceiling !== undefined && resolvedTicket.lots > ceiling) {
+    throw new LiveOrderRejectedError(`This account is limited to ${ceiling} lot(s) of ${resolvedTicket.underlyingSymbol}.`);
   }
 
   if (segment === "MCX_COMM") {
@@ -557,7 +732,7 @@ export async function previewLiveOrder(
   const confirmToken = randomUUID();
   previews.set(confirmToken, {
     userId: user.id,
-    ticket,
+    ticket: resolvedTicket,
     marginTotal: margin.requirement.total,
     createdAt: Date.now()
   });
@@ -565,7 +740,7 @@ export async function previewLiveOrder(
   return {
     confirmToken,
     expiresAt: new Date(Date.now() + CONFIRM_TOKEN_TTL_MS).toISOString(),
-    ticket,
+    ticket: resolvedTicket,
     quantity,
     exchangeSegment: segment,
     lotSize,

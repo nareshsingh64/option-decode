@@ -65,6 +65,7 @@ export type { PushSubscriptionDto, PushSubscriptionInput } from "./push-reposito
 export { ASSIGNABLE_TABS, DEFAULT_TABS, TAB_LABELS, getUserTabs, sanitizeTabs, setUserTabs } from "./tab-access-repository.js";
 export type { AssignableTab } from "./tab-access-repository.js";
 export {
+  listLiveChainStrikes,
   LiveCredentialError,
   LiveOrderRejectedError,
   LiveTradingDisabledError,
@@ -81,6 +82,7 @@ export {
 } from "./live-repository.js";
 export type {
   BrokerCredentialStatus,
+  LiveChainStrike,
   LiveLegInput,
   LiveMarginLegView,
   LiveMarginView,

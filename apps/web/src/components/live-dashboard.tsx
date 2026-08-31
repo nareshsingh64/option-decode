@@ -1990,7 +1990,9 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
         <PaperTradingProPanel overview={overview} />
       ) : null}
 
-      {initialView === "live-order" ? <LiveOrderPanel /> : null}
+      {initialView === "live-order" ? (
+        <LiveOrderPanel underlyingSymbol={overview.selectedUnderlying} expiryLabel={overview.selectedExpiry ?? undefined} />
+      ) : null}
 
       {initialView === "replay" ? (
         <ReplayLab
