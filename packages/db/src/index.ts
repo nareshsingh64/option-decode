@@ -68,6 +68,7 @@ export {
   beginBrokerConsent,
   completeBrokerConsent,
   listLiveChainStrikes,
+  modifyLiveOrder,
   partnerLoginAvailable,
   LiveCredentialError,
   LiveOrderRejectedError,
@@ -79,6 +80,7 @@ export {
   invalidateLiveClient,
   placeLiveOrder,
   previewLiveOrder,
+  reconcileAllLiveAccounts,
   reconcileLiveAccount,
   revokeBrokerCredential,
   saveBrokerCredential
@@ -93,6 +95,7 @@ export type {
   LivePlacementResult,
   LivePreview,
   LiveReconcileResult,
+  LiveReconcileSweep,
   LiveSummary,
   LiveTicketInput
 } from "./live-repository.js";

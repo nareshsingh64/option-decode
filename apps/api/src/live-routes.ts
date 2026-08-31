@@ -28,6 +28,7 @@ import {
   completeBrokerConsent,
   getLiveSummary,
   listLiveChainStrikes,
+  modifyLiveOrder,
   partnerLoginAvailable,
   placeLiveOrder,
   previewLiveOrder,
@@ -69,6 +70,12 @@ const credentialSchema = z.object({
 
 const confirmSchema = z.object({
   confirmToken: z.string().trim().min(1).max(128)
+});
+
+const modifySchema = z.object({
+  price: z.coerce.number().positive().optional(),
+  triggerPrice: z.coerce.number().nonnegative().optional(),
+  lots: z.coerce.number().int().positive().max(100).optional()
 });
 
 const consentCallbackSchema = z.object({
@@ -271,6 +278,20 @@ export function registerLiveRoutes(app: FastifyInstance, getRequestUser: GetRequ
     }
     try {
       return await placeLiveOrder(user, parsed.data);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  app.patch<{ Params: { orderId: string } }>("/api/live/orders/:orderId", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    const parsed = modifySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid modification", issues: parsed.error.issues.map((i) => i.message) });
+    }
+    try {
+      return await modifyLiveOrder(user, request.params.orderId, parsed.data);
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }

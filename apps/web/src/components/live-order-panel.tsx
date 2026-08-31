@@ -314,7 +314,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       <CredentialForm onSaved={refresh} hasCredential={Boolean(credential?.present)} />
 
       <OpenPositions positions={summary?.positions ?? []} />
-      <RecentOrders orders={summary?.orders ?? []} />
+      <RecentOrders orders={summary?.orders ?? []} onChanged={refresh} />
 
       {!gateMessage && underlyingSymbol && expiryLabel ? (
         <TicketBuilder
@@ -735,12 +735,63 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
   );
 }
 
-function RecentOrders({ orders }: { orders: Array<Record<string, unknown>> }) {
+// Which states the broker will still accept a change or a cancel for. Anything
+// else - TRADED, REJECTED, CANCELLED - is finished, and offering a button that
+// can only fail is worse than offering none.
+const WORKING_STATES = new Set(["SENT", "OPEN", "PARTIAL"]);
+
+function RecentOrders({
+  orders,
+  onChanged
+}: {
+  orders: Array<Record<string, unknown>>;
+  onChanged: () => Promise<void> | void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const act = async (id: string, run: () => Promise<Response>) => {
+    setBusyId(id);
+    setError(null);
+    try {
+      const response = await run();
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Request failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const cancel = (id: string) =>
+    act(id, () => fetch(`${API_URL}/api/live/orders/${id}`, { method: "DELETE", credentials: "include" }));
+
+  const reprice = (id: string, current: number) => {
+    const raw = window.prompt("New limit price", String(current));
+    if (raw === null) return;
+    const price = Number(raw);
+    if (!Number.isFinite(price) || price <= 0) {
+      setError("That is not a valid price.");
+      return;
+    }
+    void act(id, () =>
+      fetch(`${API_URL}/api/live/orders/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ price })
+      })
+    );
+  };
+
   if (!orders.length) {
     return <p className="text-sm text-slate-500">No live orders yet.</p>;
   }
   return (
     <div className="overflow-x-auto">
+      {error ? <p className="mb-1 text-xs text-red-700">{error}</p> : null}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs uppercase text-slate-500">
@@ -748,7 +799,9 @@ function RecentOrders({ orders }: { orders: Array<Record<string, unknown>> }) {
             <th>Side</th>
             <th>Lots</th>
             <th>Price</th>
+            <th>Filled</th>
             <th>Status</th>
+            <th />
           </tr>
         </thead>
         <tbody>
@@ -761,12 +814,48 @@ function RecentOrders({ orders }: { orders: Array<Record<string, unknown>> }) {
               <td>{String(order.lots)}</td>
               <td>{rupees(order.price as number)}</td>
               <td>
+                {String(order.filledQty ?? 0)}/{String(order.quantity ?? 0)}
+                {order.avgFillPrice ? ` @ ${rupees(order.avgFillPrice as number)}` : ""}
+              </td>
+              <td>
                 {/* UNKNOWN is shown in red on purpose. It means we do not know
                     whether the order exists, which needs a human, and it must
-                    never look like an ordinary resting state. */}
-                <span className={String(order.status) === "UNKNOWN" ? "font-semibold text-red-700" : ""}>
+                    never look like an ordinary resting state. REJECTED is a
+                    definite no and reads as ordinary. */}
+                <span
+                  className={
+                    String(order.status) === "UNKNOWN"
+                      ? "font-semibold text-red-700"
+                      : String(order.status) === "REJECTED"
+                        ? "text-slate-600"
+                        : ""
+                  }
+                  title={order.rejectionReason ? String(order.rejectionReason) : undefined}
+                >
                   {String(order.status)}
                 </span>
+              </td>
+              <td className="whitespace-nowrap">
+                {WORKING_STATES.has(String(order.status)) ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={busyId === String(order.id)}
+                      onClick={() => reprice(String(order.id), Number(order.price ?? 0))}
+                      className="mr-2 underline disabled:opacity-50"
+                    >
+                      Reprice
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === String(order.id)}
+                      onClick={() => void cancel(String(order.id))}
+                      className="text-red-700 underline disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : null}
               </td>
             </tr>
           ))}

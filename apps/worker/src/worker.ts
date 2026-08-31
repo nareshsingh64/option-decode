@@ -10,6 +10,7 @@ import { Job, Queue, QueueEvents, Worker as BullWorker } from "bullmq";
 import Redis from "ioredis";
 import webpush from "web-push";
 import { cacheLiveTick, getLiveTick } from "./live-tick-cache.js";
+import { startLiveReconcileScheduler } from "./live-reconcile.js";
 import { startSimEodScheduler } from "./sim-eod-mtm.js";
 import { runExclusive } from "./heavy-job-lock.js";
 import { startWaveScreener } from "./wave-screener.js";
@@ -1054,6 +1055,10 @@ async function startWorker() {
   // Paper Trading Pro seller simulator: self-contained EOD MTM scheduler
   // (own queue/worker) - see sim-eod-mtm.ts.
   const simEodScheduler = await startSimEodScheduler(redisConnection);
+  // Keeps LiveOrder/LivePosition in step with the broker. Session-gated and
+  // skips accounts with nothing outstanding, so it is free when nobody is
+  // trading live.
+  const liveReconcile = await startLiveReconcileScheduler(redisConnection);
 
   // Elliott Wave background screener: self-contained universe sync + stock
   // quote capture + scan schedulers - see wave-screener.ts.
@@ -1079,7 +1084,7 @@ async function startWorker() {
       clearInterval(liveFeedResyncTimer);
     }
     liveFeed.close();
-    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), waveScreener.close(), redisPublisher.quit()]);
+    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), liveReconcile.worker.close(), liveReconcile.queue.close(), waveScreener.close(), redisPublisher.quit()]);
     process.exit(0);
   }
 

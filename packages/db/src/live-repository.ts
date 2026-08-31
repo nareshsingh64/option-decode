@@ -1083,6 +1083,74 @@ async function resolveUnknownOrder(
   return undefined;
 }
 
+/**
+ * Change price, trigger or size on a working order.
+ *
+ * Modify is NOT re-previewed. The two-phase confirm exists to stop an order
+ * being placed against prices the trader never saw; a modify is the trader
+ * looking at a resting order and adjusting it deliberately, and forcing a fresh
+ * preview would only add a ten-second clock to a decision that does not need
+ * one. The caps still apply where they can: quantity is re-derived through
+ * toBrokerQuantity so a lot count can never be sent in the wrong unit.
+ */
+export async function modifyLiveOrder(
+  user: AuthUserDto,
+  orderId: string,
+  input: { price?: number; triggerPrice?: number; lots?: number },
+  client: PrismaClient = prisma
+) {
+  const account = await requireTradableAccount(user, client);
+  const order = await client.liveOrder.findFirst({ where: { id: orderId, accountId: account.id } });
+  if (!order) {
+    throw new LiveOrderRejectedError("No such order on this account.");
+  }
+  if (!order.brokerOrderId) {
+    throw new LiveOrderRejectedError("That order was never accepted by the broker, so there is nothing to modify.");
+  }
+  if (!["SENT", "OPEN", "PARTIAL"].includes(order.status)) {
+    throw new LiveOrderRejectedError(`An order in state ${order.status} cannot be modified.`);
+  }
+  if (input.price === undefined && input.triggerPrice === undefined && input.lots === undefined) {
+    throw new LiveOrderRejectedError("Nothing to change.");
+  }
+
+  const lots = input.lots ?? order.lots;
+  // Never lots * lotSize inline: MCX counts lots and NSE counts contracts, and
+  // getting it wrong here would resize a LIVE order by the lot size.
+  const quantity = toBrokerQuantity(order.underlyingSymbol, lots);
+
+  const dhan = await getUserDhanClient(user.id, client);
+  const result = await dhan.modifyOrder(
+    {
+      orderId: order.brokerOrderId,
+      orderType: order.orderType as "LIMIT" | "MARKET" | "STOP_LOSS" | "STOP_LOSS_MARKET",
+      quantity,
+      ...(input.price === undefined ? {} : { price: input.price }),
+      ...(input.triggerPrice === undefined ? {} : { triggerPrice: input.triggerPrice }),
+      validity: "DAY"
+    },
+    "live:order:modify"
+  );
+
+  await client.liveOrder.update({
+    where: { id: order.id },
+    data: {
+      lots,
+      quantity,
+      ...(input.price === undefined ? {} : { price: input.price }),
+      ...(input.triggerPrice === undefined ? {} : { triggerPrice: input.triggerPrice }),
+      brokerStatusRaw: result.orderStatus ?? order.brokerStatusRaw
+    }
+  });
+  await recordOrderEvent(order.id, "API_RESPONSE", result.orderStatus ?? "MODIFIED", {
+    requested: input,
+    quantitySent: quantity,
+    result: result as unknown as Record<string, unknown>
+  }, client);
+
+  return { orderId: order.id, status: result.orderStatus ?? "MODIFIED", lots, quantity };
+}
+
 export async function cancelLiveOrder(user: AuthUserDto, orderId: string, client: PrismaClient = prisma) {
   const account = await requireTradableAccount(user, client, true);
   const order = await client.liveOrder.findFirst({ where: { id: orderId, accountId: account.id } });
@@ -1213,6 +1281,88 @@ export async function reconcileLiveAccount(
   }
 
   return result;
+}
+
+export interface LiveReconcileSweep {
+  accountsConsidered: number;
+  accountsReconciled: number;
+  accountsSkipped: number;
+  ordersUpdated: number;
+  positionsUpserted: number;
+  positionsClosed: number;
+  drift: string[];
+  errors: string[];
+}
+
+/**
+ * Reconcile every account that has anything worth reconciling.
+ *
+ * Called on a timer by the worker. Dhan is authoritative in every disagreement;
+ * our rows are a cache of it. Without this the panel shows whatever was true at
+ * the moment an order was placed - which is how a filled spread sat reading
+ * SENT/TRANSIT with no position and no P&L.
+ *
+ * Idle accounts are skipped rather than polled. An account with no open
+ * position and no working order has nothing to learn, and every skipped account
+ * is two Dhan calls not spent - which matters because those calls come out of
+ * that user's own rate budget, not a shared one.
+ */
+export async function reconcileAllLiveAccounts(client: PrismaClient = prisma): Promise<LiveReconcileSweep> {
+  const sweep: LiveReconcileSweep = {
+    accountsConsidered: 0,
+    accountsReconciled: 0,
+    accountsSkipped: 0,
+    ordersUpdated: 0,
+    positionsUpserted: 0,
+    positionsClosed: 0,
+    drift: [],
+    errors: []
+  };
+
+  const accounts = await client.liveAccount.findMany({
+    where: { isActive: true },
+    select: { id: true, userId: true, user: { select: { id: true, email: true, role: true } } }
+  });
+
+  for (const account of accounts) {
+    sweep.accountsConsidered += 1;
+
+    const [workingOrders, openPositions] = [
+      await client.liveOrder.count({
+        where: { accountId: account.id, status: { in: ["LOCAL_PENDING", "SENT", "OPEN", "PARTIAL", "UNKNOWN"] } }
+      }),
+      await client.livePosition.count({ where: { accountId: account.id, status: "OPEN" } })
+    ];
+    if (workingOrders === 0 && openPositions === 0) {
+      sweep.accountsSkipped += 1;
+      continue;
+    }
+
+    try {
+      const result = await reconcileLiveAccount(
+        {
+          id: account.user.id,
+          email: account.user.email,
+          role: account.user.role,
+          emailVerified: true,
+          disabled: false
+        } as AuthUserDto,
+        client
+      );
+      sweep.accountsReconciled += 1;
+      sweep.ordersUpdated += result.ordersUpdated;
+      sweep.positionsUpserted += result.positionsUpserted;
+      sweep.positionsClosed += result.positionsClosed;
+      sweep.drift.push(...result.drift);
+    } catch (error) {
+      // One account's dead credential must not stop the sweep for everyone
+      // else. A token expires every 24 hours, so this is routine rather than
+      // exceptional, and it is reported rather than thrown.
+      sweep.errors.push(`${account.user.email}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return sweep;
 }
 
 // ------------------------------------------------------------------
