@@ -1112,7 +1112,7 @@ async function startWorker() {
       clearInterval(liveFeedResyncTimer);
     }
     liveFeed.close();
-    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), liveReconcile.worker.close(), liveReconcile.queue.close(), waveScreener.close(), redisPublisher.quit()]);
+    await Promise.allSettled([worker.close(), retentionWorker.close(), queueEvents.close(), retentionQueueEvents.close(), queue.close(), retentionQueue.close(), simEodScheduler.close(), liveReconcile.worker.close(), liveReconcile.queue.close(), liveReconcile.redisMarks.quit(), waveScreener.close(), redisPublisher.quit()]);
     process.exit(0);
   }
 

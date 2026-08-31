@@ -83,6 +83,7 @@ export {
   placeLiveOrder,
   previewLiveOrder,
   reconcileAllLiveAccounts,
+  runLiveExitEngine,
   reconcileLiveAccount,
   revokeBrokerCredential,
   saveBrokerCredential
@@ -99,6 +100,7 @@ export type {
   LivePlacementResult,
   LivePreview,
   LiveReconcileResult,
+  LiveExitSweep,
   LiveReconcileSweep,
   LiveSummary,
   LiveTicketInput

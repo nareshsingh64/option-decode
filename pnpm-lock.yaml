@@ -181,6 +181,9 @@ importers:
       '@option-decode/dhan':
         specifier: workspace:*
         version: link:../dhan
+      '@option-decode/trading':
+        specifier: workspace:*
+        version: link:../trading
       '@option-decode/types':
         specifier: workspace:*
         version: link:../types

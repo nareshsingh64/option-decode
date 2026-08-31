@@ -80,6 +80,7 @@ interface LiveSummary {
   funds: FundLimit | null;
   orders: Array<Record<string, unknown>>;
   positions: Array<Record<string, unknown>>;
+  exitAlerts?: Array<{ groupId: string; rule: string; action: string; detail: string | null; createdAt: string }>;
 }
 
 interface ChainStrike {
@@ -404,6 +405,23 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           >
             {busy ? "Placing…" : `Place real order (${secondsLeft}s)`}
           </button>
+        </div>
+      ) : null}
+
+      {/* Exit flags sit ABOVE the tabs. A fired stop rule is the single most
+          time-critical thing this panel can say, and it must not depend on
+          which tab happens to be open. */}
+      {summary?.exitAlerts?.length ? (
+        <div className="space-y-1 rounded border-2 border-red-400 bg-red-50 p-2">
+          <h3 className="text-sm font-semibold text-red-900">Exit rules fired</h3>
+          {summary.exitAlerts.map((alert) => (
+            <p key={`${alert.groupId}-${alert.rule}`} className="text-xs text-red-900">
+              <strong>{alert.rule}</strong> · {alert.detail}
+              {alert.action === "FLAGGED" ? (
+                <span className="text-red-700"> — flagged only; close it yourself.</span>
+              ) : null}
+            </p>
+          ))}
         </div>
       ) : null}
 

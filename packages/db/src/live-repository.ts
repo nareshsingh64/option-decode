@@ -36,6 +36,7 @@ import {
   type DhanMarginLegInput
 } from "@option-decode/dhan";
 import { getFallbackLotSize, toBrokerQuantity, type OptionType } from "@option-decode/types";
+import { evaluateExit, type ExitLegState } from "@option-decode/trading";
 
 import type { AuthUserDto } from "./auth-repository.js";
 import {
@@ -1366,6 +1367,151 @@ export async function reconcileAllLiveAccounts(client: PrismaClient = prisma): P
 }
 
 // ------------------------------------------------------------------
+// Exit engine
+// ------------------------------------------------------------------
+
+export interface LiveExitSweep {
+  groupsEvaluated: number;
+  groupsSkipped: number;
+  flagged: number;
+  autoClosed: number;
+  failures: string[];
+}
+
+/**
+ * Evaluate the seller exit rules against every live structure this module
+ * opened, and act according to the account's setting.
+ *
+ * TWO safety properties define this function.
+ *
+ * ONLY WHAT WE OPENED. Positions are grouped by the groupId of the orders that
+ * created them. A position adopted from the broker - held before this module
+ * existed, or opened in Dhan's own app - has no group and is never actioned.
+ * Closing something the trader opened elsewhere, on rules they never chose, is
+ * not a stop-loss; it is this app deciding it owns their account.
+ *
+ * FLAG BEFORE ACT. With autoExitEnabled false, which is the default, a fired
+ * rule is recorded and surfaced and nothing reaches the broker. Placing closing
+ * orders unattended is a much larger step than reporting that a threshold was
+ * crossed, and it should be earned by watching the engine flag correctly first.
+ *
+ * Idempotency is the unique index on (groupId, rule): a condition that holds for
+ * an hour fires one event, not one every evaluation.
+ */
+export async function runLiveExitEngine(
+  markFor: LiveMarkLookup,
+  client: PrismaClient = prisma
+): Promise<LiveExitSweep> {
+  const sweep: LiveExitSweep = { groupsEvaluated: 0, groupsSkipped: 0, flagged: 0, autoClosed: 0, failures: [] };
+
+  const positions = await client.livePosition.findMany({ where: { status: "OPEN" } });
+  if (!positions.length) return sweep;
+
+  // Map securityId -> the order that opened it, for the group and the entry
+  // price. Orders, not positions, because groupId lives there.
+  const filled = await client.liveOrder.findMany({
+    where: { status: "TRADED", securityId: { in: positions.map((p) => p.securityId) } },
+    orderBy: { placedAt: "desc" }
+  });
+
+  const byGroup = new Map<string, { accountId: string; orders: typeof filled }>();
+  for (const order of filled) {
+    if (!order.groupId) continue;
+    const entry = byGroup.get(order.groupId) ?? { accountId: order.accountId, orders: [] };
+    entry.orders.push(order);
+    byGroup.set(order.groupId, entry);
+  }
+
+  const openSecurityIds = new Set(positions.map((p) => p.securityId));
+
+  for (const [groupId, group] of byGroup) {
+    // Every leg of the structure must still be open. A partially closed group
+    // is no longer the structure the credit was computed for, and applying a
+    // whole-structure rule to half of it would be arithmetic on a fiction.
+    const stillOpen = group.orders.filter((order) => openSecurityIds.has(order.securityId));
+    if (!stillOpen.length || stillOpen.length !== group.orders.length) {
+      sweep.groupsSkipped += 1;
+      continue;
+    }
+
+    const legs: ExitLegState[] = [];
+    let priced = true;
+    for (const order of stillOpen) {
+      const last = markFor(order.securityId);
+      if (last === undefined || !Number.isFinite(last)) {
+        // No price, no decision. Acting on a stale mark is how a stop fires on
+        // a number that was true ten minutes ago.
+        priced = false;
+        break;
+      }
+      legs.push({
+        side: order.transactionType === "SELL" ? "SELL" : "BUY",
+        entryPrice: Number(order.avgFillPrice ?? order.price ?? 0),
+        lastPrice: last
+      });
+    }
+    if (!priced) {
+      sweep.groupsSkipped += 1;
+      continue;
+    }
+
+    const quantity = stillOpen[0].quantity;
+    const netCredit = legs.reduce(
+      (sum, leg) => sum + (leg.side === "SELL" ? leg.entryPrice : -leg.entryPrice) * quantity,
+      0
+    );
+    const expiryLabel = stillOpen[0].expiryLabel;
+    const daysToExpiry = Math.ceil(
+      (new Date(`${expiryLabel}T00:00:00Z`).getTime() - Date.now()) / 86_400_000
+    );
+
+    sweep.groupsEvaluated += 1;
+    const decision = evaluateExit({
+      structure: "LIVE",
+      legs,
+      netCredit,
+      quantity,
+      daysToExpiry: Number.isFinite(daysToExpiry) ? daysToExpiry : 999
+    });
+    if (!decision) continue;
+
+    const account = await client.liveAccount.findUnique({ where: { id: group.accountId } });
+    const autoExit = Boolean(account?.autoExitEnabled);
+
+    try {
+      // The unique index does the work: a duplicate throws and we move on,
+      // rather than this having to hold a lock or re-read to check.
+      await client.liveExitEvent.create({
+        data: {
+          accountId: group.accountId,
+          groupId,
+          rule: decision.rule,
+          action: autoExit ? "AUTO_CLOSED" : "FLAGGED",
+          detail: decision.detail.slice(0, 500)
+        }
+      });
+    } catch {
+      // Already fired for this group and rule. Nothing more to do.
+      continue;
+    }
+
+    sweep.flagged += 1;
+    if (!autoExit) continue;
+
+    // Auto-close is not implemented as an order yet: recording the intent and
+    // reporting it is where this stops, deliberately. Wiring it to placement
+    // needs the closing order type decided per rule - STOP_LOSS_MARKET for a
+    // hard stop, LIMIT for a target - and that decision should not be made in
+    // passing while building the evaluator.
+    sweep.failures.push(
+      `${groupId}: ${decision.rule} fired with autoExitEnabled on, but automatic order placement is not implemented - close manually.`
+    );
+  }
+
+  return sweep;
+}
+
+// ------------------------------------------------------------------
 // Summary
 // ------------------------------------------------------------------
 
@@ -1415,6 +1561,8 @@ export interface LiveSummary {
   funds: DhanFundLimit | null;
   orders: Array<Record<string, unknown>>;
   positions: Array<Record<string, unknown>>;
+  /** Exit rules that have fired and not yet been acted on. */
+  exitAlerts: Array<{ groupId: string; rule: string; action: string; detail: string | null; createdAt: string }>;
 }
 
 // Funds barely move, and this endpoint is polled once a second. Without a cache
@@ -1474,6 +1622,16 @@ export async function getLiveSummary(
       ]
     : [[], []];
 
+  // Recent exit flags. Capped and recent-first: this is a "what needs my
+  // attention now" list, not a history.
+  const exitAlerts = account
+    ? await client.liveExitEvent.findMany({
+        where: { accountId: account.id },
+        orderBy: { createdAt: "desc" },
+        take: 10
+      })
+    : [];
+
   const accountDto = account
     ? {
         id: account.id,
@@ -1503,7 +1661,14 @@ export async function getLiveSummary(
     account: accountDto,
     funds,
     orders: orders.map(serializeOrder),
-    positions: serializedPositions.map((position) => applyLiveMark(position, markFor))
+    positions: serializedPositions.map((position) => applyLiveMark(position, markFor)),
+    exitAlerts: exitAlerts.map((event) => ({
+      groupId: event.groupId,
+      rule: event.rule,
+      action: String(event.action),
+      detail: event.detail,
+      createdAt: event.createdAt.toISOString()
+    }))
   };
 }
 

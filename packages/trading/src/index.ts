@@ -1,3 +1,13 @@
+export {
+  DTE_GAMMA_THRESHOLD_DAYS,
+  HARD_STOP_MULTIPLE,
+  PREMIUM_2X_MULTIPLE,
+  costToClose,
+  evaluateExit,
+  profitTargetPct
+} from "./exit-rules.js";
+export type { ExitDecision, ExitInput, ExitLegState, LiveExitRule } from "./exit-rules.js";
+
 import type {
   AtmStraddleExpectedMove,
   MarketBias,

@@ -16,7 +16,10 @@
 // needed, and the same trap: widening a job's gate does not widen what the job
 // looks at, so the per-account skip below still does the narrowing.
 
-import { reconcileAllLiveAccounts } from "@option-decode/db";
+import { listLivePositionInstruments, reconcileAllLiveAccounts, runLiveExitEngine } from "@option-decode/db";
+import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
+import Redis from "ioredis";
+import { getLiveTicks } from "./live-tick-cache.js";
 import { isMarketSessionOpen } from "@option-decode/utils";
 import { Job, Queue, Worker as BullWorker } from "bullmq";
 
@@ -34,12 +37,16 @@ const LIVE_RECONCILE_INTERVAL_MS = 20_000;
 export interface LiveReconcileHandles {
   queue: Queue;
   worker: BullWorker;
+  redisMarks: Redis;
 }
 
 export async function startLiveReconcileScheduler(redisConnection: {
   url: string;
   maxRetriesPerRequest: null;
 }): Promise<LiveReconcileHandles> {
+  // Own connection: the exit engine reads marks on every tick of this job, and
+  // it must not queue behind whatever else is using the shared publisher.
+  const redisMarks = new Redis(redisConnection.url, { maxRetriesPerRequest: null });
   const queue = new Queue(LIVE_RECONCILE_QUEUE, {
     connection: redisConnection,
     defaultJobOptions: {
@@ -85,6 +92,46 @@ export async function startLiveReconcileScheduler(redisConnection: {
       for (const line of sweep.errors) {
         console.warn("Live reconcile could not reach the broker", { detail: line });
       }
+
+      // Exit rules run AFTER reconciliation, on the same tick, so they are
+      // never evaluated against a position the broker has already closed.
+      // Marks come from the feed cache, so this costs one MGET and no broker
+      // call - the evaluation itself is free, and only acting is not.
+      try {
+        const instruments = await listLivePositionInstruments();
+        if (!instruments.length) return;
+
+        const ticks = await getLiveTicks(
+          redisMarks,
+          instruments.map((row) => ({
+            segment: row.exchangeSegment as DhanLiveFeedExchangeSegment,
+            securityId: row.securityId
+          }))
+        );
+        const bySecurityId = new Map<string, number>();
+        for (const [key, tick] of ticks) {
+          if (tick.ltp !== undefined && Number.isFinite(tick.ltp)) {
+            bySecurityId.set(String(key.split(":")[1] ?? ""), tick.ltp);
+          }
+        }
+        if (!bySecurityId.size) return;
+
+        const exits = await runLiveExitEngine((securityId) => bySecurityId.get(securityId));
+        for (const failure of exits.failures) {
+          console.error("Live exit engine needs attention", { detail: failure });
+        }
+        if (exits.flagged) {
+          console.warn("Live exit rule fired", {
+            flagged: exits.flagged,
+            autoClosed: exits.autoClosed,
+            groupsEvaluated: exits.groupsEvaluated
+          });
+        }
+      } catch (error) {
+        // The exit engine must never take reconciliation down with it: a stale
+        // panel is bad, a panel that stops updating entirely is worse.
+        console.error("Live exit engine failed", { error });
+      }
     },
     { connection: redisConnection, concurrency: 1 }
   );
@@ -109,5 +156,5 @@ export async function startLiveReconcileScheduler(redisConnection: {
     everyMs: LIVE_RECONCILE_INTERVAL_MS
   });
 
-  return { queue, worker };
+  return { queue, worker, redisMarks };
 }
