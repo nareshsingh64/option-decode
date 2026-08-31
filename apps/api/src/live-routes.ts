@@ -29,12 +29,14 @@ import {
   getLiveSummary,
   listLiveChainStrikes,
   modifyLiveOrder,
+  panicCloseLiveAccount,
   partnerLoginAvailable,
   placeLiveOrder,
   previewLiveOrder,
   reconcileLiveAccount,
   revokeBrokerCredential,
-  saveBrokerCredential
+  saveBrokerCredential,
+  squareOffLivePosition
 } from "@option-decode/db";
 import type { AuthUserDto, LiveMarkResolver } from "@option-decode/db";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
@@ -79,6 +81,12 @@ const modifySchema = z.object({
   price: z.coerce.number().positive().optional(),
   triggerPrice: z.coerce.number().nonnegative().optional(),
   lots: z.coerce.number().int().positive().max(100).optional()
+});
+
+const squareOffSchema = z.object({
+  // Absent means MARKET. Closing at a limit is an exit that might not happen,
+  // which is the wrong default when someone has asked to be out.
+  limitPrice: z.coerce.number().positive().optional()
 });
 
 const consentCallbackSchema = z.object({
@@ -344,6 +352,35 @@ export function registerLiveRoutes(
     if (!user) return;
     try {
       return await cancelLiveOrder(user, request.params.orderId);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  // --- Closing ------------------------------------------------------------
+
+  app.post<{ Params: { positionId: string } }>("/api/live/positions/:positionId/exit", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    const parsed = squareOffSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid square-off request." });
+    }
+    try {
+      return await squareOffLivePosition(user, request.params.positionId, parsed.data);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  // Cancel everything working, then flatten everything open. Available even
+  // when the account has been switched off for new trades - being unable to
+  // close is never the safe failure.
+  app.post("/api/live/panic", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    try {
+      return await panicCloseLiveAccount(user);
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }

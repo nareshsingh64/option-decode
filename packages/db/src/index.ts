@@ -82,7 +82,9 @@ export {
   invalidateLiveClient,
   placeLiveOrder,
   previewLiveOrder,
+  panicCloseLiveAccount,
   reconcileAllLiveAccounts,
+  squareOffLivePosition,
   runLiveExitEngine,
   reconcileLiveAccount,
   revokeBrokerCredential,
@@ -101,6 +103,7 @@ export type {
   LivePreview,
   LiveReconcileResult,
   LiveExitSweep,
+  LivePanicResult,
   LiveReconcileSweep,
   LiveSummary,
   LiveTicketInput

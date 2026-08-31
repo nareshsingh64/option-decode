@@ -273,6 +273,35 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
     }
   }, []);
 
+  const panic = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Cancel every working order and square off every open position at market?\n\nThis places real orders and cannot be undone."
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch(`${API_URL}/api/live/panic`, { method: "POST", credentials: "include" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      const failures: string[] = body.failures ?? [];
+      setPlaceResult(
+        `Panic: cancelled ${body.ordersCancelled}, squared off ${body.positionsSquaredOff}.` +
+          (failures.length ? ` ${failures.length} failed - see below.` : "")
+      );
+      // Failures are surfaced, never swallowed: a partial panic is exactly the
+      // situation where the trader must know which legs are still open.
+      if (failures.length) setPreviewError(failures.join(" | "));
+      await refresh();
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Panic close failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh]);
+
   const confirmPlace = useCallback(async () => {
     if (!preview) return;
     setBusy(true);
@@ -299,6 +328,19 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
     <section className="space-y-4">
       <header className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Live Orders</h2>
+        <div className="flex items-center gap-2">
+          {/* Always available, including when trading has been switched off:
+              being unable to close is never the safe failure. */}
+          {summary?.account ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void panic()}
+              className="rounded border border-red-600 px-2 py-0.5 text-xs font-semibold text-red-700 disabled:opacity-50"
+            >
+              Panic close
+            </button>
+          ) : null}
         <span
           className={`rounded px-2 py-0.5 text-xs font-medium ${
             summary?.enabled && account?.tradingEnabled
@@ -308,6 +350,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         >
           {summary?.enabled && account?.tradingEnabled ? "LIVE — real money" : "DISABLED"}
         </span>
+        </div>
       </header>
 
       {error ? <p className="rounded bg-amber-50 p-2 text-sm text-amber-900">{error}</p> : null}
@@ -425,7 +468,9 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         </div>
       ) : null}
 
-      {tab === "positions" ? <OpenPositions positions={summary?.positions ?? []} /> : null}
+      {tab === "positions" ? (
+        <OpenPositions positions={summary?.positions ?? []} onChanged={refresh} canClose={!gateMessage} />
+      ) : null}
 
       {tab === "orders" ? <RecentOrders orders={summary?.orders ?? []} onChanged={refresh} /> : null}
 
@@ -790,7 +835,42 @@ function Stat({ label, value }: { label: string; value: string | undefined }) {
   );
 }
 
-function OpenPositions({ positions }: { positions: Array<Record<string, unknown>> }) {
+function OpenPositions({
+  positions,
+  onChanged,
+  canClose
+}: {
+  positions: Array<Record<string, unknown>>;
+  onChanged: () => Promise<void> | void;
+  canClose: boolean;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [closeError, setCloseError] = useState<string | null>(null);
+
+  const squareOff = async (id: string, label: string) => {
+    // Confirmed, because this sends a MARKET order against a real position and
+    // there is no undo. The label names the contract so the dialog is not a
+    // generic "are you sure".
+    if (!window.confirm(`Square off ${label} at market? This places a real order.`)) return;
+    setBusyId(id);
+    setCloseError(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/positions/${id}/exit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({})
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      await onChanged();
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : "Square-off failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   // Last seen price per position, and the direction of the last CHANGE.
   //
   // The direction is remembered rather than recomputed from "is this render's
@@ -818,6 +898,7 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
 
   return (
     <div className="space-y-2">
+      {closeError ? <p className="rounded bg-red-50 p-2 text-xs text-red-800">{closeError}</p> : null}
       <div className="flex items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
         <span className="text-xs uppercase text-slate-500">Net P&amp;L (realised + unrealised)</span>
         <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
@@ -838,6 +919,7 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
               <th className="text-right">Unrealised</th>
               <th className="text-right">Realised</th>
               <th className="text-right">Net</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -896,6 +978,20 @@ function OpenPositions({ positions }: { positions: Array<Record<string, unknown>
                   <td className="text-right">{rupees(position.realizedPnl as number)}</td>
                   <td className={`text-right font-medium ${rowNet < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(rowNet)}
+                  </td>
+                  <td className="whitespace-nowrap pl-2">
+                    {canClose ? (
+                      <button
+                        type="button"
+                        disabled={busyId === id}
+                        onClick={() =>
+                          void squareOff(id, String(position.tradingSymbol ?? position.securityId))
+                        }
+                        className="text-red-700 underline disabled:opacity-50"
+                      >
+                        {busyId === id ? "Closing…" : "Square off"}
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               );

@@ -1173,6 +1173,168 @@ export async function cancelLiveOrder(user: AuthUserDto, orderId: string, client
 }
 
 // ------------------------------------------------------------------
+// Closing a position
+// ------------------------------------------------------------------
+
+/**
+ * Square off one open position by placing the opposite order.
+ *
+ * MARKET by default. A limit order to close is an order that might not fill,
+ * and "I asked to be out and I am not out" is the worst state this module can
+ * put someone in - so the default accepts slippage in exchange for certainty.
+ * A limit price is available for a deliberate, unhurried exit.
+ *
+ * Deliberately NOT gated on canOpen. A trader must always be able to close,
+ * even when the token is too close to expiry to open anything new, even when
+ * the caps would refuse a new position, and even when trading has been disabled
+ * on the account since the position was opened. Refusing an exit is never the
+ * safe default.
+ */
+export async function squareOffLivePosition(
+  user: AuthUserDto,
+  positionId: string,
+  input: { limitPrice?: number } = {},
+  client: PrismaClient = prisma
+) {
+  const account = await requireTradableAccount(user, client, true);
+  const position = await client.livePosition.findFirst({
+    where: { id: positionId, accountId: account.id, status: "OPEN" }
+  });
+  if (!position) {
+    throw new LiveOrderRejectedError("No such open position on this account.");
+  }
+
+  const netQty = position.netQty;
+  if (!netQty) {
+    throw new LiveOrderRejectedError("That position is already flat.");
+  }
+
+  // Opposite side, absolute quantity. netQty is negative for a short, so a
+  // short is closed by BUYing and a long by SELLing.
+  const transactionType: "BUY" | "SELL" = netQty < 0 ? "BUY" : "SELL";
+  const quantity = Math.abs(netQty);
+  const correlationId = randomUUID().replace(/-/g, "").slice(0, 24);
+
+  const row = await client.liveOrder.create({
+    data: {
+      accountId: account.id,
+      groupId: null,
+      legRole: "CLOSE",
+      correlationId,
+      underlyingSymbol: position.underlyingSymbol,
+      expiryLabel: position.expiryLabel ?? "",
+      optionType: position.optionType ?? "CE",
+      strikePrice: position.strikePrice ?? 0,
+      securityId: position.securityId,
+      exchangeSegment: position.exchangeSegment,
+      transactionType,
+      productType: "MARGIN",
+      orderType: input.limitPrice ? "LIMIT" : "MARKET",
+      lots: 1,
+      lotSize: position.lotSize ?? 1,
+      // Straight from netQty, NOT recomputed through toBrokerQuantity: the
+      // broker told us this quantity, in whatever unit that exchange uses, so
+      // echoing it back is exact. Re-deriving it from lots would reintroduce
+      // the contracts-versus-lots question on the one path where being wrong
+      // means failing to close.
+      quantity,
+      notional: 0,
+      price: input.limitPrice ?? null,
+      status: "LOCAL_PENDING"
+    }
+  });
+  await recordOrderEvent(row.id, "LOCAL", "LOCAL_PENDING", { squareOff: positionId, correlationId }, client);
+
+  const dhan = await getUserDhanClient(user.id, client);
+  try {
+    await client.liveOrder.update({ where: { id: row.id }, data: { status: "SENT" } });
+    const placed = await dhan.placeOrder(
+      {
+        correlationId,
+        transactionType,
+        exchangeSegment: position.exchangeSegment as DhanFnoSegment,
+        productType: "MARGIN",
+        orderType: input.limitPrice ? "LIMIT" : "MARKET",
+        securityId: position.securityId,
+        quantity,
+        price: input.limitPrice ?? 0,
+        validity: "DAY"
+      },
+      "live:position:square-off"
+    );
+    await client.liveOrder.update({
+      where: { id: row.id },
+      data: {
+        brokerOrderId: placed.orderId || null,
+        status: mapBrokerStatus(placed.orderStatus),
+        brokerStatusRaw: placed.orderStatus ?? null
+      }
+    });
+    await recordOrderEvent(row.id, "API_RESPONSE", placed.orderStatus ?? "PLACED", placed as unknown as Record<string, unknown>, client);
+    return { orderId: row.id, brokerOrderId: placed.orderId, status: mapBrokerStatus(placed.orderStatus), transactionType, quantity };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = error instanceof DhanApiError ? error.statusCode : undefined;
+    const rejected = status !== undefined && status >= 400 && status < 500;
+    await client.liveOrder.update({
+      where: { id: row.id },
+      data: { status: rejected ? "REJECTED" : "UNKNOWN", rejectionReason: message.slice(0, 255) }
+    });
+    await recordOrderEvent(row.id, "API_RESPONSE", rejected ? "REJECTED" : "UNKNOWN", { error: message }, client);
+    throw new LiveOrderRejectedError(`Square-off failed: ${message}`);
+  }
+}
+
+export interface LivePanicResult {
+  ordersCancelled: number;
+  positionsSquaredOff: number;
+  failures: string[];
+}
+
+/**
+ * Cancel every working order, then square off every open position.
+ *
+ * Orders first, deliberately: a resting order that fills midway through would
+ * re-open exposure this is trying to remove.
+ *
+ * Never stops on the first failure. A panic that gives up halfway leaves a book
+ * in a worse state than either doing nothing or finishing - so every position is
+ * attempted and the failures are returned together.
+ */
+export async function panicCloseLiveAccount(
+  user: AuthUserDto,
+  client: PrismaClient = prisma
+): Promise<LivePanicResult> {
+  const account = await requireTradableAccount(user, client, true);
+  const result: LivePanicResult = { ordersCancelled: 0, positionsSquaredOff: 0, failures: [] };
+
+  const working = await client.liveOrder.findMany({
+    where: { accountId: account.id, status: { in: ["SENT", "OPEN", "PARTIAL"] }, brokerOrderId: { not: null } }
+  });
+  for (const order of working) {
+    try {
+      await cancelLiveOrder(user, order.id, client);
+      result.ordersCancelled += 1;
+    } catch (error) {
+      result.failures.push(`cancel ${order.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const positions = await client.livePosition.findMany({ where: { accountId: account.id, status: "OPEN" } });
+  for (const position of positions) {
+    if (!position.netQty) continue;
+    try {
+      await squareOffLivePosition(user, position.id, {}, client);
+      result.positionsSquaredOff += 1;
+    } catch (error) {
+      result.failures.push(`square off ${position.tradingSymbol ?? position.securityId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return result;
+}
+
+// ------------------------------------------------------------------
 // Reconciliation - Dhan is the source of truth, always
 // ------------------------------------------------------------------
 
