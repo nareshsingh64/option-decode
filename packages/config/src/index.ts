@@ -28,6 +28,13 @@ const envSchema = z.object({
   // whole API over a feature that is off by default.
   //   openssl rand -base64 32
   LIVE_BROKER_ENCRYPTION_KEY: z.string().trim().optional(),
+  // Dhan partner consent login - lets a user connect their account through
+  // Dhan's own login page instead of pasting a JWT. All three are needed
+  // together; with any missing, the panel falls back to the manual paste form.
+  // The redirect URL must be REGISTERED with Dhan or the flow dead-ends there.
+  DHAN_PARTNER_ID: z.string().trim().optional(),
+  DHAN_PARTNER_SECRET: z.string().trim().optional(),
+  DHAN_PARTNER_REDIRECT_URL: z.string().trim().optional(),
   FEED_UNDERLYINGS: z.string().default("NIFTY,BANKNIFTY"),
   SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SNAPSHOT_CRON_PATTERN: z.string().trim().optional(),

@@ -475,6 +475,79 @@ function CredentialForm({ onSaved }: { onSaved: () => Promise<void> | void }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partnerLogin, setPartnerLogin] = useState(false);
+
+  // Which credential paths this deployment actually supports. Asked of the
+  // server because it depends on partner config the browser cannot see.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/live/credential/options`, { credentials: "include" });
+        if (!response.ok) return;
+        const body = await response.json();
+        if (!cancelled) setPartnerLogin(Boolean(body.partnerLogin));
+      } catch {
+        // Falls back to the manual paste form, which always works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Completes the flow when Dhan redirects back with ?tokenId=&state=.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tokenId = params.get("tokenId");
+    const state = params.get("state");
+    if (!tokenId || !state) return;
+
+    void (async () => {
+      setBusy(true);
+      try {
+        const response = await fetch(`${API_URL}/api/live/credential/consume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ tokenId, state })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+        await onSaved();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not complete the Dhan login.");
+      } finally {
+        // Strip the one-time exchange code out of the address bar whatever
+        // happened. It is single-use, but leaving it in history and in any
+        // copied URL is gratuitous.
+        params.delete("tokenId");
+        params.delete("state");
+        const query = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+        setBusy(false);
+      }
+    })();
+  }, [onSaved]);
+
+  const startPartnerLogin = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/credential/consent`, {
+        method: "POST",
+        credentials: "include"
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      // Full navigation, not a popup: Dhan's login is a 2FA flow and popup
+      // blockers are a bad place to discover that.
+      window.location.href = body.loginUrl as string;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start the Dhan login.");
+      setBusy(false);
+    }
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -500,8 +573,29 @@ function CredentialForm({ onSaved }: { onSaved: () => Promise<void> | void }) {
   };
 
   return (
-    <div className="space-y-2 rounded border border-slate-300 p-3">
-      <h3 className="text-sm font-semibold">Add your Dhan access token</h3>
+    <div className="space-y-3 rounded border border-slate-300 p-3">
+      {partnerLogin ? (
+        <div className="space-y-2 border-b border-slate-200 pb-3">
+          <h3 className="text-sm font-semibold">Connect your Dhan account</h3>
+          <p className="text-xs text-slate-600">
+            You sign in on Dhan&apos;s own page with your usual 2FA. We never see your password, and your
+            client id comes back automatically. Note a token connected this way cannot be auto-renewed —
+            Dhan only renews tokens minted from Dhan Web — so you will reconnect roughly daily.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void startPartnerLogin()}
+            className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy ? "Opening Dhan…" : "Connect with Dhan"}
+          </button>
+        </div>
+      ) : null}
+
+      <h3 className="text-sm font-semibold">
+        {partnerLogin ? "Or paste an access token" : "Add your Dhan access token"}
+      </h3>
       <p className="text-xs text-slate-600">
         Verified against Dhan before it is stored, then encrypted at rest. It is never returned by any
         endpoint, logged, or emailed. Tokens live 24 hours and an expired one cannot be renewed — only

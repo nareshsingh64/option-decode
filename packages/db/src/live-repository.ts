@@ -27,7 +27,9 @@ import { randomUUID } from "node:crypto";
 import {
   DhanApiError,
   DhanClient,
+  DhanPartnerClient,
   getFnoExchangeSegment,
+  isPartnerLoginConfigured,
   type DhanBrokerOrder,
   type DhanFnoSegment,
   type DhanFundLimit,
@@ -217,6 +219,131 @@ export async function saveBrokerCredential(
   });
 
   return getBrokerCredentialStatus(user, client);
+}
+
+// ------------------------------------------------------------------
+// Partner consent login - connect through Dhan's own login page
+// ------------------------------------------------------------------
+
+function partnerOptions() {
+  return {
+    partnerId: process.env.DHAN_PARTNER_ID ?? "",
+    partnerSecret: process.env.DHAN_PARTNER_SECRET ?? "",
+    redirectUrl: process.env.DHAN_PARTNER_REDIRECT_URL ?? "",
+    baseUrl: process.env.DHAN_PARTNER_BASE_URL || undefined
+  };
+}
+
+export function partnerLoginAvailable(): boolean {
+  return isPartnerLoginConfigured(partnerOptions());
+}
+
+// state -> which user started this consent, and when.
+//
+// This is the whole defence against a consent landing in the wrong account. The
+// callback arrives carrying a tokenId in a query string, and without binding it
+// to the user who STARTED the flow, someone could induce a logged-in user to
+// complete a consent minted for a different Dhan account - handing our storage a
+// credential the user never intended to connect. Both must agree: the state must
+// exist, and it must belong to the session making the call.
+//
+// In-process and short-lived. An API restart mid-consent strands the flow, which
+// costs one retry; persisting it would mean a table and a migration for state
+// that is meaningless sixty seconds later.
+interface PendingConsent {
+  userId: string;
+  createdAt: number;
+}
+const CONSENT_STATE_TTL_MS = 10 * 60 * 1000;
+const pendingConsents = new Map<string, PendingConsent>();
+
+function prunePendingConsents(): void {
+  const cutoff = Date.now() - CONSENT_STATE_TTL_MS;
+  for (const [state, pending] of pendingConsents) {
+    if (pending.createdAt < cutoff) pendingConsents.delete(state);
+  }
+}
+
+export interface BrokerConsentStart {
+  loginUrl: string;
+  state: string;
+  expiresAt: string;
+}
+
+/**
+ * Step 1+2. Mint a consent and hand back the URL the user logs in at.
+ *
+ * Called only when a user actively starts the flow: Dhan caps consents at 25 per
+ * partner per day, so doing this on page load would let a few idle panels
+ * exhaust the budget for everyone.
+ */
+export async function beginBrokerConsent(user: AuthUserDto): Promise<BrokerConsentStart> {
+  const options = partnerOptions();
+  if (!isPartnerLoginConfigured(options)) {
+    throw new LiveCredentialError(
+      "Partner login is not configured on this deployment. Set DHAN_PARTNER_ID, DHAN_PARTNER_SECRET and DHAN_PARTNER_REDIRECT_URL, or paste a token manually."
+    );
+  }
+  prunePendingConsents();
+
+  const partner = new DhanPartnerClient(options);
+  const consent = await partner.generateConsent();
+  const state = randomUUID();
+  pendingConsents.set(state, { userId: user.id, createdAt: Date.now() });
+
+  // state rides along on the redirect so the callback can prove which user
+  // started this. Dhan echoes back whatever query the redirect URL carries.
+  const separator = options.redirectUrl.includes("?") ? "&" : "?";
+  const loginUrl = `${consent.loginUrl}&redirectUrl=${encodeURIComponent(`${options.redirectUrl}${separator}state=${state}`)}`;
+
+  return {
+    loginUrl,
+    state,
+    expiresAt: new Date(Date.now() + CONSENT_STATE_TTL_MS).toISOString()
+  };
+}
+
+/**
+ * Step 3. Exchange the redirect's tokenId for a stored credential.
+ *
+ * Verified against /v2/fundlimit before it is persisted, exactly as the manual
+ * paste path is: a stored credential that has never authenticated is worse than
+ * none, because the panel then claims the account is ready.
+ */
+export async function completeBrokerConsent(
+  user: AuthUserDto,
+  input: { tokenId: string; state: string },
+  client: PrismaClient = prisma
+): Promise<BrokerCredentialStatus> {
+  const options = partnerOptions();
+  if (!isPartnerLoginConfigured(options)) {
+    throw new LiveCredentialError("Partner login is not configured on this deployment.");
+  }
+  prunePendingConsents();
+
+  const pending = pendingConsents.get(input.state);
+  if (!pending) {
+    throw new LiveCredentialError("That login attempt has expired or was already used. Start again.");
+  }
+  if (pending.userId !== user.id) {
+    // Someone is completing a consent started by a different session. Drop the
+    // state so a second attempt cannot grind against it.
+    pendingConsents.delete(input.state);
+    throw new LiveCredentialError("That login attempt belongs to a different account.");
+  }
+  // Single use, whatever happens next.
+  pendingConsents.delete(input.state);
+
+  const partner = new DhanPartnerClient(options);
+  const consumed = await partner.consumeConsent(input.tokenId);
+
+  // From here it is the same path as a pasted token: verify it is alive,
+  // encrypt, store. saveBrokerCredential does all three and is the only place
+  // that writes a credential.
+  return saveBrokerCredential(user, {
+    brokerClientId: consumed.dhanClientId,
+    accessToken: consumed.accessToken
+  }, client);
 }
 
 export async function getBrokerCredentialStatus(

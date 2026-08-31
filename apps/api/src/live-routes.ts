@@ -24,8 +24,11 @@ import {
   cancelLiveOrder,
   computeLiveMarginView,
   getBrokerCredentialStatus,
+  beginBrokerConsent,
+  completeBrokerConsent,
   getLiveSummary,
   listLiveChainStrikes,
+  partnerLoginAvailable,
   placeLiveOrder,
   previewLiveOrder,
   reconcileLiveAccount,
@@ -66,6 +69,11 @@ const credentialSchema = z.object({
 
 const confirmSchema = z.object({
   confirmToken: z.string().trim().min(1).max(128)
+});
+
+const consentCallbackSchema = z.object({
+  tokenId: z.string().trim().min(1).max(512),
+  state: z.string().trim().min(1).max(128)
 });
 
 type GetRequestUser = (cookieHeader: string | undefined) => Promise<AuthUserDto | null>;
@@ -134,6 +142,49 @@ export function registerLiveRoutes(app: FastifyInstance, getRequestUser: GetRequ
     }
     try {
       return await saveBrokerCredential(user, parsed.data);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  // --- Partner consent login ---------------------------------------------
+  //
+  // Lets a user connect through Dhan's own login page instead of pasting a JWT.
+  // Two calls rather than one redirect chain: Dhan sends the browser back to the
+  // WEB app, and the panel then posts the tokenId here. That keeps the exchange
+  // on a normal same-origin authenticated request, instead of relying on a
+  // session cookie surviving a cross-site redirect onto the API's origin.
+
+  app.get("/api/live/credential/options", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    // Tells the panel which form to show. Deliberately not derived in the
+    // browser: whether partner login works depends on server-side config the
+    // client cannot see.
+    return { partnerLogin: partnerLoginAvailable(), manualPaste: true };
+  });
+
+  app.post("/api/live/credential/consent", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    try {
+      return await beginBrokerConsent(user);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  app.post("/api/live/credential/consume", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    const parsed = consentCallbackSchema.safeParse(request.body);
+    if (!parsed.success) {
+      // No issues echoed: a zod issue on tokenId would put part of a one-time
+      // credential exchange code into the response and the logs.
+      return reply.status(400).send({ message: "A tokenId and state from the Dhan redirect are both required." });
+    }
+    try {
+      return await completeBrokerConsent(user, parsed.data);
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }
