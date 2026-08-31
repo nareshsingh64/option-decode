@@ -729,6 +729,9 @@ export async function computeLiveMarginView(
 
   const free = funds.availableBalance - netMargin;
   const utilizationPct = funds.availableBalance > 0 ? (netMargin / funds.availableBalance) * 100 : 100;
+  // >= 100 disables the ceiling: the trader is choosing to use the whole
+  // balance. Below 100 it reserves headroom for the exchange's intraday
+  // revaluations, which happen six times a day.
   const maxUtil = account ? Number(account.maxMarginUtilPct) : 50;
 
   return {
@@ -755,7 +758,7 @@ export async function computeLiveMarginView(
       free,
       utilizationPct,
       insufficientBalance: Math.max(0, netMargin - funds.availableBalance),
-      wouldBreach: utilizationPct > maxUtil || free < 0
+      wouldBreach: (maxUtil < 100 && utilizationPct > maxUtil) || free < 0
     }
   };
 }
@@ -833,9 +836,17 @@ export async function previewLiveOrder(
       `Insufficient funds: this basket needs Rs ${Math.round(margin.requirement.total).toLocaleString("en-IN")} against Rs ${Math.round(margin.funds.availableBalance).toLocaleString("en-IN")} available (short by Rs ${Math.round(margin.headroom.insufficientBalance).toLocaleString("en-IN")}).`
     );
   }
-  if (margin.requirement.total > Number(account.maxOrderMargin)) {
+  // A cap of 0 means "no local cap - the broker's own view of available funds
+  // is the limit". That is a deliberate setting, not a missing one: the
+  // insufficientBalance check above already refused anything the account cannot
+  // fund, and it is computed by Dhan against real funds including collateral
+  // and blocked payouts that we do not model. A second, smaller number layered
+  // on top of that is a policy choice, and an account holder is entitled to
+  // decline it.
+  const orderCap = Number(account.maxOrderMargin);
+  if (orderCap > 0 && margin.requirement.total > orderCap) {
     throw new LiveOrderRejectedError(
-      `Margin Rs ${Math.round(margin.requirement.total).toLocaleString("en-IN")} exceeds this account's per-order cap of Rs ${Number(account.maxOrderMargin).toLocaleString("en-IN")}.`
+      `Margin Rs ${Math.round(margin.requirement.total).toLocaleString("en-IN")} exceeds this account's per-order cap of Rs ${orderCap.toLocaleString("en-IN")}.`
     );
   }
   if (margin.headroom.wouldBreach) {
