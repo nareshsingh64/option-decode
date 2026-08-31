@@ -16,6 +16,7 @@ import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type { ElliottWaveAnalysis, MarketPulse, OptionChainSnapshot, PressureScore, TradingHorizon, UnderlyingDefinition } from "@option-decode/types";
 import { isExpiryInPast, isMarketSessionOpen as isSegmentMarketSessionOpen } from "@option-decode/utils";
 import { createClearedSessionCookie, createSessionCookie, getSessionUserId, hashPassword, verifyPassword } from "./auth.js";
+import { startApiMemorySampling } from "./api-memory.js";
 import { getLiveTicks } from "./live-tick-cache.js";
 import { registerLiveRoutes } from "./live-routes.js";
 import { registerSimRoutes } from "./sim-routes.js";
@@ -2338,3 +2339,7 @@ async function warmOverviewCaches() {
 }
 
 void warmOverviewCaches();
+
+// Memory sampling. Started after listen() so the first sample reflects a
+// serving process rather than one still wiring itself up.
+startApiMemorySampling();

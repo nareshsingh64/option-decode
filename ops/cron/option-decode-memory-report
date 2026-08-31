@@ -21,3 +21,11 @@
 # Regression-only, plus a Friday summary. A daily "all fine" email gets
 # filtered within a fortnight and takes the important one with it.
 20 4 * * 1-5 root /opt/option-decode/ops/scripts/worker-memory-alert.sh >> /opt/option-decode-native/logs/memory-reports/alert.log 2>&1
+
+# The API had no memory instrumentation at all until 2026-08-31, so when its
+# cgroup memory rose over the Live Order work there was nothing to say why.
+# Same two-step shape as the worker's above: write the report, then decide
+# separately whether it is worth an email, so a mail failure can never mark the
+# report job failed.
+25 4 * * 1-5 root mkdir -p /opt/option-decode-native/logs/memory-reports && /opt/option-decode/ops/scripts/api-memory-report.sh >> /opt/option-decode-native/logs/memory-reports/api-$(date +\%F).txt 2>&1
+30 4 * * 1-5 root /opt/option-decode/ops/scripts/api-memory-alert.sh >> /opt/option-decode-native/logs/memory-reports/alert.log 2>&1
