@@ -1732,7 +1732,14 @@ export function LiveDashboard({ initialOverview, initialParams, initialView = "d
           "Trading Command Center" below. Each metric now lives in exactly
           one place. Not sticky (position: sticky) to avoid any chance of
           it overlapping/blocking the Market Controls form above it. */}
-      <section className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded border border-terminal-line bg-terminal-panel/95 px-3 py-2 shadow-sm">
+      {/* Hidden on the live-order view. Every chip here is option-chain
+          analytics - bias, PCR, max pain, setup quality - which says nothing
+          about a position already open, while costing a full row of vertical
+          space on the one screen where P&L and working orders need to be
+          visible together without scrolling. */}
+      <section
+        className={`${initialView === "live-order" ? "hidden" : "flex"} flex-wrap items-center gap-x-3 gap-y-2 rounded border border-terminal-line bg-terminal-panel/95 px-3 py-2 shadow-sm`}
+      >
         <KpiChip label={`${overview.snapshot.underlyingSymbol}`} value={formatPrice(overview.snapshot.spotPrice)} tone="blue" />
         <KpiChip label="ATM" value={formatStrike(overview.snapshot.atmStrike)} />
         {/* "Chain Bias", not plain "Bias": the Strike Matrix tab shows its own

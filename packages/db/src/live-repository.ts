@@ -1427,10 +1427,24 @@ export function invalidateLiveFundsCache(userId: string): void {
   fundsCache.delete(userId);
 }
 
+/**
+ * Resolves live marks for a set of held contracts.
+ *
+ * Async and given the contracts, so the summary can be built in ONE pass:
+ * positions are read once, handed here, and priced. The first version called
+ * getLiveSummary twice - once to learn what was open, once to price it - which
+ * duplicated the credential lookup, the funds read and both findMany calls on
+ * every request. At a one-second poll that is the whole endpoint's cost paid
+ * twice for nothing.
+ */
+export type LiveMarkResolver = (
+  contracts: Array<{ securityId: string; exchangeSegment: string }>
+) => Promise<LiveMarkLookup | undefined>;
+
 export async function getLiveSummary(
   user: AuthUserDto,
   client: PrismaClient = prisma,
-  markFor?: LiveMarkLookup
+  resolveMarks?: LiveMarkResolver
 ): Promise<LiveSummary> {
   const credential = await getBrokerCredentialStatus(user, client);
   const account = await client.liveAccount.findFirst({ where: { userId: user.id, isActive: true } });
@@ -1460,24 +1474,36 @@ export async function getLiveSummary(
       ]
     : [[], []];
 
+  const accountDto = account
+    ? {
+        id: account.id,
+        brokerClientId: account.brokerClientId,
+        tradingEnabled: account.tradingEnabled,
+        maxOrderMargin: Number(account.maxOrderMargin),
+        maxOpenMargin: Number(account.maxOpenMargin),
+        dailyLossLimit: Number(account.dailyLossLimit),
+        maxMarginUtilPct: Number(account.maxMarginUtilPct),
+        allowUndefinedRisk: account.allowUndefinedRisk
+      }
+    : null;
+
+  const serializedPositions = positions.map(serializePosition);
+  const markFor = resolveMarks
+    ? await resolveMarks(
+        serializedPositions.map((position) => ({
+          securityId: String(position.securityId ?? ""),
+          exchangeSegment: String(position.exchangeSegment ?? "")
+        }))
+      )
+    : undefined;
+
   return {
     enabled: liveTradingEnabledGlobally(),
     credential,
-    account: account
-      ? {
-          id: account.id,
-          brokerClientId: account.brokerClientId,
-          tradingEnabled: account.tradingEnabled,
-          maxOrderMargin: Number(account.maxOrderMargin),
-          maxOpenMargin: Number(account.maxOpenMargin),
-          dailyLossLimit: Number(account.dailyLossLimit),
-          maxMarginUtilPct: Number(account.maxMarginUtilPct),
-          allowUndefinedRisk: account.allowUndefinedRisk
-        }
-      : null,
+    account: accountDto,
     funds,
     orders: orders.map(serializeOrder),
-    positions: positions.map(serializePosition).map((position) => applyLiveMark(position, markFor))
+    positions: serializedPositions.map((position) => applyLiveMark(position, markFor))
   };
 }
 

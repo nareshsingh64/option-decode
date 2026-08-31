@@ -44,15 +44,29 @@ export function MarketControls({
   handleAddWatchSymbol,
   refreshOverview
 }: MarketControlsProps) {
+  // The live-order view still needs the symbol/expiry pickers - the ticket
+  // builder reads both - but not the scrolling ticker or the section heading.
+  // Together those cost roughly a third of the viewport on the one screen where
+  // positions, working orders and P&L should be visible at once.
+  const compact = initialView === "live-order";
+
   return (
     <>
-      <MarketTicker items={overview.ticker ?? []} />
+      {compact ? null : <MarketTicker items={overview.ticker ?? []} />}
 
-      <section className="flex flex-wrap items-end justify-between gap-3 rounded border border-terminal-line bg-terminal-panel/80 p-3">
-        <div>
-          <h2 className="text-base font-semibold">Market Controls</h2>
-          <p className="mt-1 text-sm text-terminal-muted">Last refresh {formatIstShortDateTime(lastRefresh)} IST</p>
-        </div>
+      <section
+        className={`flex flex-wrap items-end justify-between gap-3 rounded border border-terminal-line bg-terminal-panel/80 ${compact ? "px-3 py-2" : "p-3"}`}
+      >
+        {compact ? (
+          <span className="text-xs uppercase text-terminal-muted">
+            Contract · refreshed {formatIstShortDateTime(lastRefresh)} IST
+          </span>
+        ) : (
+          <div>
+            <h2 className="text-base font-semibold">Market Controls</h2>
+            <p className="mt-1 text-sm text-terminal-muted">Last refresh {formatIstShortDateTime(lastRefresh)} IST</p>
+          </div>
+        )}
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid gap-1 text-xs uppercase text-terminal-muted">
             Watchlist

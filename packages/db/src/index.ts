@@ -95,6 +95,7 @@ export type {
   LiveMarginLegView,
   LiveMarginView,
   LiveMarkLookup,
+  LiveMarkResolver,
   LivePlacementResult,
   LivePreview,
   LiveReconcileResult,

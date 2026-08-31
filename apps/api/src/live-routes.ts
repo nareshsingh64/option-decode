@@ -36,7 +36,7 @@ import {
   revokeBrokerCredential,
   saveBrokerCredential
 } from "@option-decode/db";
-import type { AuthUserDto, LiveMarkLookup } from "@option-decode/db";
+import type { AuthUserDto, LiveMarkResolver } from "@option-decode/db";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import type Redis from "ioredis";
 import { getLiveTicks } from "./live-tick-cache.js";
@@ -96,14 +96,12 @@ type GetRequestUser = (cookieHeader: string | undefined) => Promise<AuthUserDto 
  * unrealised figure from the last reconcile - a cold cache degrades to the
  * slower number rather than to a blank.
  */
-async function buildMarkLookup(
-  positions: Array<Record<string, unknown>>,
-  redis: Redis
-): Promise<LiveMarkLookup | undefined> {
-  const keys = positions
-    .map((position) => ({
-      segment: String(position.exchangeSegment ?? "") as DhanLiveFeedExchangeSegment,
-      securityId: Number(position.securityId ?? 0)
+function buildMarkResolver(redis: Redis): LiveMarkResolver {
+  return async (contracts) => {
+  const keys = contracts
+    .map((contract) => ({
+      segment: contract.exchangeSegment as DhanLiveFeedExchangeSegment,
+      securityId: Number(contract.securityId)
     }))
     .filter((key) => key.segment && Number.isFinite(key.securityId) && key.securityId > 0);
   if (!keys.length) return undefined;
@@ -119,6 +117,7 @@ async function buildMarkLookup(
     }
   }
   return (securityId: string) => bySecurityId.get(securityId);
+  };
 }
 
 /**
@@ -268,12 +267,10 @@ export function registerLiveRoutes(
     const user = await requireUser(request.headers.cookie, reply);
     if (!user) return;
     try {
-      // Two passes: the first to learn which contracts are open, the second to
-      // price them from the feed. The cost is one extra Redis MGET, which is
-      // what makes a 1-second refresh affordable.
-      const base = await getLiveSummary(user);
-      const markFor = await buildMarkLookup(base.positions, redisCache);
-      return markFor ? await getLiveSummary(user, undefined, markFor) : base;
+      // One pass. The resolver is handed the open contracts mid-build, so
+      // positions are read once and priced in place - a 1-second poll costs one
+      // credential lookup, two findMany calls and one Redis MGET.
+      return await getLiveSummary(user, undefined, buildMarkResolver(redisCache));
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }

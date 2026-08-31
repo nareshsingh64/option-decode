@@ -318,30 +318,36 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       {/* Token life stays OUTSIDE the tabs. A lapsed token means you cannot
           close a position, not merely that you cannot open one, so it must be
           visible from whichever tab the trader happens to be on. */}
-      {credential?.present ? (
-        <div className="rounded border border-slate-200 p-3 text-sm">
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-            <span>
-              Dhan client <strong>{credential.brokerClientId}</strong>
-            </span>
-            <span className={credential.canOpen ? "text-slate-700" : "text-red-700"}>
-              Token: {credential.hoursRemaining === undefined ? "unknown expiry" : `${credential.hoursRemaining.toFixed(1)}h left`}
-              {credential.renewable ? " · renewable" : " · NOT renewable"}
-            </span>
-          </div>
-          {credential.reason ? <p className="mt-1 text-xs text-red-700">{credential.reason}</p> : null}
-        </div>
-      ) : null}
-
-      {summary?.funds ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Available" value={rupees(summary.funds.availableBalance)} />
-          <Stat label="Utilised" value={rupees(summary.funds.utilizedAmount)} />
-          <Stat label="Withdrawable" value={rupees(summary.funds.withdrawableBalance)} />
-          <Stat
-            label="Per-order cap"
-            value={account && account.maxOrderMargin > 0 ? rupees(account.maxOrderMargin) : "available margin"}
-          />
+      {/* Token life and funds on ONE line rather than a card plus a four-card
+          grid. Both still sit outside the tabs - a lapsed token means you
+          cannot CLOSE a position - but they are reference numbers, not the
+          thing being watched, and they were taking three rows to say it. */}
+      {credential?.present || summary?.funds ? (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-slate-200 px-3 py-1.5 text-xs">
+          {credential?.present ? (
+            <>
+              <span className="text-slate-500">
+                Dhan <strong className="text-slate-800">{credential.brokerClientId}</strong>
+              </span>
+              <span className={credential.canOpen ? "text-slate-600" : "font-semibold text-red-700"}>
+                token{" "}
+                {credential.hoursRemaining === undefined ? "expiry unknown" : `${credential.hoursRemaining.toFixed(1)}h`}
+                {credential.renewable ? "" : " · not renewable"}
+              </span>
+            </>
+          ) : null}
+          {summary?.funds ? (
+            <>
+              <span className="text-slate-500">
+                available <strong className="text-slate-800">{rupees(summary.funds.availableBalance)}</strong>
+              </span>
+              <span className="text-slate-500">used {rupees(summary.funds.utilizedAmount)}</span>
+              <span className="text-slate-500">
+                cap {account && account.maxOrderMargin > 0 ? rupees(account.maxOrderMargin) : "available margin"}
+              </span>
+            </>
+          ) : null}
+          {credential?.reason ? <span className="text-red-700">{credential.reason}</span> : null}
         </div>
       ) : null}
 
