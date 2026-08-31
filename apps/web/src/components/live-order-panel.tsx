@@ -1173,11 +1173,24 @@ function RecentOrders({
           {orders.slice(0, 15).map((order) => (
             <tr key={String(order.id)} className="border-t border-slate-100">
               <td className="py-1">
-                {String(order.underlyingSymbol)} {String(order.strikePrice)} {String(order.optionType)}
+                {/* A zero strike means the contract was never recorded - show
+                    the underlying alone rather than "NIFTY 0 CE", which reads
+                    like a real contract that does not exist. */}
+                {Number(order.strikePrice) > 0
+                  ? `${String(order.underlyingSymbol)} ${String(order.strikePrice)} ${String(order.optionType)}`
+                  : `${String(order.underlyingSymbol)} (contract not recorded)`}
               </td>
               <td>{String(order.transactionType)}</td>
               <td>{String(order.lots)}</td>
-              <td>{rupees(order.price as number)}</td>
+              <td>
+                {/* A market order has no price, and rendering that as "--"
+                    reads as missing data rather than as "at market". */}
+                {String(order.orderType) === "MARKET" ? (
+                  <span className="text-slate-500">MKT</span>
+                ) : (
+                  rupees(order.price as number)
+                )}
+              </td>
               <td>
                 {String(order.filledQty ?? 0)}/{String(order.quantity ?? 0)}
                 {order.avgFillPrice ? ` @ ${rupees(order.avgFillPrice as number)}` : ""}

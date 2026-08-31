@@ -1219,6 +1219,21 @@ export async function squareOffLivePosition(
   const quantity = Math.abs(netQty);
   const correlationId = randomUUID().replace(/-/g, "").slice(0, 24);
 
+  // Belt and braces on the contract. The position row is the primary source now
+  // that the reconciler parses it, but a closing order that records "NIFTY 0 CE"
+  // is unreadable afterwards - and that is exactly what shipped, because these
+  // fields were silently null and `?? 0` hid it. So fall back to the opening
+  // order, then to parsing the broker symbol, before accepting a blank.
+  const opener = await client.liveOrder.findFirst({
+    where: { accountId: account.id, securityId: position.securityId, status: "TRADED", legRole: { not: "CLOSE" } },
+    orderBy: { placedAt: "desc" },
+    select: { expiryLabel: true, optionType: true, strikePrice: true }
+  });
+  const parsed = parseBrokerTradingSymbol(position.tradingSymbol ?? undefined);
+  const optionType = position.optionType ?? opener?.optionType ?? parsed.optionType ?? "CE";
+  const strikePrice = position.strikePrice ?? opener?.strikePrice ?? parsed.strikePrice ?? 0;
+  const expiryLabel = position.expiryLabel ?? opener?.expiryLabel ?? "";
+
   const row = await client.liveOrder.create({
     data: {
       accountId: account.id,
@@ -1226,9 +1241,9 @@ export async function squareOffLivePosition(
       legRole: "CLOSE",
       correlationId,
       underlyingSymbol: position.underlyingSymbol,
-      expiryLabel: position.expiryLabel ?? "",
-      optionType: position.optionType ?? "CE",
-      strikePrice: position.strikePrice ?? 0,
+      expiryLabel,
+      optionType,
+      strikePrice,
       securityId: position.securityId,
       exchangeSegment: position.exchangeSegment,
       transactionType,
@@ -1428,7 +1443,20 @@ export async function reconcileLiveAccount(
       continue;
     }
     seen.add(position.securityId);
-    const underlying = guessUnderlyingFromSymbol(position.tradingSymbol) ?? "";
+    const parsed = parseBrokerTradingSymbol(position.tradingSymbol);
+    const underlying = parsed.underlyingSymbol ?? "";
+    // The expiry date is not in the broker's symbol, so it comes from the order
+    // that opened this contract when we have one.
+    const opener = await client.liveOrder.findFirst({
+      where: { accountId: account.id, securityId: position.securityId, status: "TRADED" },
+      orderBy: { placedAt: "desc" },
+      select: { expiryLabel: true, optionType: true, strikePrice: true }
+    });
+    const contract = {
+      expiryLabel: opener?.expiryLabel ?? null,
+      optionType: opener?.optionType ?? parsed.optionType ?? null,
+      strikePrice: opener?.strikePrice ?? parsed.strikePrice ?? null
+    };
     await client.livePosition.upsert({
       where: { accountId_securityId_status: { accountId: account.id, securityId: position.securityId, status: "OPEN" } },
       create: {
@@ -1437,6 +1465,9 @@ export async function reconcileLiveAccount(
         underlyingSymbol: underlying,
         exchangeSegment: position.exchangeSegment,
         tradingSymbol: position.tradingSymbol ?? null,
+        expiryLabel: contract.expiryLabel,
+        optionType: contract.optionType,
+        strikePrice: contract.strikePrice,
         netQty: position.netQty,
         avgCostPrice: position.costPrice,
         lotSize: position.lotSize ?? null,
@@ -1447,6 +1478,11 @@ export async function reconcileLiveAccount(
         reconciledAt: new Date()
       },
       update: {
+        // Backfilled on every sweep, so rows written before this parsed the
+        // contract heal themselves rather than needing a migration.
+        expiryLabel: contract.expiryLabel,
+        optionType: contract.optionType,
+        strikePrice: contract.strikePrice,
         netQty: position.netQty,
         avgCostPrice: position.costPrice,
         unrealizedPnl: position.unrealizedProfit,
@@ -2004,11 +2040,45 @@ function mapBrokerStatus(status: string | undefined): "LOCAL_PENDING" | "SENT" |
   }
 }
 
-/** Best-effort underlying from a broker trading symbol, e.g. "NIFTY-Sep2026-24800-CE". */
+/**
+ * Pull the contract out of a broker trading symbol, e.g. "NIFTY-Sep2026-24800-CE".
+ *
+ * The reconciler stored only the underlying and left optionType, strikePrice and
+ * expiryLabel null - which was invisible until square-off built a closing order
+ * from them and produced "NIFTY 0 CE". Everything except the expiry date is
+ * recoverable from this string, so it is parsed rather than left empty.
+ *
+ * The expiry token ("Sep2026") has no day in it, so it cannot become the
+ * YYYY-MM-DD this app uses. That comes from the order that opened the position
+ * instead; here it is deliberately left undefined rather than guessed.
+ */
+export function parseBrokerTradingSymbol(tradingSymbol: string | undefined): {
+  underlyingSymbol?: string;
+  strikePrice?: number;
+  optionType?: OptionType;
+} {
+  if (!tradingSymbol) return {};
+  const parts = tradingSymbol.split("-").filter(Boolean);
+  const head = parts[0]?.toUpperCase();
+  const result: { underlyingSymbol?: string; strikePrice?: number; optionType?: OptionType } = {
+    underlyingSymbol: head || undefined
+  };
+  if (parts.length < 3) return result;
+
+  const tail = parts[parts.length - 1]?.toUpperCase();
+  if (tail === "CE" || tail === "PE") {
+    result.optionType = tail;
+    const strike = Number(parts[parts.length - 2]);
+    if (Number.isFinite(strike) && strike > 0) {
+      result.strikePrice = strike;
+    }
+  }
+  return result;
+}
+
+/** Best-effort underlying from a broker trading symbol. */
 function guessUnderlyingFromSymbol(tradingSymbol: string | undefined): string | undefined {
-  if (!tradingSymbol) return undefined;
-  const head = tradingSymbol.split(/[-\s]/)[0];
-  return head ? head.toUpperCase() : undefined;
+  return parseBrokerTradingSymbol(tradingSymbol).underlyingSymbol;
 }
 
 export { DhanApiError };
