@@ -306,10 +306,12 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         </div>
       ) : null}
 
-      {/* The gate message above tells the user to add a token "below", so the
-          form has to actually be here. It was not, until a run through the real
-          UI caught the panel promising something it did not provide. */}
-      {!credential?.present ? <CredentialForm onSaved={refresh} /> : null}
+      {/* Always available, never only when the credential is missing. Dhan
+          tokens live 24 hours and have to be regenerated whenever the IP
+          allowlist changes, so "replace my token" is routine, not an edge case.
+          Hiding this once a credential existed left the only route to a new
+          token going through the database. */}
+      <CredentialForm onSaved={refresh} hasCredential={Boolean(credential?.present)} />
 
       <OpenPositions positions={summary?.positions ?? []} />
       <RecentOrders orders={summary?.orders ?? []} />
@@ -470,7 +472,16 @@ function TicketBuilder({
   );
 }
 
-function CredentialForm({ onSaved }: { onSaved: () => Promise<void> | void }) {
+function CredentialForm({
+  onSaved,
+  hasCredential
+}: {
+  onSaved: () => Promise<void> | void;
+  hasCredential: boolean;
+}) {
+  // Collapsed by default once a credential exists, so the panel is not
+  // dominated by a form most of the time - but one click away, every day.
+  const [open, setOpen] = useState(!hasCredential);
   const [clientId, setClientId] = useState("");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -572,8 +583,54 @@ function CredentialForm({ onSaved }: { onSaved: () => Promise<void> | void }) {
     }
   };
 
+  const disconnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/credential`, { method: "DELETE", credentials: "include" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (hasCredential && !open) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded border border-slate-200 p-2 text-xs">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded border border-slate-400 px-2 py-1 font-medium"
+        >
+          Replace access token
+        </button>
+        <button type="button" disabled={busy} onClick={() => void disconnect()} className="text-red-700 underline">
+          Disconnect broker
+        </button>
+        <span className="text-slate-500">
+          Tokens expire every 24h, and must be regenerated after any change to Dhan&apos;s IP allowlist.
+        </span>
+        {error ? <span className="text-red-700">{error}</span> : null}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 rounded border border-slate-300 p-3">
+      {hasCredential ? (
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-slate-600">
+            Replacing the stored token. The new one is verified against Dhan before it overwrites the old.
+          </p>
+          <button type="button" onClick={() => setOpen(false)} className="text-xs underline">
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
       {partnerLogin ? (
         <div className="space-y-2 border-b border-slate-200 pb-3">
           <h3 className="text-sm font-semibold">Connect your Dhan account</h3>
