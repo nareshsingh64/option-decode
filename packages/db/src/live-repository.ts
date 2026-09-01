@@ -1460,17 +1460,29 @@ export async function reconcileLiveAccount(
     seen.add(position.securityId);
     const parsed = parseBrokerTradingSymbol(position.tradingSymbol);
     const underlying = parsed.underlyingSymbol ?? "";
-    // The expiry date is not in the broker's symbol, so it comes from the order
-    // that opened this contract when we have one.
+    // The expiry date is not in the broker's symbol - "Sep2026" carries a month
+    // and no day - so it has to come from somewhere else.
+    //
+    // Sourcing it ONLY from the order that opened the position was wrong: a
+    // position opened directly in Dhan has no such order, so its expiry stayed
+    // null and the panel showed nothing for it. The app's own contract tables
+    // know the answer for any contract the chain capture has ever seen, keyed
+    // by the same securityId the broker reports, so they are consulted too.
     const opener = await client.liveOrder.findFirst({
       where: { accountId: account.id, securityId: position.securityId, status: "TRADED" },
       orderBy: { placedAt: "desc" },
       select: { expiryLabel: true, optionType: true, strikePrice: true }
     });
+    const known = opener
+      ? null
+      : await client.optionContract.findFirst({
+          where: { securityId: position.securityId },
+          select: { optionType: true, strikePrice: true, expiry: { select: { expiryLabel: true } } }
+        });
     const contract = {
-      expiryLabel: opener?.expiryLabel ?? null,
-      optionType: opener?.optionType ?? parsed.optionType ?? null,
-      strikePrice: opener?.strikePrice ?? parsed.strikePrice ?? null
+      expiryLabel: opener?.expiryLabel ?? known?.expiry.expiryLabel ?? null,
+      optionType: opener?.optionType ?? known?.optionType ?? parsed.optionType ?? null,
+      strikePrice: opener?.strikePrice ?? known?.strikePrice ?? parsed.strikePrice ?? null
     };
     await client.livePosition.upsert({
       where: { accountId_securityId_status: { accountId: account.id, securityId: position.securityId, status: "OPEN" } },
