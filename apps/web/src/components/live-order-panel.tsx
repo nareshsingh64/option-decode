@@ -101,6 +101,18 @@ type LegTemplate = { side: "BUY" | "SELL"; optionType: "CE" | "PE"; label: strin
 // server-side by LiveAccount.allowUndefinedRisk anyway - a one-lot naked index
 // short needs more margin than the measured account balance - so offering them
 // would just be a menu of things that get rejected.
+// Structures whose loss is unbounded. Offered only when the account carries
+// allowUndefinedRisk, and named to match UNDEFINED_RISK_STRUCTURES server-side
+// so the UI and the server agree on what counts as naked.
+const UNDEFINED_RISK_STRUCTURES: Record<string, LegTemplate[]> = {
+  NAKED_CALL: [{ side: "SELL", optionType: "CE", label: "Short call (naked)" }],
+  NAKED_PUT: [{ side: "SELL", optionType: "PE", label: "Short put (naked)" }],
+  SHORT_STRANGLE: [
+    { side: "SELL", optionType: "PE", label: "Short put (naked)" },
+    { side: "SELL", optionType: "CE", label: "Short call (naked)" }
+  ]
+};
+
 const STRUCTURES: Record<string, LegTemplate[]> = {
   // Single bought leg. Risk is the premium paid and nothing more, so these are
   // NOT caught by the naked-short block - that exists for unbounded loss, which
@@ -572,6 +584,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             underlyingSymbol={underlyingSymbol}
             expiryLabel={expiryLabel}
             busy={busy}
+            allowUndefinedRisk={Boolean(account?.allowUndefinedRisk)}
             onPreview={runPreview}
           />
         ) : (
@@ -593,11 +606,13 @@ function TicketBuilder({
   underlyingSymbol,
   expiryLabel,
   busy,
+  allowUndefinedRisk,
   onPreview
 }: {
   underlyingSymbol: string;
   expiryLabel: string;
   busy: boolean;
+  allowUndefinedRisk: boolean;
   onPreview: (ticket: unknown) => Promise<void>;
 }) {
   const [structure, setStructure] = useState<string>("BEAR_CALL_SPREAD");
@@ -610,7 +625,13 @@ function TicketBuilder({
   const [chain, setChain] = useState<ChainStrike[]>([]);
   const [chainError, setChainError] = useState<string | null>(null);
 
-  const template = STRUCTURES[structure] ?? [];
+  // The offered set depends on the account: naked structures appear only where
+  // the server would accept them, rather than being listed and then rejected.
+  const available: Record<string, LegTemplate[]> = allowUndefinedRisk
+    ? { ...STRUCTURES, ...UNDEFINED_RISK_STRUCTURES }
+    : STRUCTURES;
+  const template = available[structure] ?? [];
+  const isNaked = structure in UNDEFINED_RISK_STRUCTURES;
 
   useEffect(() => {
     let cancelled = false;
@@ -664,7 +685,7 @@ function TicketBuilder({
             onChange={(event) => setStructure(event.target.value)}
             className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
           >
-            {Object.keys(STRUCTURES).map((key) => (
+            {Object.keys(available).map((key) => (
               <option key={key} value={key}>
                 {key.replace(/_/g, " ")}
               </option>
@@ -735,6 +756,15 @@ function TicketBuilder({
       >
         {busy ? "Pricing…" : "Preview margin"}
       </button>
+      {isNaked ? (
+        <p className="rounded border border-amber-400 bg-amber-50 p-2 text-xs text-amber-900">
+          <strong>Unbounded risk.</strong> A sold option with no wing has no maximum loss, and margin is
+          revalued by the exchange six times a day - a position that fits at entry can be short of margin by
+          the afternoon without the market moving against you. The exit rules do apply: profit target at 50%
+          of credit, hard stop at 3x, and the short-leg blowout rule.
+        </p>
+      ) : null}
+
       <p className="text-xs text-slate-500">
         Preview prices the basket and runs every cap. Nothing reaches the broker until you confirm, and the
         confirmation expires after 10 seconds.
