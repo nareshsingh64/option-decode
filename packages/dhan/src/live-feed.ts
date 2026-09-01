@@ -230,10 +230,21 @@ export class DhanLiveFeedClient {
     };
 
     ws.onerror = () => {
-      // The close handler (always fired after error, per the WebSocket
-      // spec) is what actually schedules the reconnect - nothing further
-      // to do here beyond the status callback for visibility.
+      // Schedules the reconnect ITSELF rather than trusting close to follow.
+      //
+      // The spec says close always follows error, and the previous version
+      // relied on that. In practice it does not always arrive - an error during
+      // the handshake, or a socket torn down beneath the library, can leave
+      // close unfired. When that happened the feed went permanently silent:
+      // observed on 2026-09-01, where the last status logged was "socket error"
+      // with no "connecting" after it, no ticks in Redis through a full trading
+      // morning, and no LTP anywhere in the live panel until the worker was
+      // restarted.
+      //
+      // scheduleReconnect() already no-ops when a reconnect is pending, so a
+      // close that DOES follow cannot double-schedule.
       this.options.onStatus?.({ state: "reconnecting", detail: "socket error" });
+      this.scheduleReconnect();
     };
 
     ws.onclose = (event: { code: number; reason?: string }) => {
@@ -270,6 +281,28 @@ export class DhanLiveFeedClient {
       }))
     };
     ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * Reconnect if the socket is not usable.
+   *
+   * A supervisory belt to the braces above. Everything inside this client that
+   * recovers a connection is triggered by an event ON that connection - so any
+   * path that loses the socket without firing one leaves nothing to restart it,
+   * and the failure is silent by construction. Callers already re-assert their
+   * subscriptions periodically; this lets that same tick heal a dead feed.
+   */
+  ensureConnected(): void {
+    if (this.closedByCaller || this.pendingReconnect) {
+      return;
+    }
+    // 0 CONNECTING, 1 OPEN - anything else is not going to deliver a tick.
+    const readyState = this.ws?.readyState;
+    if (readyState === 0 || readyState === 1) {
+      return;
+    }
+    this.options.onStatus?.({ state: "reconnecting", detail: "supervisor found the socket down" });
+    this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {

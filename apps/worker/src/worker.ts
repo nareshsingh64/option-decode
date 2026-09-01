@@ -200,6 +200,10 @@ async function resyncLiveFeedSubscriptions() {
     }
 
     liveFeed.subscribe([...indexInstruments, ...stockInstruments, ...positionInstruments]);
+    // Heal a feed that died without firing an event anything was listening for.
+    // This runs every 2 minutes alongside the resync, so the worst case is two
+    // minutes of missing ticks rather than a whole session.
+    liveFeed.ensureConnected();
   } catch (error) {
     console.warn("Unable to resync Dhan live feed subscriptions", { error });
   }
