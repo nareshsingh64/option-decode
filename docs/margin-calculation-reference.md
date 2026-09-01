@@ -357,19 +357,51 @@ is chosen.
 Both symptoms also drove `wouldBreach = true` on both tickets above, so nothing
 could be placed at all.
 
-**Two shapes would be correct. This is a decision, not a mechanical fix:**
+**RESOLVED 2026-09-01: the incremental basis was chosen and implemented.**
 
-- **Incremental**: quote the basket with `includePosition: true` and subtract a
-  baseline quote of the existing book, then compare the difference against
-  `availableBalance`. Costs one extra call per preview, and makes `gross` and
-  `net` comparable again because both then exclude the existing book.
-- **Absolute**: keep `includePosition: true`, compare against `sodLimit` (total
-  capital) rather than `availableBalance`, and price the per-leg `gross` with
-  `includePosition: true` as well so the benefit comparison shares a basis. One
-  call, but it leans on `sodLimit` genuinely representing the whole book's
-  capital.
+`computeLiveMarginView` now quotes the account's open positions as their own
+basket (`includePosition: false`) to get the book's requirement `E`, and reports
+`basket.totalMargin - E` as what the ticket costs to add. Both `gross` and `net`
+then exclude the existing book, so the hedge comparison shares a basis again.
 
-Neither is implemented. Both need approval.
+The alternative — keep the absolute figure, compare against `sodLimit`, and
+price the per-leg `gross` with `includePosition: true` too — was rejected: it
+leans on `sodLimit` genuinely representing the whole book's capital, which is
+not something we have verified.
+
+Measured through the real `computeLiveMarginView` against the live account,
+same two tickets before and after:
+
+| Ticket | | net required | hedge benefit | utilisation | shortfall |
+|---|---|---|---|---|---|
+| Naked short 24650 CE | before | ₹1,98,477.24 | ₹0 (0.0%) | 281.8% | ₹1,28,046.58 |
+| | **after** | **₹1,39,062.82** | ₹67.60 | 197.4% | **₹68,632.16** |
+| Spread 24650/24850 | before | ₹1,62,872.06 | **₹0 (0.0%)** | 231.3% | ₹92,441.40 |
+| | **after** | **₹1,03,457.64** | **₹36,410.53 (26.0%)** | 146.9% | **₹33,026.98** |
+
+The cross-check that makes this convincing: the amount subtracted is
+**₹59,414.42 on both tickets**, and that is exactly the independently measured
+standalone margin of the spread the account actually holds (short 24300 CE /
+long 24750 CE, §5). The baseline priced the real book correctly rather than
+landing on a plausible-looking number.
+
+Both tickets still report `wouldBreach = true`. That is correct, not a residual
+bug — ₹70,430.66 available genuinely cannot fund a fresh one-lot NIFTY short.
+
+Three details worth keeping:
+
+- **The baseline is cached for 10 s** and invalidated by
+  `invalidateLiveFundsCache`, because the book's requirement moves on exactly
+  the events that move funds. A 1-second preview poll must not re-ask Dhan for
+  it on every tick.
+- **A risk-reducing ticket floors at zero rather than falling back.** Buying
+  back a short legitimately prices below the book it joins — it releases margin
+  — so a non-positive difference is a real answer, not an error.
+- **A book that cannot be priced in full reports as unavailable, not partial.**
+  If any open position sits outside the three segments the calculator accepts,
+  the baseline returns null and the caller falls back to the standalone leg sum.
+  A partial baseline would understate `E` and so inflate every incremental
+  figure derived from it.
 
 **The local environment can now verify either one.** As of 2026-09-01 local dev
 runs this path end to end: both live-module migrations applied, an encrypted
@@ -436,7 +468,7 @@ Structural limits of the model, which no coefficient fixes:
    against a captured payload). The **`includePosition` asymmetry is still
    open** and is the only decision blocking the live margin path — it has two
    symptoms, an overstated shortfall and a hedge benefit that always reads ₹0.
-   See §5.
+   **Both fixed 2026-09-01** on the incremental basis — see §5.
 6. **Is `MARGIN` really identical to `INTRADAY` for futures too?** Measured only
    on a short option.
 
@@ -446,10 +478,8 @@ Structural limits of the model, which no coefficient fixes:
 
 1. ~~Verify `multi` end to end.~~ ~~Fix the `exposure`/`commodity` field
    names.~~ **Both done 2026-09-01 — see §5.**
-2. **Decide the `includePosition` basis** (incremental vs absolute, §5). This is
-   the top priority and is not a research task: the live margin path currently
-   reports a ₹0 hedge benefit on real spreads and refuses fundable trades, and
-   local dev can verify either shape immediately.
+2. ~~Decide the `includePosition` basis.~~ **Done 2026-09-01 — incremental, see
+   §5**, verified end to end against the live account.
 3. Measure a naked short on all four MCX commodities and on three indices, on
    two different days. That produces real coefficients instead of one fitted
    point.

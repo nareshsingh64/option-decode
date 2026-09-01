@@ -687,6 +687,79 @@ export interface LiveTicketInput {
  * lookup rather than a live quote, so these cache well - see the note in
  * docs/live-order-module.md on caching this per user.
  */
+// The existing book's requirement only moves when a position opens or closes,
+// so a 1-second preview poll must not re-ask Dhan for it on every tick. Same
+// window as the funds cache, and cleared by the same invalidation.
+const MARGIN_BASELINE_CACHE_MS = 10_000;
+const marginBaselineCache = new Map<string, { amount: number; fetchedAt: number }>();
+
+/**
+ * Margin the account's EXISTING open positions already require, quoted on the
+ * same basis as an `includePosition: true` basket.
+ *
+ * This is the subtrahend that makes a preview incremental. `includePosition:
+ * true` returns the requirement of the WHOLE resulting book rather than the
+ * cost of the new basket - measured 2026-09-01, a lone long call quoted
+ * Rs 672.75 standalone and Rs 42,297.32 with the flag on, and a bought call
+ * cannot require Rs 42k by itself. Subtracting the book's own requirement
+ * leaves what adding this basket actually costs.
+ *
+ * Returns null when the figure could not be established. A caller must NOT
+ * read that as zero: pricing against a book worth nothing understates the
+ * requirement by the whole book, and that is the direction that lets someone
+ * over-leverage.
+ */
+async function existingBookMargin(userId: string, dhan: DhanClient): Promise<number | null> {
+  const cached = marginBaselineCache.get(userId);
+  if (cached && Date.now() - cached.fetchedAt < MARGIN_BASELINE_CACHE_MS) {
+    return cached.amount;
+  }
+
+  const positions = await dhan.getPositions("live:margin:baseline-positions");
+  // netQty 0 is a position closed earlier today that Dhan still reports. It
+  // blocks no margin and must not be priced as though it did.
+  const open = positions.filter((position) => position.netQty !== 0);
+
+  // The margin calculator only takes these three segments. If the book holds
+  // anything else - an equity position, say - the book cannot be priced in
+  // full, and a PARTIAL baseline is worse than none: it would understate what
+  // the book requires, which inflates the incremental figure derived from it.
+  // Report it as unavailable and let the caller take its conservative
+  // fallback rather than quietly pricing against half a book.
+  const quotable = new Set<DhanFnoSegment>(["NSE_FNO", "BSE_FNO", "MCX_COMM"]);
+  if (open.some((position) => !quotable.has(position.exchangeSegment as DhanFnoSegment))) {
+    return null;
+  }
+
+  let amount = 0;
+  if (open.length > 0) {
+    const quote = await dhan.calculateMultiOrderMargin(
+      open.map((position) => ({
+        // netQty carries the direction: long positive, short negative.
+        transactionType: position.netQty > 0 ? ("BUY" as const) : ("SELL" as const),
+        // Dhan's own quantity for that position, in whatever unit its segment
+        // uses - contracts on NSE/BSE, lots on MCX. Handing it straight back
+        // is what stops the MCX lots-vs-contracts asymmetry reappearing here.
+        quantity: Math.abs(position.netQty),
+        securityId: position.securityId,
+        price: position.costPrice,
+        exchangeSegment: position.exchangeSegment as DhanFnoSegment,
+        productType: "MARGIN" as const
+      })),
+      "live:margin:baseline",
+      { includePosition: false }
+    );
+    // Zero is this endpoint's measured failure mode, not a free book.
+    if (!(quote.totalMargin > 0)) {
+      return null;
+    }
+    amount = quote.totalMargin;
+  }
+
+  marginBaselineCache.set(userId, { amount, fetchedAt: Date.now() });
+  return amount;
+}
+
 export async function computeLiveMarginView(
   user: AuthUserDto,
   ticket: LiveTicketInput,
@@ -733,25 +806,38 @@ export async function computeLiveMarginView(
     });
   }
 
-  // Priced AGAINST the existing book, which is the number Dhan will actually
-  // block. The per-leg calls above stay standalone on purpose - they are what
-  // the hedge benefit is measured from, and including positions in both halves
-  // would net the same relief out of the comparison.
+  // Priced against the existing book. On its own this is the requirement of the
+  // WHOLE resulting book, not of these legs - the subtraction below is what
+  // turns it into the cost of this ticket. The per-leg calls above stay
+  // standalone so that gross and net end up on the same footing once the book
+  // has been removed from both.
   const basket = await dhan.calculateMultiOrderMargin(marginLegs, "live:margin:basket", {
     includePosition: true,
     includeOrder: true
   });
-  // Trust the basket total only when it is plausible. Zero (the measured
-  // failure mode) or a benefit larger than gross means the endpoint is not
-  // answering properly, and the safe reading is "no benefit" rather than a
-  // number that would let someone over-leverage.
-  // The basket total is trusted whenever it is a positive number. It is NOT
-  // required to be under the standalone sum any more: with includePosition on
-  // it prices the whole resulting book, which can legitimately exceed the cost
-  // of these legs alone. Only a zero - the measured failure mode of this
-  // endpoint - falls back.
-  const basketUsable = basket.totalMargin > 0;
-  const netMargin = basketUsable ? basket.totalMargin : grossMargin;
+  // INCREMENTAL, not absolute. `basket.totalMargin` is the requirement of the
+  // whole resulting book, so subtracting what the book already requires leaves
+  // what THIS ticket costs to add. Both halves of the hedge comparison below
+  // then exclude the existing book, which is what makes them comparable.
+  //
+  // Pricing it absolutely was wrong in two ways at once, both measured on
+  // 2026-09-01. netMargin carried the existing book while availableBalance was
+  // already net of it, so the book was subtracted twice and a fundable trade
+  // was refused - the reported "insufficient funds ... but we already have the
+  // hedging leg". And because net then always exceeded gross, the displayed
+  // hedge benefit clamped to zero: a 24650/24850 call spread costs Rs 35,605
+  // less than the naked short and the panel showed 0.0%.
+  const bookMargin = await existingBookMargin(user.id, dhan);
+  const basketUsable = basket.totalMargin > 0 && bookMargin !== null;
+  // A ticket that REDUCES risk - buying back a short, say - legitimately
+  // prices below the book it joins, i.e. it releases margin rather than
+  // consuming it. That is a real answer, so it floors at zero instead of
+  // falling back to the (much larger) standalone sum.
+  //
+  // The fallback is that standalone sum, which OVERSTATES a hedged position.
+  // That is the safe direction: it can refuse a fundable trade, where an
+  // understatement would admit an unfundable one.
+  const netMargin = basketUsable ? Math.max(0, basket.totalMargin - (bookMargin as number)) : grossMargin;
   const benefitAmount = Math.max(0, grossMargin - netMargin);
 
   const free = funds.availableBalance - netMargin;
@@ -2146,6 +2232,11 @@ const fundsCache = new Map<string, { funds: DhanFundLimit; fetchedAt: number }>(
 
 export function invalidateLiveFundsCache(userId: string): void {
   fundsCache.delete(userId);
+  // The existing book's margin moves on exactly the events that move funds - a
+  // fill, a square-off - so one invalidation clears both. Leaving the baseline
+  // stale after a fill would price the next preview against the book as it was
+  // before, which is the same double-count this pair exists to avoid.
+  marginBaselineCache.delete(userId);
 }
 
 /**
