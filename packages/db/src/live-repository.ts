@@ -1670,6 +1670,14 @@ export async function setPositionStop(
   user: AuthUserDto,
   positionId: string,
   stopPrice: number | null,
+  // The live premium, supplied by the caller because it lives in Redis and this
+  // package does not talk to Redis. Passing it in is not a style choice: the
+  // first version compared against LivePosition.lastPrice, which is NEVER
+  // written - the reconciler does not set it and the API overlays the mark at
+  // read time - so the already-breached guard below was dead code from the
+  // moment it shipped, and a stop set below the current premium on a short
+  // would have closed at market on the next sweep.
+  currentMark?: number,
   client: PrismaClient = prisma
 ) {
   const account = await requireTradableAccount(user, client, true);
@@ -1686,7 +1694,11 @@ export async function setPositionStop(
     // Refuse a stop that is already breached. Accepting one would fire it on
     // the next sweep and close at market - which the trader may want, but not
     // as a surprise consequence of typing a number.
-    const last = position.lastPrice ? position.lastPrice.toNumber() : null;
+    //
+    // When no mark is available the guard is skipped rather than the stop
+    // refused: a quiet contract the feed has nothing recent for is a bad reason
+    // to prevent someone protecting a position.
+    const last = currentMark !== undefined && Number.isFinite(currentMark) ? currentMark : null;
     if (last !== null) {
       const isShort = position.netQty < 0;
       if (isShort && stopPrice <= last) {

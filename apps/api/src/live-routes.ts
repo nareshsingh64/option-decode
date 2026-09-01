@@ -389,7 +389,14 @@ export function registerLiveRoutes(
       return reply.status(400).send({ message: "stopPrice must be a positive number, or null to clear it." });
     }
     try {
-      return await setPositionStop(user, request.params.positionId, parsed.data.stopPrice);
+      // Resolve the live premium here, where Redis is reachable, so the
+      // already-breached check has a real number to compare against.
+      const summary = await getLiveSummary(user, undefined, buildMarkResolver(redisCache));
+      const position = summary.positions.find((p) => String(p.id) === request.params.positionId);
+      const mark = position?.lastPrice === undefined || position?.lastPrice === null
+        ? undefined
+        : Number(position.lastPrice);
+      return await setPositionStop(user, request.params.positionId, parsed.data.stopPrice, mark);
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }
