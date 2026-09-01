@@ -1644,6 +1644,164 @@ export async function reconcileAllLiveAccounts(client: PrismaClient = prisma): P
 }
 
 // ------------------------------------------------------------------
+// Per-position stop
+// ------------------------------------------------------------------
+
+/**
+ * Set or clear a stop on one position.
+ *
+ * This is a price level on a single contract, deliberately not another
+ * structure rule. The structure rules are percentages of a credit and need a
+ * whole basket this app opened; a single leg - especially one adopted from the
+ * broker - has no credit for them to be percentages OF. Stretching them to
+ * cover it would be a thin protection wearing the costume of a full one.
+ *
+ * Direction is derived from netQty, never stored: a SHORT is stopped when the
+ * premium RISES to the level, a long when it FALLS to it. Deriving it means the
+ * stop cannot disagree with the position it is attached to.
+ *
+ * NOT gated on autoExitEnabled. That switch means "manage my structures for me";
+ * this is the trader naming a specific level on a specific contract, which is
+ * its own instruction. A stop that silently does nothing because an unrelated
+ * global flag is off is the worst possible failure for this feature - the whole
+ * value of a stop is that you can stop thinking about it.
+ */
+export async function setPositionStop(
+  user: AuthUserDto,
+  positionId: string,
+  stopPrice: number | null,
+  client: PrismaClient = prisma
+) {
+  const account = await requireTradableAccount(user, client, true);
+  const position = await client.livePosition.findFirst({
+    where: { id: positionId, accountId: account.id, status: "OPEN" }
+  });
+  if (!position) {
+    throw new LiveOrderRejectedError("No such open position on this account.");
+  }
+  if (stopPrice !== null) {
+    if (!Number.isFinite(stopPrice) || stopPrice <= 0) {
+      throw new LiveOrderRejectedError("A stop must be a positive premium level.");
+    }
+    // Refuse a stop that is already breached. Accepting one would fire it on
+    // the next sweep and close at market - which the trader may want, but not
+    // as a surprise consequence of typing a number.
+    const last = position.lastPrice ? position.lastPrice.toNumber() : null;
+    if (last !== null) {
+      const isShort = position.netQty < 0;
+      if (isShort && stopPrice <= last) {
+        throw new LiveOrderRejectedError(
+          `This is a SHORT: the stop must be ABOVE the current premium of ${last}. A stop at or below it is already breached.`
+        );
+      }
+      if (!isShort && stopPrice >= last) {
+        throw new LiveOrderRejectedError(
+          `This is a LONG: the stop must be BELOW the current premium of ${last}. A stop at or above it is already breached.`
+        );
+      }
+    }
+  }
+
+  await client.livePosition.update({
+    where: { id: position.id },
+    data: { stopPrice, stopSetAt: stopPrice === null ? null : new Date() }
+  });
+  return { positionId: position.id, stopPrice };
+}
+
+/**
+ * Fire any per-position stop whose level has been reached.
+ *
+ * Always MARKET. A stop that rests as an unfilled limit is not a stop, and this
+ * one fires precisely when the premium has run past a level the trader chose -
+ * which is when a limit at the last print does not get hit.
+ *
+ * Runs for EVERY open position with a stop, including ones this app never
+ * opened. That is the whole point: the structure engine deliberately refuses to
+ * touch adopted positions because it would be applying rules the trader never
+ * chose, and a stop is the trader choosing one.
+ */
+async function runPositionStops(
+  markFor: LiveMarkLookup,
+  client: PrismaClient
+): Promise<{ triggered: number; failures: string[] }> {
+  const result = { triggered: 0, failures: [] as string[] };
+  const withStops = await client.livePosition.findMany({
+    where: { status: "OPEN", stopPrice: { not: null } }
+  });
+
+  for (const position of withStops) {
+    if (!position.netQty || !position.stopPrice) continue;
+    const last = markFor(position.securityId);
+    // No mark, no decision. Firing a stop on a stale price is worse than
+    // firing it late.
+    if (last === undefined || !Number.isFinite(last)) continue;
+
+    const stop = position.stopPrice.toNumber();
+    const isShort = position.netQty < 0;
+    const breached = isShort ? last >= stop : last <= stop;
+    if (!breached) continue;
+
+    const account = await client.liveAccount.findUnique({ where: { id: position.accountId } });
+    if (!account || !account.isActive) continue;
+
+    // Same duplicate guard as the structure engine: never a second closing
+    // order while one is working, so a retry after a transient failure cannot
+    // double the position the other way.
+    const inFlight = await client.liveOrder.count({
+      where: {
+        accountId: position.accountId,
+        securityId: position.securityId,
+        legRole: "CLOSE",
+        status: { in: ["LOCAL_PENDING", "SENT", "OPEN", "PARTIAL", "UNKNOWN"] }
+      }
+    });
+    if (inFlight > 0) continue;
+
+    const detail = `Stop at ${stop} breached: ${isShort ? "short" : "long"} premium is ${last}.`;
+    try {
+      await squareOffForAccount(position.accountId, account.userId, position.id, {}, client);
+      // Cleared on success so a partial fill that leaves the position open does
+      // not re-arm against a level already acted on.
+      await client.livePosition.update({
+        where: { id: position.id },
+        data: { stopPrice: null, stopSetAt: null }
+      });
+      result.triggered += 1;
+      await recordStopEvent(position.accountId, position.id, "AUTO_CLOSED", detail, client);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.failures.push(`${position.tradingSymbol ?? position.securityId}: ${message}`);
+      // The stop is deliberately LEFT SET on failure, so the next sweep tries
+      // again. A stop that disarms itself because the broker hiccupped is not a
+      // stop.
+      await recordStopEvent(position.accountId, position.id, "FAILED", `${detail} ${message}`, client);
+    }
+  }
+
+  return result;
+}
+
+async function recordStopEvent(
+  accountId: string,
+  positionId: string,
+  action: "AUTO_CLOSED" | "FAILED",
+  detail: string,
+  client: PrismaClient
+): Promise<void> {
+  try {
+    await client.liveExitEvent.create({
+      // groupId namespaced by position, so a per-position stop shares the audit
+      // table with the structure rules without colliding with a real groupId.
+      data: { accountId, groupId: `pos:${positionId}`, rule: "POSITION_STOP", action, detail: detail.slice(0, 500) }
+    });
+  } catch {
+    // Already recorded for this position, or the audit write failed. Neither is
+    // a reason to leave a breached stop unactioned.
+  }
+}
+
+// ------------------------------------------------------------------
 // Exit engine
 // ------------------------------------------------------------------
 
@@ -1680,6 +1838,13 @@ export async function runLiveExitEngine(
   client: PrismaClient = prisma
 ): Promise<LiveExitSweep> {
   const sweep: LiveExitSweep = { groupsEvaluated: 0, groupsSkipped: 0, flagged: 0, autoClosed: 0, failures: [] };
+
+  // Per-position stops first. They are the trader's own explicit levels, they
+  // cover positions the structure rules cannot reach, and running them first
+  // means a breached stop is not delayed behind basket evaluation.
+  const stops = await runPositionStops(markFor, client);
+  sweep.autoClosed += stops.triggered;
+  sweep.failures.push(...stops.failures);
 
   const positions = await client.livePosition.findMany({ where: { status: "OPEN" } });
   if (!positions.length) return sweep;

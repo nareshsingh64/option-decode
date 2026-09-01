@@ -36,6 +36,7 @@ import {
   reconcileLiveAccount,
   revokeBrokerCredential,
   saveBrokerCredential,
+  setPositionStop,
   squareOffLivePosition
 } from "@option-decode/db";
 import type { AuthUserDto, LiveMarkResolver } from "@option-decode/db";
@@ -88,6 +89,12 @@ const squareOffSchema = z.object({
   // Absent means MARKET. Closing at a limit is an exit that might not happen,
   // which is the wrong default when someone has asked to be out.
   limitPrice: z.coerce.number().positive().optional()
+});
+
+const stopSchema = z.object({
+  // null clears the stop. Distinguished from absent so "remove my stop" is an
+  // explicit instruction rather than an empty body.
+  stopPrice: z.coerce.number().positive().nullable()
 });
 
 const consentCallbackSchema = z.object({
@@ -369,6 +376,20 @@ export function registerLiveRoutes(
     }
     try {
       return await squareOffLivePosition(user, request.params.positionId, parsed.data);
+    } catch (error) {
+      return sendError(reply, error) ?? Promise.reject(error);
+    }
+  });
+
+  app.put<{ Params: { positionId: string } }>("/api/live/positions/:positionId/stop", async (request, reply) => {
+    const user = await requireUser(request.headers.cookie, reply);
+    if (!user) return;
+    const parsed = stopSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "stopPrice must be a positive number, or null to clear it." });
+    }
+    try {
+      return await setPositionStop(user, request.params.positionId, parsed.data.stopPrice);
     } catch (error) {
       return sendError(reply, error) ?? Promise.reject(error);
     }

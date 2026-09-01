@@ -86,6 +86,7 @@ export {
   reconcileAllLiveAccounts,
   squareOffLivePosition,
   runLiveExitEngine,
+  setPositionStop,
   reconcileLiveAccount,
   revokeBrokerCredential,
   saveBrokerCredential

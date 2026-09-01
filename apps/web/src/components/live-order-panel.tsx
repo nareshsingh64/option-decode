@@ -961,6 +961,44 @@ function OpenPositions({
   // hidden mode: a market exit is certain but pays the spread, a limit exit
   // controls the price but may not fill, and which one is right depends on why
   // the trader is closing.
+  const setStop = async (
+    id: string,
+    label: string,
+    current: number | null,
+    isShort: boolean,
+    ltp: number | null
+  ) => {
+    const side = isShort ? "SHORT - stop must be ABOVE" : "LONG - stop must be BELOW";
+    const raw = window.prompt(
+      `Stop for ${label}\n${side} the current premium${ltp === null ? "" : ` of ${ltp.toFixed(2)}`}.\nBlank to clear.`,
+      current === null ? "" : String(current)
+    );
+    if (raw === null) return;
+    const trimmed = raw.trim();
+    const stopPrice = trimmed === "" ? null : Number(trimmed);
+    if (stopPrice !== null && (!Number.isFinite(stopPrice) || stopPrice <= 0)) {
+      setCloseError("That is not a valid stop level.");
+      return;
+    }
+    setBusyId(id);
+    setCloseError(null);
+    try {
+      const response = await fetch(`${API_URL}/api/live/positions/${id}/stop`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ stopPrice })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
+      await onChanged();
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : "Could not set the stop.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const squareOff = async (id: string, label: string, limitPrice?: number) => {
     const how = limitPrice ? `with a limit of ${limitPrice}` : "at market";
     if (!window.confirm(`Square off ${label} ${how}? This places a real order.`)) return;
@@ -1040,6 +1078,7 @@ function OpenPositions({
               <th className="text-right">Avg cost</th>
               <th className="text-right">LTP</th>
               <th className="text-right">Delta</th>
+              <th className="text-right">Stop</th>
               <th className="text-right">Unrealised</th>
               <th className="text-right">Realised</th>
               <th className="text-right">Net</th>
@@ -1133,6 +1172,28 @@ function OpenPositions({
                   <td className={`text-right font-medium ${rowNet < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(rowNet)}
                   </td>
+                  <td className="text-right">
+                    {position.stopPrice ? (
+                      <button
+                        type="button"
+                        onClick={() => void setStop(id, String(position.tradingSymbol), Number(position.stopPrice), isShort, ltp)}
+                        className="font-medium text-amber-700 underline"
+                        title="Fires a MARKET close when breached. Click to change or clear."
+                      >
+                        {Number(position.stopPrice).toFixed(2)}
+                      </button>
+                    ) : canClose ? (
+                      <button
+                        type="button"
+                        onClick={() => void setStop(id, String(position.tradingSymbol), null, isShort, ltp)}
+                        className="text-slate-500 underline"
+                      >
+                        set
+                      </button>
+                    ) : (
+                      <span className="text-slate-400">--</span>
+                    )}
+                  </td>
                   <td className="whitespace-nowrap pl-2">
                     {canClose ? (
                       <>
@@ -1179,8 +1240,9 @@ function OpenPositions({
         LTP updates every second from the Dhan feed; an asterisk means the feed has nothing fresh for that
         contract and the price is from the last reconcile. Delta comes from the 30s option-chain capture
         instead - the feed carries no Greeks - and is signed for the position rather than the contract, so a
-        short call reads negative. Positions come from Dhan and refresh every 20s, including any held on this
-        account but not opened through this app.
+        short call reads negative. A stop fires a MARKET close when the premium crosses it - above for a
+        short, below for a long - and works on any position including ones opened in Dhan, independently of
+        the structure auto-exit switch. Positions come from Dhan and refresh every 20s.
       </p>
     </div>
   );
