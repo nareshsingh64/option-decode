@@ -1086,11 +1086,25 @@ function OpenPositions({
     0
   );
   const realisedToday = closedToday.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
+  // Neither engine coverage nor a stop. Surfaced as a banner as well as a column
+  // because the failure it prevents - believing a naked short is watched when it
+  // is not - is one you only notice when it is too late to matter.
+  const unprotected = positions.filter((p) => !p.engineCovered && !p.stopPrice);
   const net = openPnl + realisedToday;
 
   return (
     <div className="space-y-2">
       {closeError ? <p className="rounded bg-red-50 p-2 text-xs text-red-800">{closeError}</p> : null}
+      {unprotected.length ? (
+        <p className="rounded border border-red-400 bg-red-50 p-2 text-xs text-red-900">
+          <strong>
+            {unprotected.length} position{unprotected.length > 1 ? "s have" : " has"} no automatic exit.
+          </strong>{" "}
+          {unprotected.map((p) => String(p.tradingSymbol ?? p.securityId)).join(", ")} — the exit rules only
+          act on complete structures opened through this app, so anything opened in Dhan, or a structure with
+          a leg already closed, needs a stop.
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
         <span className="text-xs uppercase text-slate-500">
           Net P&amp;L today
@@ -1109,6 +1123,9 @@ function OpenPositions({
           <thead>
             <tr className="text-left text-xs uppercase text-slate-500">
               <th className="py-1 pr-2">S/B</th>
+              <th className="pr-2" title="Whether anything will close this position automatically">
+                Cover
+              </th>
               <th>Contract</th>
               <th>Expiry</th>
               <th className="text-right">Qty</th>
@@ -1160,6 +1177,28 @@ function OpenPositions({
                     >
                       {isShort ? "S" : "B"}
                     </span>
+                  </td>
+                  <td className="pr-2">
+                    {/* Three states, not two. "Engine" and "Stop" are both real
+                        protection; the gap is a position with neither, which is
+                        invisible unless you know the group rules and check them
+                        by hand. */}
+                    {position.engineCovered ? (
+                      <span className="text-emerald-700" title="Exit rules will act on this position">
+                        engine
+                      </span>
+                    ) : position.stopPrice ? (
+                      <span className="text-emerald-700" title="A per-position stop will close this">
+                        stop
+                      </span>
+                    ) : (
+                      <span
+                        className="font-bold text-red-700"
+                        title="NOTHING will close this automatically. Either it was opened outside this app, or its structure is no longer complete, or auto-exit is off. Set a stop."
+                      >
+                        NONE
+                      </span>
+                    )}
                   </td>
                   <td>{String(position.tradingSymbol ?? position.securityId)}</td>
                   <td className={dte !== null && dte <= 1 ? "font-semibold text-red-700" : "text-slate-600"}>

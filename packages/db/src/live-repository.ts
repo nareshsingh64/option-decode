@@ -2217,6 +2217,44 @@ export async function getLiveSummary(
 
   // Recent exit flags. Capped and recent-first: this is a "what needs my
   // attention now" list, not a history.
+  // Which open positions the exit engine can actually act on.
+  //
+  // The engine is deliberately narrow - it manages only complete structures this
+  // app opened - and the consequence is that a position can sit there looking
+  // managed while nothing is watching it. Working that out by hand means knowing
+  // the group rules, and getting it wrong means believing a naked short is
+  // covered when it is not. So it is computed once here and shown.
+  //
+  // Coverage needs all three: the position came from an order we placed, EVERY
+  // leg of that order's group is still open, and auto-exit is actually on. With
+  // auto-exit off the engine records and displays but never acts, which is not
+  // protection.
+  const engineCoveredPositionIds = new Set<string>();
+  if (account?.autoExitEnabled && positions.length) {
+    const openSecurityIds = new Set(positions.map((p) => p.securityId));
+    const groupOrders = await client.liveOrder.findMany({
+      where: { accountId: account.id, status: "TRADED", groupId: { not: null } },
+      select: { groupId: true, securityId: true }
+    });
+    const legsByGroup = new Map<string, string[]>();
+    for (const order of groupOrders) {
+      const group = order.groupId as string;
+      legsByGroup.set(group, [...(legsByGroup.get(group) ?? []), order.securityId]);
+    }
+    const completeGroups = new Set(
+      [...legsByGroup.entries()]
+        .filter(([, legs]) => legs.every((securityId) => openSecurityIds.has(securityId)))
+        .map(([group]) => group)
+    );
+    const securityToGroup = new Map(groupOrders.map((o) => [o.securityId, o.groupId as string]));
+    for (const position of positions) {
+      const group = securityToGroup.get(position.securityId);
+      if (group && completeGroups.has(group)) {
+        engineCoveredPositionIds.add(position.id);
+      }
+    }
+  }
+
   // Only for structures still OPEN. A rule that fired on a spread you have
   // since closed is history, not something needing attention - and leaving it
   // on screen trains people to ignore the one banner that must never be
@@ -2322,7 +2360,14 @@ export async function getLiveSummary(
   const serializedPositions = positions.map((position) => {
     const serialized = serializePosition(position);
     const delta = deltaByContract.get(String(position.id));
-    return delta === undefined ? serialized : { ...serialized, delta };
+    // Annotated, or the object literal narrows away the index signature the
+    // callers below rely on to read securityId and exchangeSegment.
+    const withCoverage: Record<string, unknown> = {
+      ...serialized,
+      engineCovered: engineCoveredPositionIds.has(position.id)
+    };
+    if (delta !== undefined) withCoverage.delta = delta;
+    return withCoverage;
   });
   const markFor = resolveMarks
     ? await resolveMarks(
