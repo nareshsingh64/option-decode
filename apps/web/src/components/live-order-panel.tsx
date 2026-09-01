@@ -1177,7 +1177,7 @@ function OpenPositions({
                         ? "No price yet"
                         : live
                           ? "Live from the Dhan feed"
-                          : "From the last reconcile - the feed has nothing fresh for this contract"
+                          : "Last known price - the feed has nothing fresh for this contract, which is normal outside market hours"
                     }
                   >
                     {ltp === null ? "--" : ltp.toFixed(2)}
@@ -1274,8 +1274,8 @@ function OpenPositions({
       </div>
 
       <p className="text-xs text-slate-500">
-        LTP updates every second from the Dhan feed; an asterisk means the feed has nothing fresh for that
-        contract and the price is from the last reconcile. Delta comes from the 30s option-chain capture
+        LTP updates every second from the Dhan feed; an asterisk means the price is the last known one rather
+        than a live tick, which is what you see outside market hours and on quiet strikes. Delta comes from the 30s option-chain capture
         instead - the feed carries no Greeks - and is signed for the position rather than the contract, so a
         short call reads negative. A stop fires a MARKET close when the premium crosses it - above for a
         short, below for a long - and works on any position including ones opened in Dhan, independently of

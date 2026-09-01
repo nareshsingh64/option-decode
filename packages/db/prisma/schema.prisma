@@ -1038,9 +1038,13 @@ model LivePosition {
   // silent rescale of every rupee figure on the position.
   multiplier   Int?
 
-  // NOT WRITTEN by the reconciler - the API overlays the live mark from Redis at
-  // read time instead, so this column stays null. Do not compare against it
-  // server-side expecting a price; a guard that did exactly that shipped dead.
+  // The LAST KNOWN mark, written by the reconcile sweep so it survives the feed
+  // going quiet at every market close - without it the panel showed "--" for a
+  // position that had a good price minutes earlier. The API still overlays a
+  // FRESHER mark from Redis at read time when one exists, so this is the floor
+  // rather than the source of truth. Do not use it as a live price:
+  // setPositionStop compares against the mark passed in by the route for
+  // exactly that reason.
   lastPrice     Decimal? @db.Decimal(12, 2)
   unrealizedPnl Decimal? @db.Decimal(14, 2)
   realizedPnl   Decimal  @default(0) @db.Decimal(14, 2)

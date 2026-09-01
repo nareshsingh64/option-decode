@@ -16,7 +16,7 @@
 // needed, and the same trap: widening a job's gate does not widen what the job
 // looks at, so the per-account skip below still does the narrowing.
 
-import { listLivePositionInstruments, reconcileAllLiveAccounts, runLiveExitEngine } from "@option-decode/db";
+import { listLivePositionInstruments, persistLastPrice, reconcileAllLiveAccounts, runLiveExitEngine } from "@option-decode/db";
 import type { DhanLiveFeedExchangeSegment } from "@option-decode/dhan";
 import Redis from "ioredis";
 import { getLiveTicks } from "./live-tick-cache.js";
@@ -115,6 +115,23 @@ export async function startLiveReconcileScheduler(redisConnection: {
           }
         }
         if (!bySecurityId.size) return;
+
+        // Persist the last known mark on each position.
+        //
+        // The tick cache treats anything older than 45s as stale and expires
+        // keys after 90s, so once the feed goes quiet - which it does at every
+        // market close - there is no mark at all and the panel showed "--" for
+        // a position that had a perfectly good last traded price minutes
+        // earlier. Writing it here means the last price SURVIVES the silence.
+        //
+        // This job, not the API: it already holds these marks for the exit
+        // engine, and the API reads positions once a second, where a write per
+        // read would be thirty times the work for the same answer.
+        await Promise.all(
+          [...bySecurityId.entries()].map(([securityId, ltp]) =>
+            persistLastPrice(securityId, ltp).catch(() => undefined)
+          )
+        );
 
         const exits = await runLiveExitEngine((securityId) => bySecurityId.get(securityId));
         for (const failure of exits.failures) {

@@ -2061,6 +2061,32 @@ export async function runLiveExitEngine(
  * instruments per feed connection, so the union is also the only shape that
  * scales past a handful of traders.
  */
+/**
+ * Remember the last mark seen for a contract, so it survives the feed going
+ * quiet.
+ *
+ * Called from the reconcile sweep rather than from the read path. The API reads
+ * positions once a second and the mark changes far less often than that, so
+ * writing on read would be thirty database writes for one useful value - and it
+ * would put a write on the hot path of a money screen for the sake of a display
+ * nicety.
+ *
+ * Only ever moves forward in time: a stale cached tick must not overwrite a
+ * newer stored one, which is why callers pass only marks the cache considered
+ * fresh.
+ */
+export async function persistLastPrice(
+  securityId: string,
+  lastPrice: number,
+  client: PrismaClient = prisma
+): Promise<void> {
+  if (!Number.isFinite(lastPrice) || lastPrice <= 0) return;
+  await client.livePosition.updateMany({
+    where: { securityId, status: "OPEN" },
+    data: { lastPrice }
+  });
+}
+
 export async function listLivePositionInstruments(
   client: PrismaClient = prisma
 ): Promise<Array<{ exchangeSegment: string; securityId: number }>> {

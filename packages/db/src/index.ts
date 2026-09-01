@@ -70,6 +70,7 @@ export {
   invalidateLiveFundsCache,
   listLiveChainStrikes,
   listLivePositionInstruments,
+  persistLastPrice,
   modifyLiveOrder,
   partnerLoginAvailable,
   LiveCredentialError,
