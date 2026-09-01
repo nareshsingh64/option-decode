@@ -76,6 +76,7 @@ interface LiveSummary {
     maxOpenMargin: number;
     maxMarginUtilPct: number;
     allowUndefinedRisk: boolean;
+    autoExitEnabled: boolean;
   } | null;
   funds: FundLimit | null;
   orders: Array<Record<string, unknown>>;
@@ -528,12 +529,21 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       {summary?.exitAlerts?.length ? (
         <div className="space-y-1 rounded border-2 border-red-400 bg-red-50 p-2">
           <h3 className="text-sm font-semibold text-red-900">Exit rules fired</h3>
+          <p className="text-xs text-red-800">
+            {account?.autoExitEnabled
+              ? "Auto-close is ON: the engine places closing orders itself when a rule fires."
+              : "Auto-close is OFF - these are reported only. Close them yourself."}
+          </p>
           {summary.exitAlerts.map((alert) => (
             <p key={`${alert.groupId}-${alert.rule}`} className="text-xs text-red-900">
               <strong>{alert.rule}</strong> · {alert.detail}
               {alert.action === "FLAGGED" ? (
                 <span className="text-red-700"> — flagged only; close it yourself.</span>
-              ) : null}
+              ) : alert.action === "FAILED" ? (
+                <span className="font-semibold text-red-800"> — AUTO-CLOSE FAILED, check the position.</span>
+              ) : (
+                <span className="text-emerald-800"> — auto-closed.</span>
+              )}
             </p>
           ))}
         </div>

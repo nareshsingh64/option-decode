@@ -2,7 +2,9 @@ export {
   DTE_GAMMA_THRESHOLD_DAYS,
   HARD_STOP_MULTIPLE,
   PREMIUM_2X_MULTIPLE,
+  closeOrderTypeFor,
   costToClose,
+  orderCloseSequence,
   evaluateExit,
   profitTargetPct
 } from "./exit-rules.js";

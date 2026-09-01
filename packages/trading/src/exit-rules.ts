@@ -43,6 +43,51 @@ export type LiveExitRule =
   | "PREMIUM_2X"
   | "EXPIRY_TODAY";
 
+/**
+ * How urgently a fired rule wants to be out, expressed as an order type.
+ *
+ * MARKET where being out matters more than the price. A hard stop that rests as
+ * an unfilled limit is not a stop - the whole reason it fired is that the market
+ * moved decisively, which is exactly when a limit at the last print does not get
+ * hit. Same for a short leg blown out on delta or premium, and for expiry day,
+ * where the alternative to filling is assignment.
+ *
+ * LIMIT where there is no urgency and paying the spread is the larger cost. A
+ * profit target is a good outcome being harvested; if it does not fill this
+ * minute it fills the next, or the rule fires again. The gamma window is a
+ * days-long condition, not a seconds-long one.
+ *
+ * Note this is the type for a CLOSING order placed once the condition has
+ * already been detected - not a resting stop-loss order left with the broker.
+ * Those are different things, and conflating them is how a stop ends up
+ * triggering on a price that has already gone.
+ */
+export function closeOrderTypeFor(rule: LiveExitRule): "MARKET" | "LIMIT" {
+  switch (rule) {
+    case "HARD_STOP_3X":
+    case "DELTA_2X":
+    case "PREMIUM_2X":
+    case "EXPIRY_TODAY":
+      return "MARKET";
+    case "PROFIT_TARGET":
+    case "DTE_GAMMA":
+      return "LIMIT";
+  }
+}
+
+/**
+ * The order legs must be closed in, most urgent first.
+ *
+ * SHORT legs before long ones, always. Closing a spread's long wing first leaves
+ * the account momentarily NAKED SHORT - briefly unbounded risk, and a margin
+ * requirement several times larger, on a position that was defined-risk a second
+ * earlier. If only one of the two closes, it must be the one that removes risk
+ * rather than the one that adds it.
+ */
+export function orderCloseSequence<T extends { side: "BUY" | "SELL" }>(legs: T[]): T[] {
+  return [...legs].sort((a, b) => (a.side === "SELL" ? 0 : 1) - (b.side === "SELL" ? 0 : 1));
+}
+
 export interface ExitLegState {
   side: "BUY" | "SELL";
   /** Per-unit premium received (SELL) or paid (BUY) at entry. */

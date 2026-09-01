@@ -36,7 +36,7 @@ import {
   type DhanMarginLegInput
 } from "@option-decode/dhan";
 import { getFallbackLotSize, toBrokerQuantity, type OptionType } from "@option-decode/types";
-import { evaluateExit, type ExitLegState } from "@option-decode/trading";
+import { closeOrderTypeFor, evaluateExit, orderCloseSequence, type ExitLegState } from "@option-decode/trading";
 
 import type { AuthUserDto } from "./auth-repository.js";
 import {
@@ -1212,6 +1212,32 @@ export async function squareOffLivePosition(
   client: PrismaClient = prisma
 ) {
   const account = await requireTradableAccount(user, client, true);
+  return squareOffForAccount(account.id, user.id, positionId, input, client);
+}
+
+/**
+ * The square-off itself, without the caller-identity gate.
+ *
+ * Split out so the exit engine can close a position without inventing an
+ * AuthUserDto to satisfy a check it has already made in a stronger form - it
+ * verified autoExitEnabled on this specific account. Faking an identity to get
+ * past a gate is how a gate stops meaning anything, and doing it in the one
+ * code path that places unattended orders would be the worst place to start.
+ *
+ * The account id is passed explicitly rather than re-derived, so this cannot
+ * act on an account the caller did not already resolve.
+ */
+async function squareOffForAccount(
+  accountId: string,
+  userId: string,
+  positionId: string,
+  input: { limitPrice?: number } = {},
+  client: PrismaClient = prisma
+) {
+  const account = await client.liveAccount.findUnique({ where: { id: accountId } });
+  if (!account) {
+    throw new LiveOrderRejectedError("No such live account.");
+  }
   const position = await client.livePosition.findFirst({
     where: { id: positionId, accountId: account.id, status: "OPEN" }
   });
@@ -1275,7 +1301,7 @@ export async function squareOffLivePosition(
   });
   await recordOrderEvent(row.id, "LOCAL", "LOCAL_PENDING", { squareOff: positionId, correlationId }, client);
 
-  const dhan = await getUserDhanClient(user.id, client);
+  const dhan = await getUserDhanClient(userId, client);
   try {
     await client.liveOrder.update({ where: { id: row.id }, data: { status: "SENT" } });
     const placed = await dhan.placeOrder(
@@ -1727,7 +1753,8 @@ export async function runLiveExitEngine(
     if (!decision) continue;
 
     const account = await client.liveAccount.findUnique({ where: { id: group.accountId } });
-    const autoExit = Boolean(account?.autoExitEnabled);
+    if (!account) continue;
+    const autoExit = account.autoExitEnabled;
 
     try {
       // The unique index does the work: a duplicate throws and we move on,
@@ -1749,14 +1776,79 @@ export async function runLiveExitEngine(
     sweep.flagged += 1;
     if (!autoExit) continue;
 
-    // Auto-close is not implemented as an order yet: recording the intent and
-    // reporting it is where this stops, deliberately. Wiring it to placement
-    // needs the closing order type decided per rule - STOP_LOSS_MARKET for a
-    // hard stop, LIMIT for a target - and that decision should not be made in
-    // passing while building the evaluator.
-    sweep.failures.push(
-      `${groupId}: ${decision.rule} fired with autoExitEnabled on, but automatic order placement is not implemented - close manually.`
+    // --- Auto-close ---------------------------------------------------------
+    const orderType = closeOrderTypeFor(decision.rule);
+    // SHORT legs first, always. Closing a long wing first leaves the account
+    // momentarily naked short - unbounded risk and several times the margin, on
+    // a position that was defined-risk a second earlier.
+    const sequenced = orderCloseSequence(
+      stillOpen.map((order) => ({
+        side: order.transactionType === "SELL" ? ("SELL" as const) : ("BUY" as const),
+        order
+      }))
     );
+
+    let closedLegs = 0;
+    const legFailures: string[] = [];
+    for (const { order } of sequenced) {
+      const openPosition = await client.livePosition.findFirst({
+        where: { accountId: group.accountId, securityId: order.securityId, status: "OPEN" }
+      });
+      if (!openPosition || !openPosition.netQty) continue;
+
+      // Never place a second closing order for a contract that already has one
+      // working. This is what makes a retry after a failure safe: the engine can
+      // try again on the next sweep without any chance of doubling the position
+      // the other way, which is a far worse outcome than a stop firing late.
+      const inFlight = await client.liveOrder.count({
+        where: {
+          accountId: group.accountId,
+          securityId: order.securityId,
+          legRole: "CLOSE",
+          status: { in: ["LOCAL_PENDING", "SENT", "OPEN", "PARTIAL", "UNKNOWN"] }
+        }
+      });
+      if (inFlight > 0) {
+        legFailures.push(`${order.securityId}: a closing order is already working`);
+        continue;
+      }
+
+      try {
+        await squareOffForAccount(
+          group.accountId,
+          account.userId,
+          openPosition.id,
+          // A LIMIT close is priced at the leg's current mark. MARKET sends none.
+          orderType === "LIMIT" ? { limitPrice: markFor(order.securityId) } : {},
+          client
+        );
+        closedLegs += 1;
+      } catch (error) {
+        legFailures.push(`${order.securityId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // The event records what actually happened, not what was intended. A
+    // partially closed structure is the state most worth being able to see
+    // afterwards, so it is reported as a failure even though some legs closed.
+    const allClosed = closedLegs > 0 && legFailures.length === 0;
+    await client.liveExitEvent.updateMany({
+      where: { groupId, rule: decision.rule },
+      data: {
+        action: allClosed ? "AUTO_CLOSED" : "FAILED",
+        detail: `${decision.detail} Closed ${closedLegs}/${sequenced.length} legs at ${orderType}.${
+          legFailures.length ? ` Failures: ${legFailures.join("; ")}` : ""
+        }`.slice(0, 500)
+      }
+    });
+
+    if (allClosed) {
+      sweep.autoClosed += 1;
+    } else {
+      sweep.failures.push(
+        `${groupId}: ${decision.rule} fired, closed ${closedLegs}/${sequenced.length} legs. ${legFailures.join("; ")}`
+      );
+    }
   }
 
   return sweep;
@@ -1808,6 +1900,7 @@ export interface LiveSummary {
     dailyLossLimit: number;
     maxMarginUtilPct: number;
     allowUndefinedRisk: boolean;
+    autoExitEnabled: boolean;
   } | null;
   funds: DhanFundLimit | null;
   orders: Array<Record<string, unknown>>;
@@ -1943,7 +2036,8 @@ export async function getLiveSummary(
         maxOpenMargin: Number(account.maxOpenMargin),
         dailyLossLimit: Number(account.dailyLossLimit),
         maxMarginUtilPct: Number(account.maxMarginUtilPct),
-        allowUndefinedRisk: account.allowUndefinedRisk
+        allowUndefinedRisk: account.allowUndefinedRisk,
+        autoExitEnabled: account.autoExitEnabled
       }
     : null;
 

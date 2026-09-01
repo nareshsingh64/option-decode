@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import {
   DTE_GAMMA_THRESHOLD_DAYS,
+  closeOrderTypeFor,
+  orderCloseSequence,
   HARD_STOP_MULTIPLE,
   costToClose,
   evaluateExit,
@@ -194,4 +196,47 @@ test("expiry rules still apply to a bought option", () => {
 test("an empty or zero-quantity position is never actioned", () => {
   assert.equal(evaluateExit(spread({ legs: [] })), null);
   assert.equal(evaluateExit(spread({ quantity: 0 })), null);
+});
+
+// --- closing behaviour -----------------------------------------------------
+
+test("urgent rules close at market, unhurried ones at limit", () => {
+  // A hard stop that rests as an unfilled limit is not a stop: it fires
+  // precisely when the market has moved away from the last print.
+  assert.equal(closeOrderTypeFor("HARD_STOP_3X"), "MARKET");
+  assert.equal(closeOrderTypeFor("DELTA_2X"), "MARKET");
+  assert.equal(closeOrderTypeFor("PREMIUM_2X"), "MARKET");
+  // On expiry day the alternative to filling is assignment.
+  assert.equal(closeOrderTypeFor("EXPIRY_TODAY"), "MARKET");
+  // Harvesting a good outcome; paying the spread is the larger cost here.
+  assert.equal(closeOrderTypeFor("PROFIT_TARGET"), "LIMIT");
+  // A days-long condition, not a seconds-long one.
+  assert.equal(closeOrderTypeFor("DTE_GAMMA"), "LIMIT");
+});
+
+test("short legs are always closed before long ones", () => {
+  // Closing the long wing first leaves the account naked short - briefly
+  // unbounded risk and a far larger margin requirement, on a position that was
+  // defined-risk a moment earlier. If only one leg closes it must be the one
+  // that REMOVES risk.
+  const condor = [
+    { side: "BUY" as const, id: "long-put-wing" },
+    { side: "SELL" as const, id: "short-put" },
+    { side: "BUY" as const, id: "long-call-wing" },
+    { side: "SELL" as const, id: "short-call" }
+  ];
+  const sequenced = orderCloseSequence(condor);
+  assert.deepEqual(
+    sequenced.map((l) => l.side),
+    ["SELL", "SELL", "BUY", "BUY"]
+  );
+  // Stable within each side, so the output is predictable rather than merely
+  // correct - two runs must produce the same order.
+  assert.deepEqual(orderCloseSequence(condor).map((l) => l.id), sequenced.map((l) => l.id));
+});
+
+test("sequencing does not mutate the caller's array", () => {
+  const legs = [{ side: "BUY" as const }, { side: "SELL" as const }];
+  orderCloseSequence(legs);
+  assert.equal(legs[0].side, "BUY", "the input order must be untouched");
 });
