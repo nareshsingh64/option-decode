@@ -531,7 +531,18 @@ export class DhanClient {
   // strategy passed together). Never used to block or size a paper trade -
   // callers should treat a thrown/failed call as "margin unavailable" and
   // continue, not as a reason to reject the fill.
-  async calculateMultiOrderMargin(legs: DhanMarginLegInput[], caller: string): Promise<DhanMultiOrderMarginResult> {
+  async calculateMultiOrderMargin(
+    legs: DhanMarginLegInput[],
+    caller: string,
+    // Whether Dhan should price this basket against what the account ALREADY
+    // holds. Both default false, which is right for a simulator asking the
+    // standalone cost of a hypothetical - and wrong for live money, where the
+    // number that matters is what the broker will actually block given existing
+    // positions. Selling a call under a long call you already own is a spread
+    // to the exchange, and pricing it as a naked short overstates the margin by
+    // the entire width of the wing.
+    options: { includePosition?: boolean; includeOrder?: boolean } = {}
+  ): Promise<DhanMultiOrderMarginResult> {
     if (legs.length === 0) {
       throw new DhanApiError("calculateMultiOrderMargin requires at least one leg.");
     }
@@ -539,7 +550,7 @@ export class DhanClient {
     const raw = await this.postDhan<Record<string, unknown>>(
       "/v2/margincalculator/multi",
       {
-        includePosition: false,
+        includePosition: options.includePosition ?? false,
         // `scripList` and `includeOrder`, NOT `scripts` and `includeOrders`.
         // Both were wrong here until 2026-08-30, which is why no PaperOrder or
         // PaperPosition row has ever carried a marginRequired figure - 195 and
@@ -554,7 +565,7 @@ export class DhanClient {
         //
         // Note includePosition IS singular, right next to a flag that is not.
         // That inconsistency is Dhan's, and it is why the typo read as correct.
-        includeOrder: false,
+        includeOrder: options.includeOrder ?? false,
         dhanClientId: this.options.clientId,
         scripList: legs.map((leg) => ({
           exchangeSegment: leg.exchangeSegment ?? "NSE_FNO",

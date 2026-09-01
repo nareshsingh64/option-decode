@@ -48,6 +48,7 @@ interface MarginLeg {
 interface MarginView {
   asOf: string;
   productType: string;
+  basketPriced?: boolean;
   funds: FundLimit;
   requirement: { total: number; span: number | null; exposure: number | null; commodity: number | null; currency: string };
   hedge: { grossMargin: number; netMargin: number; benefitAmount: number; benefitPct: number; legs: MarginLeg[] };
@@ -521,6 +522,12 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
               value={`${preview.quantity} (${preview.exchangeSegment === "MCX_COMM" ? "lots" : "contracts"})`}
             />
           </div>
+          {preview.margin.basketPriced === false ? (
+            <p className="text-xs font-medium text-amber-900">
+              Dhan&apos;s basket pricing returned nothing usable, so this figure is the sum of each leg priced
+              alone. For a hedged position that OVERSTATES the requirement - the real block will be lower.
+            </p>
+          ) : null}
           {preview.warnings.map((warning) => (
             <p key={warning} className="text-xs text-amber-900">
               {warning}

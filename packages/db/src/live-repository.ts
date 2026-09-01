@@ -448,6 +448,8 @@ export interface LiveMarginView {
   asOf: string;
   source: "DHAN";
   productType: "MARGIN";
+  /** False when Dhan's basket call returned nothing usable and the standalone sum was used instead. */
+  basketPriced: boolean;
   funds: DhanFundLimit;
   requirement: {
     total: number;
@@ -731,12 +733,24 @@ export async function computeLiveMarginView(
     });
   }
 
-  const basket = await dhan.calculateMultiOrderMargin(marginLegs, "live:margin:basket");
+  // Priced AGAINST the existing book, which is the number Dhan will actually
+  // block. The per-leg calls above stay standalone on purpose - they are what
+  // the hedge benefit is measured from, and including positions in both halves
+  // would net the same relief out of the comparison.
+  const basket = await dhan.calculateMultiOrderMargin(marginLegs, "live:margin:basket", {
+    includePosition: true,
+    includeOrder: true
+  });
   // Trust the basket total only when it is plausible. Zero (the measured
   // failure mode) or a benefit larger than gross means the endpoint is not
   // answering properly, and the safe reading is "no benefit" rather than a
   // number that would let someone over-leverage.
-  const basketUsable = basket.totalMargin > 0 && basket.totalMargin <= grossMargin;
+  // The basket total is trusted whenever it is a positive number. It is NOT
+  // required to be under the standalone sum any more: with includePosition on
+  // it prices the whole resulting book, which can legitimately exceed the cost
+  // of these legs alone. Only a zero - the measured failure mode of this
+  // endpoint - falls back.
+  const basketUsable = basket.totalMargin > 0;
   const netMargin = basketUsable ? basket.totalMargin : grossMargin;
   const benefitAmount = Math.max(0, grossMargin - netMargin);
 
@@ -750,6 +764,10 @@ export async function computeLiveMarginView(
   return {
     asOf: new Date().toISOString(),
     source: "DHAN",
+    // Surfaced rather than hidden: when the basket call fails we fall back to
+    // the standalone sum, which OVERSTATES a hedged position - and silently
+    // showing an inflated requirement is how a fundable trade looks unfundable.
+    basketPriced: basketUsable,
     productType: "MARGIN",
     funds,
     requirement: {
