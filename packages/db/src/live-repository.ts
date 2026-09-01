@@ -47,7 +47,6 @@ import {
 } from "./broker-credential-crypto.js";
 import { logDhanApiRequest } from "./dhan-audit-repository.js";
 import { prisma } from "./index.js";
-import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 
 // ------------------------------------------------------------------
@@ -1916,6 +1915,12 @@ export interface LiveSummary {
 // that is 60 Dhan calls a minute per user for a number that changes on fills -
 // which is both wasteful and a good way to meet a rate limit.
 const FUNDS_CACHE_MS = 10_000;
+
+// Delta changes only when the option-chain capture writes a new tick, which is
+// every 30 seconds. Re-reading it on a 1-second poll asks the same question
+// thirty times for one answer, so it is cached just inside that window.
+const DELTA_CACHE_MS = 20_000;
+const deltaCache = new Map<string, { delta: number | undefined; fetchedAt: number }>();
 const fundsCache = new Map<string, { funds: DhanFundLimit; fetchedAt: number }>();
 
 export function invalidateLiveFundsCache(userId: string): void {
@@ -2049,36 +2054,53 @@ export async function getLiveSummary(
   // is a real limitation rather than an oversight - the LTP beside it updates
   // every second and the delta does not, and the UI says so.
   //
+  // KEYED ON (underlyingSymbol, expiryLabel, optionType, strikePrice), NOT on
+  // securityId. OptionContractTick has no index on securityId - the five it has
+  // are snapshotId, tickTime, and two composites leading with the underlying -
+  // so a securityId lookup is a full scan of ~100 million rows. The first
+  // version of this did exactly that, on an endpoint polled once a second. The
+  // composite below is precisely the index that exists for this shape.
+  //
   // A ZERO is treated as missing, never as a real value. Dhan zeroes delta on
   // roughly three-quarters of NIFTY option ticks - 358 of 462 on a 0-DTE expiry
   // when it was last measured - so showing 0.00 as a delta would be reporting
   // absent data as a flat position.
-  const deltaBySecurityId = new Map<string, number>();
-  if (positions.length) {
-    const rows = await client.$queryRaw<Array<{ securityId: string; deltaValue: unknown }>>`
-      SELECT t.securityId, t.deltaValue
-      FROM OptionContractTick t
-      JOIN (
-        SELECT securityId, MAX(tickTime) AS latest
-        FROM OptionContractTick
-        WHERE securityId IN (${Prisma.join(positions.map((p) => p.securityId))})
-        GROUP BY securityId
-      ) newest ON newest.securityId = t.securityId AND newest.latest = t.tickTime
-      WHERE t.deltaValue IS NOT NULL AND t.deltaValue <> 0`;
-    for (const row of rows) {
-      const value =
-        typeof row.deltaValue === "object" && row.deltaValue !== null && "toNumber" in row.deltaValue
-          ? (row.deltaValue as { toNumber(): number }).toNumber()
-          : Number(row.deltaValue);
-      if (Number.isFinite(value) && value !== 0) {
-        deltaBySecurityId.set(String(row.securityId), value);
+  const deltaByContract = new Map<string, number>();
+  const priceable = positions.filter(
+    (p) => p.underlyingSymbol && p.expiryLabel && p.optionType && p.strikePrice
+  );
+  if (priceable.length) {
+    for (const position of priceable) {
+      const cacheKey = `${position.underlyingSymbol}|${position.expiryLabel}|${position.optionType}|${String(position.strikePrice)}`;
+      const cached = deltaCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < DELTA_CACHE_MS) {
+        if (cached.delta !== undefined) deltaByContract.set(position.id, cached.delta);
+        continue;
       }
+      const row = await client.optionContractTick.findFirst({
+        where: {
+          underlyingSymbol: position.underlyingSymbol,
+          expiryLabel: position.expiryLabel as string,
+          optionType: position.optionType as OptionType,
+          strikePrice: position.strikePrice as never
+        },
+        orderBy: { tickTime: "desc" },
+        select: { deltaValue: true }
+      });
+      const value = row?.deltaValue ? row.deltaValue.toNumber() : 0;
+      const usable = Number.isFinite(value) && value !== 0 ? value : undefined;
+      // A MISS is cached too. Three-quarters of contracts have no usable delta,
+      // and without caching the absence those are the ones re-queried every
+      // single second, forever - the miss is the common case here, not the
+      // exception.
+      deltaCache.set(cacheKey, { delta: usable, fetchedAt: Date.now() });
+      if (usable !== undefined) deltaByContract.set(position.id, usable);
     }
   }
 
   const serializedPositions = positions.map((position) => {
     const serialized = serializePosition(position);
-    const delta = deltaBySecurityId.get(String(serialized.securityId ?? ""));
+    const delta = deltaByContract.get(String(position.id));
     return delta === undefined ? serialized : { ...serialized, delta };
   });
   const markFor = resolveMarks
