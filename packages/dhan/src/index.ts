@@ -91,11 +91,29 @@ export interface DhanMultiOrderMarginResult {
   totalMargin: number;
   spanMargin: number;
   exposureMargin: number;
+  // Segment-wise breakdown. equity / fo / commodity / currency are four slices
+  // of the same total, not four different kinds of number - an NSE_FNO basket
+  // puts everything in foMargin and leaves the other three at zero.
   equityMargin: number;
   foMargin: number;
   commodityMargin: number;
-  currency: string;
-  hedgeBenefit?: string;
+  /**
+   * Currency-DERIVATIVES segment margin, in rupees.
+   *
+   * NOT a currency code. This was typed `currency: string` and defaulted to
+   * "INR" until 2026-09-01, which is what the name invites - but Dhan returns
+   * a number here, and it sits in the response directly beside `commodity`,
+   * `equityMargin` and `foMargin`. It is the fourth segment, and the docs list
+   * it in that group too.
+   */
+  currencyMargin: number;
+  /**
+   * Measured to be 0 even on baskets with a large genuine benefit, so it must
+   * NOT be used as the hedge figure - derive that by differencing standalone
+   * legs against the combined basket, which is what live-repository does.
+   * Kept only so a future Dhan change that starts populating it is visible.
+   */
+  hedgeBenefit?: number;
 }
 
 // ------------------------------------------------------------------
@@ -579,15 +597,33 @@ export class DhanClient {
       caller
     );
 
+    // THE KEYS BELOW ARE THE ONES DHAN ACTUALLY SENDS, captured from a live
+    // hedged basket on 2026-09-01 (docs/margin-calculation-reference.md, S5):
+    //
+    //   {"clientId":"...","totalMargin":59414.42,"spanMargin":27214.85,
+    //    "exposure":31526.82,"equityMargin":0.0,"foMargin":59414.42,
+    //    "commodity":0.0,"currency":0.0,"hedgeBenefit":0.0,
+    //    "userFundLimit":0.0,"insufficientFund":0.0}
+    //
+    // Note `exposure` and `commodity` carry no "Margin" suffix while their two
+    // neighbours do. That inconsistency is Dhan's. We read `exposure_margin` /
+    // `exposureMargin` first because the documentation claims them and they
+    // cost nothing to accept - but the SUFFIXLESS name is the one observed on
+    // the wire, and reading only the documented spellings is exactly why
+    // requirement.exposure and requirement.commodity were permanently null.
+    //
+    // This is the second time this endpoint has been wrong because the docs
+    // were trusted over a real response (see the scripList note above). If a
+    // field here looks absent, capture a live payload before changing a name.
     return {
       totalMargin: toNumber(raw.total_margin ?? raw.totalMargin) ?? 0,
       spanMargin: toNumber(raw.span_margin ?? raw.spanMargin) ?? 0,
-      exposureMargin: toNumber(raw.exposure_margin ?? raw.exposureMargin) ?? 0,
+      exposureMargin: toNumber(raw.exposure_margin ?? raw.exposureMargin ?? raw.exposure) ?? 0,
       equityMargin: toNumber(raw.equity_margin ?? raw.equityMargin) ?? 0,
       foMargin: toNumber(raw.fo_margin ?? raw.foMargin) ?? 0,
-      commodityMargin: toNumber(raw.commodity_margin ?? raw.commodityMargin) ?? 0,
-      currency: typeof raw.currency === "string" ? raw.currency : "INR",
-      hedgeBenefit: typeof raw.hedge_benefit === "string" && raw.hedge_benefit ? raw.hedge_benefit : undefined
+      commodityMargin: toNumber(raw.commodity_margin ?? raw.commodityMargin ?? raw.commodity) ?? 0,
+      currencyMargin: toNumber(raw.currency_margin ?? raw.currencyMargin ?? raw.currency) ?? 0,
+      hedgeBenefit: toNumber(raw.hedge_benefit ?? raw.hedgeBenefit) || undefined
     };
   }
 

@@ -1368,7 +1368,7 @@ async function tryEstimateOrderMargin(orderId: string, groupId: string | null): 
         exposureMargin: margin.exposureMargin,
         foMargin: margin.foMargin,
         commodityMargin: margin.commodityMargin,
-        currency: margin.currency,
+        currencyMargin: margin.currencyMargin,
         hedgeBenefit: margin.hedgeBenefit ?? null,
         legCount: scriptLegs.length,
         estimatedAt: "placement"

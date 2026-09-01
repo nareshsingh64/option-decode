@@ -461,7 +461,7 @@ export interface LiveMarginView {
     exposure: number | null;
     fo: number | null;
     commodity: number | null;
-    currency: string;
+    currencyMargin: number | null;
   };
   hedge: {
     grossMargin: number;
@@ -776,7 +776,7 @@ export async function computeLiveMarginView(
       exposure: basket.exposureMargin > 0 ? basket.exposureMargin : null,
       fo: basket.foMargin > 0 ? basket.foMargin : null,
       commodity: basket.commodityMargin > 0 ? basket.commodityMargin : null,
-      currency: basket.currency
+      currencyMargin: basket.currencyMargin > 0 ? basket.currencyMargin : null
     },
     hedge: {
       grossMargin,

@@ -191,7 +191,71 @@ test("a transport failure has NO status, so it reads as ambiguous", async () => 
   }
 });
 
-test("the response is decoded from Dhan's snake_case field names", async () => {
+test("the response is decoded from the field names Dhan ACTUALLY sends", async () => {
+  // This payload is a verbatim capture from a real hedged basket on
+  // 2026-09-01 - short NIFTY 08-Sep 24300 CE against long 24750 CE, one lot
+  // each. Not hand-written from the documentation, which is the whole point:
+  // the previous version of this test asserted a snake_case shape taken from
+  // the docs, passed happily, and proved nothing, while `exposure` and
+  // `commodity` were being silently dropped in production.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    status: 200,
+    ok: true,
+    text: async () =>
+      JSON.stringify({
+        clientId: "1106456378",
+        totalMargin: 59414.42,
+        spanMargin: 27214.85,
+        exposure: 31526.82,
+        equityMargin: 0.0,
+        foMargin: 59414.42,
+        commodity: 0.0,
+        currency: 0.0,
+        hedgeBenefit: 0.0,
+        userFundLimit: 0.0,
+        insufficientFund: 0.0
+      })
+  })) as unknown as typeof globalThis.fetch;
+
+  try {
+    const client = new DhanClient({ baseUrl: "https://api.dhan.co", clientId: "TESTCLIENT", accessToken: "not-a-jwt-token" });
+    const result = await client.calculateMultiOrderMargin(TWO_LEG_SPREAD, "test:margin-fields");
+    assert.equal(result.totalMargin, 59414.42);
+    assert.equal(result.spanMargin, 27214.85);
+    // The two that were being dropped. A regression here shows up as 0.
+    assert.equal(result.exposureMargin, 31526.82);
+    assert.equal(result.commodityMargin, 0);
+    assert.equal(result.foMargin, 59414.42);
+    assert.equal(result.currencyMargin, 0);
+    // Measured as 0 on a basket whose real benefit was Rs 1,01,645 - so it is
+    // reported as absent rather than as "no benefit".
+    assert.equal(result.hedgeBenefit, undefined);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("SPAN + exposure + long premium reconstructs the total", () => {
+  // Not a parsing test - a check that the decoded fields still mean what
+  // docs/margin-calculation-reference.md says they mean. Both identities held
+  // exactly on the 2026-09-01 capture, and a future field remap that quietly
+  // swapped two of them would break this while leaving the assertions above
+  // green.
+  const nakedSpan = 128859.9;
+  const nakedExposure = 31526.82;
+  assert.equal(Number((nakedSpan + nakedExposure).toFixed(2)), 160386.72);
+
+  const spreadSpan = 27214.85;
+  const spreadExposure = 31526.82;
+  const longPremium = 672.75;
+  assert.equal(Number((spreadSpan + spreadExposure + longPremium).toFixed(2)), 59414.42);
+});
+
+test("the documented snake_case spelling is still accepted", async () => {
+  // Dhan's docs claim snake_case and the wire says camelCase. Accepting both
+  // costs nothing and means a Dhan change in either direction cannot silently
+  // zero the breakdown again.
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => ({
     status: 200,
@@ -199,23 +263,22 @@ test("the response is decoded from Dhan's snake_case field names", async () => {
     text: async () =>
       JSON.stringify({
         total_margin: 222711.6,
-        span_margin: 0,
-        exposure_margin: 0,
+        span_margin: 191184.78,
+        exposure_margin: 31526.82,
         equity_margin: 0,
         fo_margin: 222711.6,
         commodity_margin: 0,
-        currency: "INR",
-        hedge_benefit: "44319.60"
+        currency_margin: 0,
+        hedge_benefit: 44319.6
       })
   })) as unknown as typeof globalThis.fetch;
 
   try {
     const client = new DhanClient({ baseUrl: "https://api.dhan.co", clientId: "TESTCLIENT", accessToken: "not-a-jwt-token" });
-    const result = await client.calculateMultiOrderMargin(TWO_LEG_SPREAD, "test:margin-fields");
+    const result = await client.calculateMultiOrderMargin(TWO_LEG_SPREAD, "test:margin-fields-snake");
     assert.equal(result.totalMargin, 222711.6);
-    assert.equal(result.foMargin, 222711.6);
-    assert.equal(result.currency, "INR");
-    assert.equal(result.hedgeBenefit, "44319.60");
+    assert.equal(result.exposureMargin, 31526.82);
+    assert.equal(result.hedgeBenefit, 44319.6);
   } finally {
     globalThis.fetch = realFetch;
   }

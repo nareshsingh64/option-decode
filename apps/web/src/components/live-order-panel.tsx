@@ -50,7 +50,7 @@ interface MarginView {
   productType: string;
   basketPriced?: boolean;
   funds: FundLimit;
-  requirement: { total: number; span: number | null; exposure: number | null; commodity: number | null; currency: string };
+  requirement: { total: number; span: number | null; exposure: number | null; commodity: number | null; currencyMargin: number | null };
   hedge: { grossMargin: number; netMargin: number; benefitAmount: number; benefitPct: number; legs: MarginLeg[] };
   headroom: { free: number; utilizationPct: number; insufficientBalance: number; wouldBreach: boolean };
 }
