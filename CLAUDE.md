@@ -182,8 +182,8 @@ box is off, and it would simply never fire.
 
 | cron (UTC) | IST | flags | why |
 |---|---|---|---|
-| `47 2 * * 1-5` | 08:17 | `--threshold-hours 25` | restarts api+worker, **before** the 08:35 prune |
-| `20 4 * * 1-5` | 09:50 | `--threshold-hours 14` | safety net; exits quietly if 08:17 worked |
+| `50 2 * * 1-5` | 08:20 | `--threshold-hours 25` | restarts api+worker |
+| `20 4 * * 1-5` | 09:50 | `--threshold-hours 14` | safety net; exits quietly if 08:20 worked |
 | `2 18 * * 1-5` | 23:32 | `25`, **`--no-restart`** | after the 23:30 MCX close, clears the 23:40 settlement pass |
 | `0 12 * * 6,0` | **17:30 Sat + Sun** | `25`, **`--no-restart`** | maintenance weekends only |
 
@@ -191,10 +191,29 @@ box is off, and it would simply never fire.
 unconditionally. Renewing early costs nothing and resets the clock well before
 it can run down.
 
-**08:17, not 08:20.** The renewal restarts api and worker, and it used to fire
-five minutes *after* the boot-time retention prune began — killing it
-mid-transaction every weekday. On 2026-08-20 that produced a three-hour
-rollback. It now lands before the prune starts.
+**08:20, and it fires INSIDE the boot-time retention prune. Keeping it there is
+a deliberate choice.**
+Boot is 08:15 and the prune starts with it, so the renewal's restart of api and
+worker lands about five minutes in. On 2026-08-20 that killed the prune
+mid-transaction and produced a three-hour rollback.
+
+What fixed it was not moving the renewal. It was fixing the prune, on
+2026-08-22: `innodb_buffer_pool_size` 128 MB → 768 MB, the batch cut from 5000
+snapshots (~2M rows per transaction) to 100 (~76k rows, ~9s), and the
+`$transaction` wrapper removed. The delete rate went ~500 → 8,466 rows/sec, so
+there is no longer a multi-hour transaction for a restart to interrupt.
+
+**This file previously claimed the run had been moved to 08:17. It never was.**
+`ops/cron/option-decode-dhan-token-renew` has only ever contained `50 2`, across
+its whole history, and `native-deploy.sh` reinstalls it on every deploy — so
+production has always run 08:20. Commit 33554d9 ("fix four stale schedule
+times") edited this file alone and corrected it *to a time that did not exist*.
+Verified 2026-09-01 against the installed `/etc/cron.d` entry and the renewal
+log: 08:20 IST runs on 28 and 31 Aug and 1 Sep all recorded SUCCESS.
+
+The lesson is narrow and worth keeping: **a schedule documented here is not
+evidence of what fires.** Read `/etc/cron.d/option-decode-dhan-token-renew` on
+the host, or the repo file the deploy installs from.
 
 **`--no-restart` on the evening and weekend runs is load-bearing.** The restart
 exists only so running services pick up the new token, which is pointless 18
@@ -269,7 +288,7 @@ token is still alive, so a 4xx is real news and stops the run, while a 5xx must
 NOT block a legitimate renewal.
 
 **Schedule note** (times here are the pre-2026-08-20 schedule, 08:20/23:35 —
-now 08:17/23:32). Both 502s hit the 08:20 IST run and both 23:35 runs were
+now 08:20/23:32). Both 502s hit the 08:20 IST run and both 23:35 runs were
 clean, which looks like a Dhan maintenance window — but the cron only ever
 probes at those two times, so that is 2 observations against 2, not evidence.
 The app's own Dhan calls show 5 5xx across ~127k requests over six days, and
@@ -762,7 +781,7 @@ all three services, so it has to miss four things at once:
 | avoid | when |
 |---|---|
 | the boot-time retention prune | 08:15 IST + ~40 min |
-| Dhan token renewal | 02:47 / 04:20 / 18:02 UTC (08:17 / 09:50 / 23:32 IST), plus 12:00 UTC (17:30 IST) Sat+Sun |
+| Dhan token renewal | 02:50 / 04:20 / 18:02 UTC (08:20 / 09:50 / 23:32 IST), plus 12:00 UTC (17:30 IST) Sat+Sun |
 | market hours | 09:00–23:30 IST (MCX opens before NSE, closes long after) |
 | the host shutdown | 23:50 IST |
 
