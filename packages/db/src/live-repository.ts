@@ -47,6 +47,7 @@ import {
 } from "./broker-credential-crypto.js";
 import { logDhanApiRequest } from "./dhan-audit-repository.js";
 import { prisma } from "./index.js";
+import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 
 // ------------------------------------------------------------------
@@ -2041,7 +2042,45 @@ export async function getLiveSummary(
       }
     : null;
 
-  const serializedPositions = positions.map(serializePosition);
+  // Delta per held contract, from the option-chain capture.
+  //
+  // NOT from the live feed: that runs in Quote mode and carries no Greeks at
+  // all, so delta is only ever as fresh as the 30-second chain snapshot. That
+  // is a real limitation rather than an oversight - the LTP beside it updates
+  // every second and the delta does not, and the UI says so.
+  //
+  // A ZERO is treated as missing, never as a real value. Dhan zeroes delta on
+  // roughly three-quarters of NIFTY option ticks - 358 of 462 on a 0-DTE expiry
+  // when it was last measured - so showing 0.00 as a delta would be reporting
+  // absent data as a flat position.
+  const deltaBySecurityId = new Map<string, number>();
+  if (positions.length) {
+    const rows = await client.$queryRaw<Array<{ securityId: string; deltaValue: unknown }>>`
+      SELECT t.securityId, t.deltaValue
+      FROM OptionContractTick t
+      JOIN (
+        SELECT securityId, MAX(tickTime) AS latest
+        FROM OptionContractTick
+        WHERE securityId IN (${Prisma.join(positions.map((p) => p.securityId))})
+        GROUP BY securityId
+      ) newest ON newest.securityId = t.securityId AND newest.latest = t.tickTime
+      WHERE t.deltaValue IS NOT NULL AND t.deltaValue <> 0`;
+    for (const row of rows) {
+      const value =
+        typeof row.deltaValue === "object" && row.deltaValue !== null && "toNumber" in row.deltaValue
+          ? (row.deltaValue as { toNumber(): number }).toNumber()
+          : Number(row.deltaValue);
+      if (Number.isFinite(value) && value !== 0) {
+        deltaBySecurityId.set(String(row.securityId), value);
+      }
+    }
+  }
+
+  const serializedPositions = positions.map((position) => {
+    const serialized = serializePosition(position);
+    const delta = deltaBySecurityId.get(String(serialized.securityId ?? ""));
+    return delta === undefined ? serialized : { ...serialized, delta };
+  });
   const markFor = resolveMarks
     ? await resolveMarks(
         serializedPositions.map((position) => ({

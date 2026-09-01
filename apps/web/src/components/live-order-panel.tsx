@@ -157,6 +157,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
                   recoverable from the position row, and a column of dashes is
                   worse than no column. */}
               <th className="py-1">Contract</th>
+              <th>Expiry</th>
               <th className="text-right">Avg cost</th>
               <th className="text-right">Realised</th>
               <th className="text-right">Closed</th>
@@ -169,6 +170,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
               return (
                 <tr key={String(position.id)} className="border-t border-slate-100">
                   <td className="py-1">{String(position.tradingSymbol ?? position.securityId)}</td>
+                  <td className="text-slate-600">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
                   <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
                   <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(realisedRow)}
@@ -1037,6 +1039,7 @@ function OpenPositions({
               <th className="text-right">Qty</th>
               <th className="text-right">Avg cost</th>
               <th className="text-right">LTP</th>
+              <th className="text-right">Delta</th>
               <th className="text-right">Unrealised</th>
               <th className="text-right">Realised</th>
               <th className="text-right">Net</th>
@@ -1105,6 +1108,24 @@ function OpenPositions({
                     {dir === "up" ? " \u25b2" : dir === "down" ? " \u25bc" : ""}
                     {ltp !== null && !live ? <span className="text-slate-400"> *</span> : null}
                   </td>
+                  <td
+                    className="text-right tabular-nums text-slate-700"
+                    title={
+                      position.delta === undefined
+                        ? "No usable delta. Dhan zeroes it on most option ticks, and a zero is missing data rather than a flat position."
+                        : "From the 30s option-chain capture, not the live feed - the feed carries no Greeks."
+                    }
+                  >
+                    {position.delta === undefined ? (
+                      <span className="text-slate-400">--</span>
+                    ) : (
+                      // Signed by direction: a short call is negative delta to
+                      // the account even though the contract's own delta is
+                      // positive. Showing the contract's delta on a short
+                      // position would point the wrong way.
+                      (Number(position.delta) * (qty < 0 ? -1 : 1)).toFixed(3)
+                    )}
+                  </td>
                   <td className={`text-right ${Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(position.unrealizedPnl as number)}
                   </td>
@@ -1156,8 +1177,10 @@ function OpenPositions({
 
       <p className="text-xs text-slate-500">
         LTP updates every second from the Dhan feed; an asterisk means the feed has nothing fresh for that
-        contract and the price is from the last reconcile. Positions themselves come from Dhan and are
-        refreshed every 20s, including any held on this account but not opened through this app.
+        contract and the price is from the last reconcile. Delta comes from the 30s option-chain capture
+        instead - the feed carries no Greeks - and is signed for the position rather than the contract, so a
+        short call reads negative. Positions come from Dhan and refresh every 20s, including any held on this
+        account but not opened through this app.
       </p>
     </div>
   );
@@ -1219,6 +1242,7 @@ function RecentOrders({
         <thead>
           <tr className="text-left text-xs uppercase text-slate-500">
             <th className="py-1">Contract</th>
+            <th>Expiry</th>
             <th>Side</th>
             <th>Lots</th>
             <th>Price</th>
@@ -1238,6 +1262,7 @@ function RecentOrders({
                   ? `${String(order.underlyingSymbol)} ${String(order.strikePrice)} ${String(order.optionType)}`
                   : `${String(order.underlyingSymbol)} (contract not recorded)`}
               </td>
+              <td className="text-slate-600">{order.expiryLabel ? String(order.expiryLabel) : "--"}</td>
               <td>{String(order.transactionType)}</td>
               <td>{String(order.lots)}</td>
               <td>
