@@ -161,7 +161,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
 
 function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> }) {
   if (!positions.length) {
-    return <p className="text-sm text-slate-500">Nothing closed today.</p>;
+    return <p className="text-sm text-terminal-muted">Nothing closed today.</p>;
   }
 
   // Realised only. An unrealised figure on a closed position is meaningless -
@@ -170,9 +170,9 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
 
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
-        <span className="text-xs uppercase text-slate-500">Realised today</span>
-        <span className={`text-lg font-semibold ${realised < 0 ? "text-red-700" : "text-emerald-700"}`}>
+      <div className="flex items-baseline justify-between gap-3 rounded border border-terminal-line bg-terminal-panel p-2">
+        <span className="text-xs uppercase text-terminal-muted">Realised today</span>
+        <span className={`text-lg font-semibold ${realised < 0 ? "text-terminal-red" : "text-terminal-emerald"}`}>
           {realised < 0 ? "-" : "+"}
           {rupees2(Math.abs(realised))}
         </span>
@@ -181,7 +181,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs uppercase text-slate-500">
+            <tr className="text-left text-xs uppercase text-terminal-muted">
               {/* No S/B column: netQty is 0 once flat, so the direction is not
                   recoverable from the position row, and a column of dashes is
                   worse than no column. */}
@@ -204,24 +204,24 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
               // and nobody hovers over something that looks inert.
               const hover = reason ? (detail ? `${reason} - ${detail}` : reason) : "No exit reason was recorded.";
               return (
-                <tr key={String(position.id)} className="border-t border-slate-100">
+                <tr key={String(position.id)} className="border-t border-terminal-line/40">
                   <td className="whitespace-nowrap py-1" title={hover}>
                     <span className="cursor-help underline decoration-dotted underline-offset-2">
                       {String(position.tradingSymbol ?? position.securityId)}
                     </span>
                     {reason ? (
-                      <span className="ml-2 text-xs text-slate-500">{EXIT_REASON_LABELS[reason] ?? reason}</span>
+                      <span className="ml-2 text-xs text-terminal-muted">{EXIT_REASON_LABELS[reason] ?? reason}</span>
                     ) : null}
                   </td>
-                  <td className="text-slate-600">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
+                  <td className="text-terminal-muted">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
                   <td className="text-right">{rupees2(position.avgCostPrice as number)}</td>
-                  <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                  <td className={`text-right font-medium ${realisedRow < 0 ? "text-terminal-red" : "text-terminal-emerald"}`}>
                     {rupees2(realisedRow)}
                   </td>
-                  <td className="whitespace-nowrap text-right text-xs text-slate-500">
+                  <td className="whitespace-nowrap text-right text-xs text-terminal-muted">
                     {istStamp(position.openedAt)}
                   </td>
-                  <td className="whitespace-nowrap text-right text-xs text-slate-500">
+                  <td className="whitespace-nowrap text-right text-xs text-terminal-muted">
                     {closedAt ? istStamp(position.closedAt) : "--"}
                   </td>
                 </tr>
@@ -231,7 +231,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
         </table>
       </div>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-terminal-muted">
         Closed since midnight IST. Realised P&amp;L comes from Dhan; a position squared off outside this app
         appears here too, because the reconciler treats the broker as the source of truth.
       </p>
@@ -492,7 +492,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
               type="button"
               disabled={busy}
               onClick={() => void panic()}
-              className="rounded border border-red-600 px-2 py-0.5 text-xs font-semibold text-red-700 disabled:opacity-50"
+              className="rounded border border-terminal-red px-2 py-0.5 text-xs font-semibold text-terminal-red disabled:opacity-50"
             >
               Panic close
             </button>
@@ -500,8 +500,8 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         <span
           className={`rounded px-2 py-0.5 text-xs font-medium ${
             summary?.enabled && account?.tradingEnabled
-              ? "bg-red-100 text-red-800"
-              : "bg-slate-200 text-slate-700"
+              ? "bg-terminal-red/20 text-terminal-red"
+              : "bg-terminal-line/40 text-terminal-text"
           }`}
         >
           {summary?.enabled && account?.tradingEnabled ? "LIVE — real money" : "DISABLED"}
@@ -509,10 +509,10 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
         </div>
       </header>
 
-      {error ? <p className="rounded bg-amber-50 p-2 text-sm text-amber-900">{error}</p> : null}
+      {error ? <p className="rounded bg-terminal-amber/10 p-2 text-sm text-terminal-amber">{error}</p> : null}
 
       {gateMessage ? (
-        <p className="rounded border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700">{gateMessage}</p>
+        <p className="rounded border border-terminal-line bg-terminal-input p-3 text-sm text-terminal-text">{gateMessage}</p>
       ) : null}
 
       {/* Token life stays OUTSIDE the tabs. A lapsed token means you cannot
@@ -523,13 +523,13 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           cannot CLOSE a position - but they are reference numbers, not the
           thing being watched, and they were taking three rows to say it. */}
       {credential?.present || summary?.funds ? (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-slate-200 px-3 py-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-terminal-line bg-terminal-panel px-3 py-1.5 text-xs">
           {credential?.present ? (
             <>
-              <span className="text-slate-500">
-                Dhan <strong className="text-slate-800">{credential.brokerClientId}</strong>
+              <span className="text-terminal-muted">
+                Dhan <strong className="text-terminal-text">{credential.brokerClientId}</strong>
               </span>
-              <span className={credential.canOpen ? "text-slate-600" : "font-semibold text-red-700"}>
+              <span className={credential.canOpen ? "text-terminal-muted" : "font-semibold text-terminal-red"}>
                 token{" "}
                 {credential.hoursRemaining === undefined ? "expiry unknown" : `${credential.hoursRemaining.toFixed(1)}h`}
                 {credential.renewable ? "" : " · not renewable"}
@@ -538,20 +538,20 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           ) : null}
           {summary?.funds ? (
             <>
-              <span className="text-slate-500">
-                available <strong className="text-slate-800">{rupees(summary.funds.availableBalance)}</strong>
+              <span className="text-terminal-muted">
+                available <strong className="text-terminal-text">{rupees(summary.funds.availableBalance)}</strong>
               </span>
-              <span className="text-slate-500">used {rupees(summary.funds.utilizedAmount)}</span>
-              <span className="text-slate-500">
+              <span className="text-terminal-muted">used {rupees(summary.funds.utilizedAmount)}</span>
+              <span className="text-terminal-muted">
                 cap {account && account.maxOrderMargin > 0 ? rupees(account.maxOrderMargin) : "available margin"}
               </span>
             </>
           ) : null}
-          {credential?.reason ? <span className="text-red-700">{credential.reason}</span> : null}
+          {credential?.reason ? <span className="text-terminal-red">{credential.reason}</span> : null}
         </div>
       ) : null}
 
-      <nav className="flex flex-wrap gap-1 border-b border-slate-200">
+      <nav className="flex flex-wrap gap-1 border-b border-terminal-line">
         {([
           ["positions", `Positions${summary?.positions.length ? ` (${summary.positions.length})` : ""}`],
           ["closed", `Closed today${summary?.closedToday?.length ? ` (${summary.closedToday.length})` : ""}`],
@@ -565,8 +565,8 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             onClick={() => setTab(key)}
             className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${
               tab === key
-                ? "border-slate-800 font-semibold text-slate-900"
-                : "border-transparent text-slate-500 hover:text-slate-800"
+                ? "border-terminal-blue font-semibold text-terminal-text"
+                : "border-transparent text-terminal-muted hover:text-terminal-text"
             }`}
           >
             {label}
@@ -577,13 +577,13 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       {/* The preview/confirm block sits above the tabs on purpose. Once a
           preview exists it is a ten-second decision, and it must not be
           possible to navigate away from it by accident. */}
-      {previewError ? <p className="rounded bg-red-50 p-2 text-sm text-red-800">{previewError}</p> : null}
+      {previewError ? <p className="rounded bg-terminal-red/10 p-2 text-sm text-terminal-red">{previewError}</p> : null}
       {placeResult ? (
         <p
           className={
             placeResult.ok
-              ? "rounded bg-emerald-50 p-2 text-sm text-emerald-900"
-              : "rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900"
+              ? "rounded bg-terminal-emerald/10 p-2 text-sm text-terminal-emerald"
+              : "rounded border border-terminal-amber/50 bg-terminal-amber/10 p-2 text-sm text-terminal-amber"
           }
         >
           {placeResult.text}
@@ -591,8 +591,8 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       ) : null}
 
       {preview ? (
-        <div className="space-y-2 rounded border-2 border-amber-400 bg-amber-50 p-3">
-          <h3 className="text-sm font-semibold text-amber-900">Confirm — this places a real order</h3>
+        <div className="space-y-2 rounded border-2 border-terminal-amber/50 bg-terminal-amber/10 p-3">
+          <h3 className="text-sm font-semibold text-terminal-amber">Confirm — this places a real order</h3>
           <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
             <Stat label={`Margin (${preview.margin.productType})`} value={rupees(preview.margin.requirement.total)} />
             <Stat label="Hedge benefit" value={rupees(preview.margin.hedge.benefitAmount)} />
@@ -603,13 +603,13 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             />
           </div>
           {preview.margin.basketPriced === false ? (
-            <p className="text-xs font-medium text-amber-900">
+            <p className="text-xs font-medium text-terminal-amber">
               Dhan&apos;s basket pricing returned nothing usable, so this figure is the sum of each leg priced
               alone. For a hedged position that OVERSTATES the requirement - the real block will be lower.
             </p>
           ) : null}
           {preview.warnings.map((warning) => (
-            <p key={warning} className="text-xs text-amber-900">
+            <p key={warning} className="text-xs text-terminal-amber">
               {warning}
             </p>
           ))}
@@ -617,7 +617,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             type="button"
             disabled={busy || secondsLeft === 0}
             onClick={() => void confirmPlace()}
-            className="rounded bg-red-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+            className="rounded bg-terminal-red px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
           >
             {busy ? "Placing…" : `Place real order (${secondsLeft}s)`}
           </button>
@@ -628,22 +628,22 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           time-critical thing this panel can say, and it must not depend on
           which tab happens to be open. */}
       {summary?.exitAlerts?.length ? (
-        <div className="space-y-1 rounded border-2 border-red-400 bg-red-50 p-2">
-          <h3 className="text-sm font-semibold text-red-900">Exit rules fired</h3>
-          <p className="text-xs text-red-800">
+        <div className="space-y-1 rounded border-2 border-terminal-red/50 bg-terminal-red/10 p-2">
+          <h3 className="text-sm font-semibold text-terminal-red">Exit rules fired</h3>
+          <p className="text-xs text-terminal-red">
             {account?.autoExitEnabled
               ? "Auto-close is ON: the engine places closing orders itself when a rule fires."
               : "Auto-close is OFF - these are reported only. Close them yourself."}
           </p>
           {summary.exitAlerts.map((alert) => (
-            <p key={`${alert.groupId}-${alert.rule}`} className="text-xs text-red-900">
+            <p key={`${alert.groupId}-${alert.rule}`} className="text-xs text-terminal-red">
               <strong>{alert.rule}</strong> · {alert.detail}
               {alert.action === "FLAGGED" ? (
-                <span className="text-red-700"> — flagged only; close it yourself.</span>
+                <span className="text-terminal-red"> — flagged only; close it yourself.</span>
               ) : alert.action === "FAILED" ? (
-                <span className="font-semibold text-red-800"> — AUTO-CLOSE FAILED, check the position.</span>
+                <span className="font-semibold text-terminal-red"> — AUTO-CLOSE FAILED, check the position.</span>
               ) : (
-                <span className="text-emerald-800"> — auto-closed.</span>
+                <span className="text-terminal-emerald"> — auto-closed.</span>
               )}
             </p>
           ))}
@@ -665,7 +665,7 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
 
       {tab === "place" ? (
         gateMessage ? (
-          <p className="text-sm text-slate-600">Order entry opens once the account is ready — see Broker token.</p>
+          <p className="text-sm text-terminal-muted">Order entry opens once the account is ready — see Broker token.</p>
         ) : underlyingSymbol && expiryLabel ? (
           <TicketBuilder
             underlyingSymbol={underlyingSymbol}
@@ -675,13 +675,13 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
             onPreview={runPreview}
           />
         ) : (
-          <p className="text-sm text-slate-600">Pick an underlying and expiry in Market Controls above.</p>
+          <p className="text-sm text-terminal-muted">Pick an underlying and expiry in Market Controls above.</p>
         )
       ) : null}
 
       {tab === "token" ? <CredentialForm onSaved={refresh} hasCredential={Boolean(credential?.present)} /> : null}
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-terminal-muted">
         Margin figures come from Dhan&apos;s calculator and are estimates: the exchange revalues SPAN six times a
         trading day. Treat them as ±20%.
       </p>
@@ -781,14 +781,14 @@ function TicketBuilder({
   };
 
   return (
-    <div className="space-y-3 rounded border border-slate-300 p-3">
+    <div className="space-y-3 rounded border border-terminal-line bg-terminal-panel p-3">
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-xs">
-          <span className="text-slate-500">Structure</span>
+          <span className="text-terminal-muted">Structure</span>
           <select
             value={structure}
             onChange={(event) => setStructure(event.target.value)}
-            className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
+            className="mt-1 block rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
           >
             {Object.keys(available).map((key) => (
               <option key={key} value={key}>
@@ -798,37 +798,37 @@ function TicketBuilder({
           </select>
         </label>
         <label className="text-xs">
-          <span className="text-slate-500">Order type</span>
+          <span className="text-terminal-muted">Order type</span>
           <select
             value={orderType}
             onChange={(event) => setOrderType(event.target.value as "LIMIT" | "MARKET")}
-            className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
+            className="mt-1 block rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
           >
             <option value="LIMIT">Limit</option>
             <option value="MARKET">Market</option>
           </select>
         </label>
         <label className="text-xs">
-          <span className="text-slate-500">Lots</span>
+          <span className="text-terminal-muted">Lots</span>
           <input
             type="number"
             min={1}
             value={lots}
             onChange={(event) => setLots(Math.max(1, Number(event.target.value) || 1))}
-            className="mt-1 block w-20 rounded border border-slate-300 px-2 py-1 text-sm"
+            className="mt-1 block w-20 rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
           />
         </label>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-terminal-muted">
           {underlyingSymbol} · {expiryLabel}
         </span>
       </div>
 
-      {chainError ? <p className="text-xs text-red-700">{chainError}</p> : null}
+      {chainError ? <p className="text-xs text-terminal-red">{chainError}</p> : null}
 
       <div className="grid gap-2 sm:grid-cols-2">
         {template.map((leg, index) => (
           <label key={`${leg.side}-${leg.optionType}-${index}`} className="text-xs">
-            <span className="text-slate-500">
+            <span className="text-terminal-muted">
               {leg.label} · {leg.side} {leg.optionType}
             </span>
             <select
@@ -843,7 +843,7 @@ function TicketBuilder({
                 const row = strike === "" ? undefined : optionsFor(leg.optionType).find((r) => r.strikePrice === strike);
                 setPrices((prev) => ({ ...prev, [index]: row?.lastPrice ?? "" }));
               }}
-              className="mt-1 block w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              className="mt-1 block w-full rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
             >
               <option value="">Select strike…</option>
               {optionsFor(leg.optionType).map((row) => (
@@ -858,7 +858,7 @@ function TicketBuilder({
             </select>
             {orderType === "LIMIT" ? (
               <span className="mt-1 flex items-center gap-1">
-                <span className="text-slate-500">₹</span>
+                <span className="text-terminal-muted">₹</span>
                 <input
                   type="number"
                   step="0.05"
@@ -873,7 +873,7 @@ function TicketBuilder({
                     }))
                   }
                   placeholder="limit"
-                  className="block w-24 rounded border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-100"
+                  className="block w-24 rounded border border-terminal-line bg-terminal-input px-2 py-1 text-sm text-terminal-text disabled:opacity-50"
                 />
                 {(() => {
                   // Show the market alongside, so a hand-typed limit can be
@@ -886,7 +886,7 @@ function TicketBuilder({
                     ? ((typed - row.lastPrice) / row.lastPrice) * 100
                     : null;
                   return (
-                    <span className="text-slate-500">
+                    <span className="text-terminal-muted">
                       LTP ₹{row.lastPrice}
                       {away !== null && Math.abs(away) >= 0.5
                         ? ` · ${away > 0 ? "+" : ""}${away.toFixed(1)}%`
@@ -904,12 +904,12 @@ function TicketBuilder({
         type="button"
         disabled={busy || !complete}
         onClick={submit}
-        className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded bg-terminal-blue px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
       >
         {busy ? "Pricing…" : "Preview margin"}
       </button>
       {isNaked ? (
-        <p className="rounded border border-amber-400 bg-amber-50 p-2 text-xs text-amber-900">
+        <p className="rounded border border-terminal-amber/50 bg-terminal-amber/10 p-2 text-xs text-terminal-amber">
           <strong>Unbounded risk.</strong> A sold option with no wing has no maximum loss, and margin is
           revalued by the exchange six times a day - a position that fits at entry can be short of margin by
           the afternoon without the market moving against you. The exit rules do apply: profit target at 50%
@@ -917,7 +917,7 @@ function TicketBuilder({
         </p>
       ) : null}
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-terminal-muted">
         Preview prices the basket and runs every cap. Nothing reaches the broker until you confirm, and the
         confirmation expires after 10 seconds.
         {orderType === "MARKET"
@@ -1021,30 +1021,30 @@ function CredentialForm({
 
   if (hasCredential && !open) {
     return (
-      <div className="flex flex-wrap items-center gap-3 rounded border border-slate-200 p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-3 rounded border border-terminal-line bg-terminal-panel p-2 text-xs">
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="rounded border border-slate-400 px-2 py-1 font-medium"
+          className="rounded border border-terminal-line px-2 py-1 font-medium"
         >
           Replace access token
         </button>
-        <button type="button" disabled={busy} onClick={() => void disconnect()} className="text-red-700 underline">
+        <button type="button" disabled={busy} onClick={() => void disconnect()} className="text-terminal-red underline">
           Disconnect broker
         </button>
-        <span className="text-slate-500">
+        <span className="text-terminal-muted">
           Tokens expire every 24h, and must be regenerated after any change to Dhan&apos;s IP allowlist.
         </span>
-        {error ? <span className="text-red-700">{error}</span> : null}
+        {error ? <span className="text-terminal-red">{error}</span> : null}
       </div>
     );
   }
 
   return (
-    <div className="space-y-3 rounded border border-slate-300 p-3">
+    <div className="space-y-3 rounded border border-terminal-line bg-terminal-panel p-3">
       {hasCredential ? (
         <div className="flex items-center justify-between gap-2">
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-terminal-muted">
             Replacing the stored token. The new one is verified against Dhan before it overwrites the old.
           </p>
           <button type="button" onClick={() => setOpen(false)} className="text-xs underline">
@@ -1054,9 +1054,9 @@ function CredentialForm({
       ) : null}
 
       {partnerLogin ? (
-        <div className="space-y-2 border-b border-slate-200 pb-3">
+        <div className="space-y-2 border-b border-terminal-line pb-3">
           <h3 className="text-sm font-semibold">Connect your Dhan account</h3>
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-terminal-muted">
             You sign in on Dhan&apos;s own page with your usual 2FA. We never see your password, and your
             client id comes back automatically. Note a token connected this way cannot be auto-renewed —
             Dhan only renews tokens minted from Dhan Web — so you will reconnect roughly daily.
@@ -1065,7 +1065,7 @@ function CredentialForm({
             type="button"
             disabled={busy}
             onClick={() => void startPartnerLogin()}
-            className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded bg-terminal-emerald px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
             {busy ? "Opening Dhan…" : "Connect with Dhan"}
           </button>
@@ -1075,40 +1075,40 @@ function CredentialForm({
       <h3 className="text-sm font-semibold">
         {partnerLogin ? "Or paste an access token" : "Add your Dhan access token"}
       </h3>
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-terminal-muted">
         Verified against Dhan before it is stored, then encrypted at rest. It is never returned by any
         endpoint, logged, or emailed. Tokens live 24 hours and an expired one cannot be renewed — only
         regenerated at web.dhan.co.
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs">
-          <span className="text-slate-500">Dhan client id</span>
+          <span className="text-terminal-muted">Dhan client id</span>
           <input
             value={clientId}
             onChange={(event) => setClientId(event.target.value)}
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            className="mt-1 w-full rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
             placeholder="1100000001"
             autoComplete="off"
           />
         </label>
         <label className="text-xs">
-          <span className="text-slate-500">Access token</span>
+          <span className="text-terminal-muted">Access token</span>
           <input
             type="password"
             value={token}
             onChange={(event) => setToken(event.target.value)}
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            className="mt-1 w-full rounded border border-terminal-line px-2 py-1 text-sm bg-terminal-input text-terminal-text"
             placeholder="eyJ0eXAiOi…"
             autoComplete="off"
           />
         </label>
       </div>
-      {error ? <p className="text-xs text-red-700">{error}</p> : null}
+      {error ? <p className="text-xs text-terminal-red">{error}</p> : null}
       <button
         type="button"
         disabled={busy || !clientId.trim() || !token.trim()}
         onClick={() => void submit()}
-        className="rounded bg-slate-800 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        className="rounded bg-terminal-blue px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
       >
         {busy ? "Verifying with Dhan…" : "Verify and save"}
       </button>
@@ -1118,8 +1118,8 @@ function CredentialForm({
 
 function Stat({ label, value }: { label: string; value: string | undefined }) {
   return (
-    <div className="rounded border border-slate-200 p-2">
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="rounded border border-terminal-line bg-terminal-panel p-2">
+      <div className="text-xs text-terminal-muted">{label}</div>
       <div className="text-sm font-semibold">{value ?? "--"}</div>
     </div>
   );
@@ -1217,7 +1217,7 @@ function OpenPositions({
 
   if (!positions.length) {
     marks.current.clear();
-    return <p className="text-sm text-slate-500">No open live positions.</p>;
+    return <p className="text-sm text-terminal-muted">No open live positions.</p>;
   }
 
   // Realised and unrealised together: a position partly closed during the day
@@ -1261,9 +1261,9 @@ function OpenPositions({
 
   return (
     <div className="space-y-2">
-      {closeError ? <p className="rounded bg-red-50 p-2 text-xs text-red-800">{closeError}</p> : null}
+      {closeError ? <p className="rounded bg-terminal-red/10 p-2 text-xs text-terminal-red">{closeError}</p> : null}
       {unprotected.length ? (
-        <p className="rounded border border-red-400 bg-red-50 p-2 text-xs text-red-900">
+        <p className="rounded border border-terminal-red/50 bg-terminal-red/10 p-2 text-xs text-terminal-red">
           <strong>
             {unprotected.length} position{unprotected.length > 1 ? "s have" : " has"} no automatic exit.
           </strong>{" "}
@@ -1272,14 +1272,14 @@ function OpenPositions({
           a leg already closed, needs a stop.
         </p>
       ) : null}
-      <div className="flex flex-wrap items-baseline justify-between gap-3 rounded border border-slate-200 p-2">
-        <span className="text-xs uppercase text-slate-500">
+      <div className="flex flex-wrap items-baseline justify-between gap-3 rounded border border-terminal-line bg-terminal-panel p-2">
+        <span className="text-xs uppercase text-terminal-muted">
           Net P&amp;L today
-          <span className="ml-2 normal-case text-slate-400">
+          <span className="ml-2 normal-case text-terminal-muted/70">
             open {rupees2(openPnl)} + realised {rupees2(realisedToday)}
           </span>
         </span>
-        <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
+        <span className={`text-lg font-semibold ${net < 0 ? "text-terminal-red" : "text-terminal-emerald"}`}>
           {net < 0 ? "-" : "+"}
           {rupees2(Math.abs(net))}
         </span>
@@ -1288,7 +1288,7 @@ function OpenPositions({
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs uppercase text-slate-500">
+            <tr className="text-left text-xs uppercase text-terminal-muted">
               <th className="py-1 pr-2">S/B</th>
               <th className="pr-2" title="Whether anything will close this position automatically">
                 Cover
@@ -1346,10 +1346,10 @@ function OpenPositions({
                   )
                 : null;
               return (
-                <tr key={String(position.id)} className="border-t border-slate-100">
+                <tr key={String(position.id)} className="border-t border-terminal-line/40">
                   <td className="py-1 pr-2">
                     <span
-                      className={`font-bold ${isShort ? "text-red-700" : "text-emerald-700"}`}
+                      className={`font-bold ${isShort ? "text-terminal-red" : "text-terminal-emerald"}`}
                       title={isShort ? "Short - sold to open" : "Long - bought to open"}
                     >
                       {isShort ? "S" : "B"}
@@ -1361,16 +1361,16 @@ function OpenPositions({
                         invisible unless you know the group rules and check them
                         by hand. */}
                     {position.engineCovered ? (
-                      <span className="text-emerald-700" title="Exit rules will act on this position">
+                      <span className="text-terminal-emerald" title="Exit rules will act on this position">
                         engine
                       </span>
                     ) : position.stopPrice ? (
-                      <span className="text-emerald-700" title="A per-position stop will close this">
+                      <span className="text-terminal-emerald" title="A per-position stop will close this">
                         stop
                       </span>
                     ) : (
                       <span
-                        className="font-bold text-red-700"
+                        className="font-bold text-terminal-red"
                         title="NOTHING will close this automatically. Either it was opened outside this app, or its structure is no longer complete, or auto-exit is off. Set a stop."
                       >
                         NONE
@@ -1378,16 +1378,16 @@ function OpenPositions({
                     )}
                   </td>
                   <td>{String(position.tradingSymbol ?? position.securityId)}</td>
-                  <td className={dte !== null && dte <= 1 ? "font-semibold text-red-700" : "text-slate-600"}>
+                  <td className={dte !== null && dte <= 1 ? "font-semibold text-terminal-red" : "text-terminal-muted"}>
                     {position.expiryLabel ? String(position.expiryLabel) : "--"}
                     {dte === null ? "" : dte <= 0 ? " (today)" : ` (${dte}d)`}
                   </td>
-                  <td className="whitespace-nowrap text-xs text-slate-500">{istStamp(position.openedAt)}</td>
+                  <td className="whitespace-nowrap text-xs text-terminal-muted">{istStamp(position.openedAt)}</td>
                   <td className="text-right">{Math.abs(qty)}</td>
                   <td className="text-right">{rupees2(position.avgCostPrice as number)}</td>
                   <td
                     className={`text-right tabular-nums font-medium ${
-                      dir === "up" ? "text-emerald-700" : dir === "down" ? "text-red-700" : "text-slate-700"
+                      dir === "up" ? "text-terminal-emerald" : dir === "down" ? "text-terminal-red" : "text-terminal-text"
                     }`}
                     title={
                       ltp === null
@@ -1399,10 +1399,10 @@ function OpenPositions({
                   >
                     {ltp === null ? "--" : ltp.toFixed(2)}
                     {dir === "up" ? " \u25b2" : dir === "down" ? " \u25bc" : ""}
-                    {ltp !== null && !live ? <span className="text-slate-400"> *</span> : null}
+                    {ltp !== null && !live ? <span className="text-terminal-muted/70"> *</span> : null}
                   </td>
                   <td
-                    className="text-right tabular-nums text-slate-700"
+                    className="text-right tabular-nums text-terminal-text"
                     title={
                       position.delta === undefined
                         ? "No usable delta. Dhan zeroes it on most option ticks, and a zero is missing data rather than a flat position."
@@ -1410,7 +1410,7 @@ function OpenPositions({
                     }
                   >
                     {position.delta === undefined ? (
-                      <span className="text-slate-400">--</span>
+                      <span className="text-terminal-muted/70">--</span>
                     ) : (
                       // Signed by direction: a short call is negative delta to
                       // the account even though the contract's own delta is
@@ -1421,7 +1421,7 @@ function OpenPositions({
                   </td>
                   <td
                     className={`text-right font-medium ${
-                      positionPnl(position) < 0 ? "text-red-700" : "text-emerald-700"
+                      positionPnl(position) < 0 ? "text-terminal-red" : "text-terminal-emerald"
                     }`}
                     title={
                       Number(position.realizedPnl ?? 0)
@@ -1438,7 +1438,7 @@ function OpenPositions({
                       <button
                         type="button"
                         onClick={() => void setStop(id, String(position.tradingSymbol), Number(position.stopPrice), isShort, ltp)}
-                        className="font-medium text-amber-700 underline"
+                        className="font-medium text-terminal-amber underline"
                         title="Fires a MARKET close when breached. Click to change or clear."
                       >
                         {Number(position.stopPrice).toFixed(2)}
@@ -1447,12 +1447,12 @@ function OpenPositions({
                       <button
                         type="button"
                         onClick={() => void setStop(id, String(position.tradingSymbol), null, isShort, ltp)}
-                        className="text-slate-500 underline"
+                        className="text-terminal-muted underline"
                       >
                         set
                       </button>
                     ) : (
-                      <span className="text-slate-400">--</span>
+                      <span className="text-terminal-muted/70">--</span>
                     )}
                   </td>
                   <td className="whitespace-nowrap pl-2">
@@ -1464,7 +1464,7 @@ function OpenPositions({
                           onClick={() =>
                             void squareOff(id, String(position.tradingSymbol ?? position.securityId))
                           }
-                          className="mr-2 text-red-700 underline disabled:opacity-50"
+                          className="mr-2 text-terminal-red underline disabled:opacity-50"
                         >
                           {busyId === id ? "Closing…" : "Mkt"}
                         </button>
@@ -1483,7 +1483,7 @@ function OpenPositions({
                             }
                             void squareOff(id, String(position.tradingSymbol ?? position.securityId), price);
                           }}
-                          className="text-slate-700 underline disabled:opacity-50"
+                          className="text-terminal-text underline disabled:opacity-50"
                         >
                           Lmt
                         </button>
@@ -1497,7 +1497,7 @@ function OpenPositions({
         </table>
       </div>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-terminal-muted">
         LTP updates every second from the Dhan feed; an asterisk means the price is the last known one rather
         than a live tick, which is what you see outside market hours and on quiet strikes. Delta comes from the 30s option-chain capture
         instead - the feed carries no Greeks - and is signed for the position rather than the contract, so a
@@ -1556,14 +1556,14 @@ function RecentOrders({
   };
 
   if (!orders.length) {
-    return <p className="text-sm text-slate-500">No live orders yet.</p>;
+    return <p className="text-sm text-terminal-muted">No live orders yet.</p>;
   }
   return (
     <div className="overflow-x-auto">
-      {error ? <p className="mb-1 text-xs text-red-700">{error}</p> : null}
+      {error ? <p className="mb-1 text-xs text-terminal-red">{error}</p> : null}
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase text-slate-500">
+          <tr className="text-left text-xs uppercase text-terminal-muted">
             <th className="py-1">Contract</th>
             <th>Expiry</th>
             <th>Placed</th>
@@ -1577,7 +1577,7 @@ function RecentOrders({
         </thead>
         <tbody>
           {orders.slice(0, 15).map((order) => (
-            <tr key={String(order.id)} className="border-t border-slate-100">
+            <tr key={String(order.id)} className="border-t border-terminal-line/40">
               <td className="py-1">
                 {/* A zero strike means the contract was never recorded - show
                     the underlying alone rather than "NIFTY 0 CE", which reads
@@ -1586,15 +1586,15 @@ function RecentOrders({
                   ? `${String(order.underlyingSymbol)} ${String(order.strikePrice)} ${String(order.optionType)}`
                   : `${String(order.underlyingSymbol)} (contract not recorded)`}
               </td>
-              <td className="text-slate-600">{order.expiryLabel ? String(order.expiryLabel) : "--"}</td>
-              <td className="whitespace-nowrap text-xs text-slate-500">{istStamp(order.placedAt)}</td>
+              <td className="text-terminal-muted">{order.expiryLabel ? String(order.expiryLabel) : "--"}</td>
+              <td className="whitespace-nowrap text-xs text-terminal-muted">{istStamp(order.placedAt)}</td>
               <td>{String(order.transactionType)}</td>
               <td>{String(order.lots)}</td>
               <td>
                 {/* A market order has no price, and rendering that as "--"
                     reads as missing data rather than as "at market". */}
                 {String(order.orderType) === "MARKET" ? (
-                  <span className="text-slate-500">MKT</span>
+                  <span className="text-terminal-muted">MKT</span>
                 ) : (
                   rupees2(order.price as number)
                 )}
@@ -1611,9 +1611,9 @@ function RecentOrders({
                 <span
                   className={
                     String(order.status) === "UNKNOWN"
-                      ? "font-semibold text-red-700"
+                      ? "font-semibold text-terminal-red"
                       : String(order.status) === "REJECTED"
-                        ? "text-slate-600"
+                        ? "text-terminal-muted"
                         : ""
                   }
                   title={order.rejectionReason ? String(order.rejectionReason) : undefined}
@@ -1636,7 +1636,7 @@ function RecentOrders({
                       type="button"
                       disabled={busyId === String(order.id)}
                       onClick={() => void cancel(String(order.id))}
-                      className="text-red-700 underline disabled:opacity-50"
+                      className="text-terminal-red underline disabled:opacity-50"
                     >
                       Cancel
                     </button>
