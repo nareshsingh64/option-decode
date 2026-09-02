@@ -1216,16 +1216,33 @@ function OpenPositions({
   // Today's realised is included, so this is the day's P&L rather than only the
   // open book's. Closing a losing leg otherwise made the number jump upwards,
   // which is exactly backwards from what happened.
-  // UNREALISED ONLY. An open position has realised nothing - that is what open
-  // means - and adding Dhan's realizedPnl here double-counted, because that
-  // field is the day's realised P&L for the CONTRACT, not for this position.
-  // Sell a contract, close it, sell it again, and the closed row carries the
-  // round trip in `realisedToday` while the new open row carries the same
-  // money again. Measured 2026-09-02 on NIFTY 24100 CE: the closed row held
-  // -22.75 and the freshly opened row reported 178.75 for trades already
-  // counted.
-  const openPnl = positions.reduce((sum, p) => sum + Number(p.unrealizedPnl ?? 0), 0);
-  const realisedToday = closedToday.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
+  // A position's P&L is the CONTRACT'S TOTAL for the day - realised plus
+  // unrealised - because that is the number Dhan shows and therefore the one a
+  // trader reconciles against.
+  //
+  // It matters only when a strike is traded more than once, and then it matters
+  // a lot. Dhan realises against the day's BLENDED average rather than against
+  // the actual fills. NIFTY 24100 CE on 2026-09-02: sold at 51.80, bought back
+  // at 52.15, sold again at 58.00. Dhan's costPrice becomes 54.90 - the average
+  // of the two sells - so it reports unrealised 383.50 and realised 178.75
+  // against a fill that was actually 58.00. Neither figure alone is
+  // recognisable to the trader; their sum, 562.25, is exactly what the Dhan app
+  // shows. Accounting from the actual fills agrees on that total: -22.75 on the
+  // closed round trip plus (58.00 - 49.00) * 65 on the open lot.
+  //
+  // Showing unrealised alone reported 383.50 for a position the broker valued
+  // at 562.25.
+  const positionPnl = (p: Record<string, unknown>) =>
+    Number(p.realizedPnl ?? 0) + Number(p.unrealizedPnl ?? 0);
+  const openPnl = positions.reduce((sum, p) => sum + positionPnl(p), 0);
+  // A contract that is open AGAIN already carries its realised P&L inside the
+  // open row above, since Dhan reports realised per contract per day. Counting
+  // its closed row here as well is the double-count: the 24100's -22.75 closed
+  // row is the same money as part of the 178.75 on its open row.
+  const openSecurityIds = new Set(positions.map((p) => String(p.securityId)));
+  const realisedToday = closedToday
+    .filter((p) => !openSecurityIds.has(String(p.securityId)))
+    .reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
   // Neither engine coverage nor a stop. Surfaced as a banner as well as a column
   // because the failure it prevents - believing a naked short is watched when it
   // is not - is one you only notice when it is too late to matter.
@@ -1275,7 +1292,7 @@ function OpenPositions({
               <th className="text-right">Delta</th>
               <th
                 className="text-right"
-                title="Live profit or loss at the current mark. It stays unrealised until the position is squared off, at which point it moves to the closed tab as Realised."
+                title="This contract's total P&L for the day - unrealised plus anything already realised on it - which is the figure the Dhan app shows."
               >
                 Current P/L
               </th>
@@ -1394,10 +1411,17 @@ function OpenPositions({
                   </td>
                   <td
                     className={`text-right font-medium ${
-                      Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"
+                      positionPnl(position) < 0 ? "text-red-700" : "text-emerald-700"
                     }`}
+                    title={
+                      Number(position.realizedPnl ?? 0)
+                        ? `Unrealised ${rupees(position.unrealizedPnl as number)} + realised ${rupees(
+                            position.realizedPnl as number
+                          )} on this contract today. Dhan splits these against the day's blended average price, so neither half matches your fill on its own - the total does.`
+                        : "Live profit or loss at the current mark."
+                    }
                   >
-                    {rupees(position.unrealizedPnl as number)}
+                    {rupees(positionPnl(position))}
                   </td>
                   <td className="text-right">
                     {position.stopPrice ? (
