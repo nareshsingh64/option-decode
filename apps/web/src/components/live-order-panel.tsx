@@ -1273,13 +1273,20 @@ function OpenPositions({
               <th className="text-right">Avg cost</th>
               <th className="text-right">LTP</th>
               <th className="text-right">Delta</th>
-              <th className="text-right">Stop</th>
               <th
                 className="text-right"
                 title="Live profit or loss at the current mark. It stays unrealised until the position is squared off, at which point it moves to the closed tab as Realised."
               >
                 Current P/L
               </th>
+              {/* Stop sits AFTER the P&L to match the cell order below. These
+                  were transposed from the day the Stop column was added: the
+                  P&L value rendered under the "Stop" heading and the stop cell
+                  under the P&L heading, which reads as a missing P&L because a
+                  position with no stop renders an empty cell. Counting columns
+                  does not catch this - both sides balanced at 12 - only
+                  comparing the ORDER does. */}
+              <th className="text-right">Stop</th>
               <th />
             </tr>
           </thead>
