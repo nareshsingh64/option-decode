@@ -1034,6 +1034,19 @@ monthly-horizon gamma exit *and* the expiry-week physical delivery ramp for
 stock options, which starts at E-4. A one-day window would miss the ramp
 entirely and silently disable delivery-risk handling.
 
+**Live also fires on DRIFT, not entry (2026-09-02).** The rule means "you have
+HELD this into the gamma window", so it fires only for a position opened
+*outside* the window that time carried in — `daysToExpiryAtEntry >
+DTE_GAMMA_THRESHOLD_DAYS`. A position deliberately opened inside the window is
+a choice made with the expiry date in view, and closing it on the next sweep
+overrides that choice rather than protecting anyone.
+
+Entry DTE is measured from the group's **earliest** leg, since a hedge that
+filled seconds before its short is the same entry. Unknown entry — an adopted
+position we never saw open — does **not** fire: firing is the destructive
+branch, and `EXPIRY_TODAY` still covers the day that actually matters,
+ungated by entry.
+
 **Extract these into `packages/trading/src/exit-rules.ts`** as pure functions
 over `(legs, marks, credit, expiry, horizon, exchange) → ExitDecision | null`,
 called by both `sim-repository.ts` and the live engine. Two copies of a stop

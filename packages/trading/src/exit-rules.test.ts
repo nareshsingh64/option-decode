@@ -90,8 +90,34 @@ test("profit is taken before a stop is considered", () => {
 });
 
 test("the gamma window fires inside the threshold, not outside", () => {
-  assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS + 1 })), null);
-  assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS }))?.rule, "DTE_GAMMA");
+  // Held from well outside the window, so this one drifted in.
+  const heldIn = { daysToExpiryAtEntry: DTE_GAMMA_THRESHOLD_DAYS + 5 };
+  assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS + 1, ...heldIn })), null);
+  assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS, ...heldIn }))?.rule, "DTE_GAMMA");
+});
+
+test("the gamma window is about DRIFT, not entry", () => {
+  // Opened INSIDE the window: the trader chose that expiry with its date in
+  // front of them, and the engine must not overrule it on the next sweep.
+  assert.equal(
+    evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS, daysToExpiryAtEntry: DTE_GAMMA_THRESHOLD_DAYS })),
+    null
+  );
+  // Opened OUTSIDE and carried in by time: this is what the rule is for.
+  assert.equal(
+    evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS, daysToExpiryAtEntry: DTE_GAMMA_THRESHOLD_DAYS + 1 }))?.rule,
+    "DTE_GAMMA"
+  );
+  // Entry unknown - an adopted position - does not fire. Firing is the
+  // destructive branch, and guessing there is what this fix removes.
+  assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS })), null);
+});
+
+test("expiry day fires whatever the entry was", () => {
+  // The one case that must never be gated on entry: a position opened ON
+  // expiry day still has to be closed rather than carried into assignment.
+  assert.equal(evaluateExit(spread({ daysToExpiry: 0, daysToExpiryAtEntry: 0 }))?.rule, "EXPIRY_TODAY");
+  assert.equal(evaluateExit(spread({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
 });
 
 test("a fresh weekly position is NOT closed on sight", () => {
@@ -111,8 +137,9 @@ test("a fresh weekly position is NOT closed on sight", () => {
       `${daysToExpiry} DTE is a normal weekly holding and must not be auto-closed`
     );
   }
-  // Still protected where it matters: the day before expiry, and expiry day.
-  assert.equal(evaluateExit(spread({ daysToExpiry: 1 }))?.rule, "DTE_GAMMA");
+  // Still protected where it matters: the day before expiry when the position
+  // was opened earlier and held in, and expiry day regardless.
+  assert.equal(evaluateExit(spread({ daysToExpiry: 1, daysToExpiryAtEntry: 6 }))?.rule, "DTE_GAMMA");
   assert.equal(evaluateExit(spread({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
 });
 
@@ -213,7 +240,7 @@ test("expiry rules still apply to a bought option", () => {
   // directions - a long left to expire worthless is the same mistake as a short
   // left to be assigned.
   assert.equal(evaluateExit(longCall({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
-  assert.equal(evaluateExit(longCall({ daysToExpiry: 1 }))?.rule, "DTE_GAMMA");
+  assert.equal(evaluateExit(longCall({ daysToExpiry: 1, daysToExpiryAtEntry: 5 }))?.rule, "DTE_GAMMA");
   // ...and a bought weekly with days left is left alone, same as a sold one.
   assert.equal(evaluateExit(longCall({ daysToExpiry: 3 })), null);
 });

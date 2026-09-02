@@ -2159,9 +2159,18 @@ export async function runLiveExitEngine(
       0
     );
     const expiryLabel = stillOpen[0].expiryLabel;
-    const daysToExpiry = Math.ceil(
-      (new Date(`${expiryLabel}T00:00:00Z`).getTime() - Date.now()) / 86_400_000
-    );
+    const expiryMs = new Date(`${expiryLabel}T00:00:00Z`).getTime();
+    const daysToExpiry = Math.ceil((expiryMs - Date.now()) / 86_400_000);
+
+    // Days to expiry when this group was OPENED, measured from its EARLIEST
+    // leg - the group exists from the moment its first leg is placed, and a
+    // hedge that filled seconds before the short is the same entry.
+    //
+    // This is what lets DTE_GAMMA tell drift from entry. Without it the rule
+    // cannot fire at all, so if this ever becomes undefined the gamma exit
+    // goes quiet rather than misfiring - the safe direction, but quiet.
+    const openedMs = Math.min(...stillOpen.map((order) => order.placedAt.getTime()));
+    const daysToExpiryAtEntry = Math.ceil((expiryMs - openedMs) / 86_400_000);
 
     sweep.groupsEvaluated += 1;
     const decision = evaluateExit({
@@ -2169,7 +2178,8 @@ export async function runLiveExitEngine(
       legs,
       netCredit,
       quantity,
-      daysToExpiry: Number.isFinite(daysToExpiry) ? daysToExpiry : 999
+      daysToExpiry: Number.isFinite(daysToExpiry) ? daysToExpiry : 999,
+      daysToExpiryAtEntry: Number.isFinite(daysToExpiryAtEntry) ? daysToExpiryAtEntry : undefined
     });
     if (!decision) continue;
 

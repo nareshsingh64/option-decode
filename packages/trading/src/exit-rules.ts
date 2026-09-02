@@ -156,6 +156,19 @@ export interface ExitInput {
   /** Contracts per leg (lots x lot size, or lots on MCX). */
   quantity: number;
   daysToExpiry: number;
+  /**
+   * Days to expiry when the position was OPENED.
+   *
+   * Supplied by the caller rather than derived, because nothing in this module
+   * is allowed a clock or a calendar it was not handed. It exists so DTE_GAMMA
+   * can tell a position that DRIFTED into the gamma window from one that was
+   * deliberately opened inside it - see the rule itself.
+   *
+   * Undefined means unknown, not zero. An adopted position whose true entry we
+   * never saw simply does not get the gamma exit; EXPIRY_TODAY still covers it
+   * on the day that matters.
+   */
+  daysToExpiryAtEntry?: number;
   horizon?: "INTRADAY" | "WEEKLY" | "MONTHLY";
 }
 
@@ -215,10 +228,26 @@ export function evaluateExit(input: ExitInput): ExitDecision | null {
     return { rule: "EXPIRY_TODAY", detail: "Expires today - close rather than carry assignment risk." };
   }
   if (daysToExpiry <= DTE_GAMMA_THRESHOLD_DAYS) {
-    return {
-      rule: "DTE_GAMMA",
-      detail: `${daysToExpiry} day(s) to expiry - inside the gamma window.`
-    };
+    // DRIFT, NOT ENTRY. The rule means "you have HELD this into the gamma
+    // window", so it fires only for a position opened OUTSIDE the window that
+    // time has carried in. A position deliberately opened inside it is a
+    // choice the trader made with the expiry date in front of them, and
+    // closing it on the next sweep overrides that choice rather than
+    // protecting them - which is exactly what happened at the old seven-day
+    // threshold, where a 24100 CE was bought back thirty seconds after it
+    // filled.
+    //
+    // Unknown entry does NOT fire. Firing is the destructive branch here, and
+    // the whole defect being fixed was firing when it should not have.
+    // EXPIRY_TODAY above still catches the genuinely dangerous day regardless
+    // of what we know about entry.
+    const entry = input.daysToExpiryAtEntry;
+    if (entry !== undefined && entry > DTE_GAMMA_THRESHOLD_DAYS) {
+      return {
+        rule: "DTE_GAMMA",
+        detail: `${daysToExpiry} day(s) to expiry - opened at ${entry} day(s) and held into the gamma window.`
+      };
+    }
   }
 
   // --- Short leg blown out --------------------------------------------------
