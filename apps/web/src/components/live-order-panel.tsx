@@ -189,7 +189,8 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
               <th>Expiry</th>
               <th className="text-right">Avg cost</th>
               <th className="text-right">Realised</th>
-              <th className="text-right">Closed</th>
+              <th className="text-right">Entered</th>
+              <th className="text-right">Exited</th>
             </tr>
           </thead>
           <tbody>
@@ -217,10 +218,11 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
                   <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
                     {rupees(realisedRow)}
                   </td>
-                  <td className="text-right text-xs text-slate-500">
-                    {closedAt
-                      ? closedAt.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })
-                      : "--"}
+                  <td className="whitespace-nowrap text-right text-xs text-slate-500">
+                    {istStamp(position.openedAt)}
+                  </td>
+                  <td className="whitespace-nowrap text-right text-xs text-slate-500">
+                    {closedAt ? istStamp(position.closedAt) : "--"}
                   </td>
                 </tr>
               );
@@ -242,6 +244,24 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
 // can only fail is worse than offering none. Module scope so the Orders tab
 // badge and the row buttons cannot drift apart on what "working" means.
 const WORKING_STATES = new Set(["SENT", "OPEN", "PARTIAL"]);
+
+// Date AND time, in IST. Time alone was ambiguous the moment the closed tab
+// started carrying anything but today's rows, and a bare ISO string is not
+// something anyone reads at a glance.
+const istStamp = (value: unknown): string => {
+  if (!value) return "--";
+  const at = new Date(String(value));
+  if (Number.isNaN(at.getTime())) return "--";
+  return at.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+};
 
 const rupees = (value: number | null | undefined): string =>
   value === null || value === undefined || Number.isNaN(value)
@@ -1243,6 +1263,7 @@ function OpenPositions({
               </th>
               <th>Contract</th>
               <th>Expiry</th>
+              <th>Entered</th>
               <th className="text-right">Qty</th>
               <th className="text-right">Avg cost</th>
               <th className="text-right">LTP</th>
@@ -1320,6 +1341,7 @@ function OpenPositions({
                     {position.expiryLabel ? String(position.expiryLabel) : "--"}
                     {dte === null ? "" : dte <= 0 ? " (today)" : ` (${dte}d)`}
                   </td>
+                  <td className="whitespace-nowrap text-xs text-slate-500">{istStamp(position.openedAt)}</td>
                   <td className="text-right">{Math.abs(qty)}</td>
                   <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
                   <td
@@ -1496,6 +1518,7 @@ function RecentOrders({
           <tr className="text-left text-xs uppercase text-slate-500">
             <th className="py-1">Contract</th>
             <th>Expiry</th>
+            <th>Placed</th>
             <th>Side</th>
             <th>Lots</th>
             <th>Price</th>
@@ -1516,6 +1539,7 @@ function RecentOrders({
                   : `${String(order.underlyingSymbol)} (contract not recorded)`}
               </td>
               <td className="text-slate-600">{order.expiryLabel ? String(order.expiryLabel) : "--"}</td>
+              <td className="whitespace-nowrap text-xs text-slate-500">{istStamp(order.placedAt)}</td>
               <td>{String(order.transactionType)}</td>
               <td>{String(order.lots)}</td>
               <td>

@@ -1056,28 +1056,35 @@ export interface LivePlacementResult {
   abortedReason?: string;
 }
 
-// How long a hedge leg has to FILL before the short legs it protects are
-// abandoned. Fifteen seconds is long against a marketable limit on a liquid
-// option and short against a trader waiting on a confirmation.
-const HEDGE_FILL_TIMEOUT_MS = 15_000;
-const HEDGE_FILL_POLL_MS = 1_000;
+// How long a leg has to FILL before the legs that depend on it are abandoned.
+// Fifteen seconds is long against a marketable limit on a liquid option and
+// short against a trader waiting on a confirmation.
+const LEG_FILL_TIMEOUT_MS = 15_000;
+const LEG_FILL_POLL_MS = 1_000;
 
 /**
- * Block until every hedge leg has actually TRADED.
+ * Block until every named order has actually TRADED.
  *
  * ACCEPTED IS NOT ENOUGH, and that distinction is the whole point of waiting.
- * An order Dhan has acknowledged but not filled hedges nothing - selling
- * against it would leave the account naked with a resting buy order that may
- * never fill, which is precisely the state the sequencing exists to prevent.
+ * Used at BOTH ends of a position's life, for the same reason each time - the
+ * broker's risk system only sees a leg once it has filled, not when it has
+ * been acknowledged:
  *
- * A PARTIAL fill is treated as not filled. Half a wing against a full short is
- * still naked on the remainder, and quietly accepting it would hide that.
+ * - Opening, the hedge must exist before anything is sold against it, or the
+ *   account is naked with a resting buy that may never fill.
+ * - Closing, the short must be flat before its wing is sold, or Dhan's RMS
+ *   still sees the wing as protecting a live short and refuses. Measured
+ *   2026-09-02: "RMS: This leg is part of a hedge. Close the main position or
+ *   add 39684.59 funds to continue", on a close sent 90ms after the short's.
+ *
+ * A PARTIAL fill is treated as not filled. Half a leg is not the state either
+ * caller is waiting for, and quietly accepting it would hide that.
  */
-async function waitForHedgeFills(
+async function waitForOrderFills(
   brokerOrderIds: string[],
   dhan: DhanClient
 ): Promise<{ ok: boolean; detail: string }> {
-  const deadline = Date.now() + HEDGE_FILL_TIMEOUT_MS;
+  const deadline = Date.now() + LEG_FILL_TIMEOUT_MS;
   const pending = new Set(brokerOrderIds);
   let lastStatus = "no reply yet";
 
@@ -1085,10 +1092,10 @@ async function waitForHedgeFills(
     if (Date.now() >= deadline) {
       return {
         ok: false,
-        detail: `the hedge did not fill within ${Math.round(HEDGE_FILL_TIMEOUT_MS / 1000)}s (last seen ${lastStatus})`
+        detail: `it did not fill within ${Math.round(LEG_FILL_TIMEOUT_MS / 1000)}s (last seen ${lastStatus})`
       };
     }
-    await new Promise((resolve) => setTimeout(resolve, HEDGE_FILL_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, LEG_FILL_POLL_MS));
 
     for (const brokerOrderId of [...pending]) {
       let observed: DhanBrokerOrder | undefined;
@@ -1104,11 +1111,11 @@ async function waitForHedgeFills(
       if (status === "TRADED") {
         pending.delete(brokerOrderId);
       } else if (status === "REJECTED" || status === "CANCELLED") {
-        return { ok: false, detail: `the hedge order came back ${status}` };
+        return { ok: false, detail: `the order came back ${status}` };
       }
     }
   }
-  return { ok: true, detail: "hedge filled" };
+  return { ok: true, detail: "filled" };
 }
 
 export async function placeLiveOrder(
@@ -1165,14 +1172,14 @@ export async function placeLiveOrder(
     // The gate between the hedge and the risk. Runs once, immediately before
     // the first SELL, and only when a hedge was actually placed.
     if (leg.side === "SELL" && hedgeBrokerOrderIds.length > 0 && !hedgesConfirmed) {
-      const outcome = await waitForHedgeFills(hedgeBrokerOrderIds, dhan);
+      const outcome = await waitForOrderFills(hedgeBrokerOrderIds, dhan);
       if (!outcome.ok) {
         // Deliberately NOT cancelling the resting hedge. A long option is a
         // bounded, benign thing to hold, the trader may still want it, and
         // cancelling on their behalf is a second unrequested action layered on
         // a failure they have not seen yet. It is visible in the orders tab
         // and one click from cancellation there.
-        abortedReason = `Short leg(s) not sent: ${outcome.detail}. The hedge order is still working - cancel it from the Orders tab if you no longer want it.`;
+        abortedReason = `Short leg(s) not sent: the hedge ${outcome.detail}. The hedge order is still working - cancel it from the Orders tab if you no longer want it.`;
         break;
       }
       hedgesConfirmed = true;
@@ -1637,13 +1644,23 @@ export async function panicCloseLiveAccount(
   for (const position of positions) {
     if (!position.netQty) continue;
     try {
-      await squareOffLivePosition(
+      const outcome = await squareOffLivePosition(
         user,
         position.id,
         { exitReason: "PANIC", exitDetail: "Panic close: every open position squared off at market." },
         client
       );
-      result.positionsSquaredOff += 1;
+      // Same trap as the exit engine: a broker that accepts the call and then
+      // refuses the order returns normally rather than throwing. A panic that
+      // reports a position squared off when it is still open is the worst
+      // possible place for that to happen.
+      if (outcome.status === "REJECTED" || outcome.status === "CANCELLED") {
+        result.failures.push(
+          `square off ${position.tradingSymbol ?? position.securityId}: the broker ${outcome.status} the closing order`
+        );
+      } else {
+        result.positionsSquaredOff += 1;
+      }
     } catch (error) {
       result.failures.push(`square off ${position.tradingSymbol ?? position.securityId}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -2264,7 +2281,31 @@ export async function runLiveExitEngine(
 
     let closedLegs = 0;
     const legFailures: string[] = [];
-    for (const { order } of sequenced) {
+    // Cached per user by getUserDhanClient, so this costs nothing per group.
+    // Needed to poll the short's fill before the wing is released.
+    const dhan = await getUserDhanClient(account.userId, client);
+    // Broker ids of closes placed for the SHORT legs. The wing cannot be sold
+    // until these have FILLED - see the RMS rejection in waitForOrderFills.
+    const shortCloseBrokerIds: string[] = [];
+    let shortsFlat = false;
+
+    for (const { order, side } of sequenced) {
+      // The gate between flattening the risk and releasing its hedge. Mirrors
+      // the one in placeLiveOrder, and exists because the broker's RMS only
+      // recognises a leg as gone once it has filled - not when the closing
+      // order was accepted.
+      if (side === "BUY" && shortCloseBrokerIds.length > 0 && !shortsFlat) {
+        const outcome = await waitForOrderFills(shortCloseBrokerIds, dhan);
+        if (!outcome.ok) {
+          // Leave the wing alone. While the short is still live the wing is
+          // doing its job, and selling it is the one thing that must not
+          // happen here. The next sweep retries.
+          legFailures.push(`${order.securityId}: wing left open - the short close ${outcome.detail}`);
+          break;
+        }
+        shortsFlat = true;
+      }
+
       const openPosition = await client.livePosition.findFirst({
         where: { accountId: group.accountId, securityId: order.securityId, status: "OPEN" }
       });
@@ -2288,7 +2329,7 @@ export async function runLiveExitEngine(
       }
 
       try {
-        await squareOffForAccount(
+        const outcome = await squareOffForAccount(
           group.accountId,
           account.userId,
           openPosition.id,
@@ -2303,7 +2344,20 @@ export async function runLiveExitEngine(
           },
           client
         );
+        // A REJECTED order does NOT throw - squareOffForAccount only throws
+        // when the request itself failed, and a broker that accepts the call
+        // and then refuses the order comes back through the normal return.
+        // Counting that as a close is how a still-open position got reported
+        // as AUTO_CLOSED on 2026-09-02: "Closed 1/1 legs" on a 24700 CE wing
+        // that Dhan had rejected and which is still open.
+        if (outcome.status === "REJECTED" || outcome.status === "CANCELLED") {
+          legFailures.push(`${order.securityId}: the closing order was ${outcome.status} by the broker`);
+          continue;
+        }
         closedLegs += 1;
+        if (side === "SELL" && outcome.brokerOrderId) {
+          shortCloseBrokerIds.push(outcome.brokerOrderId);
+        }
       } catch (error) {
         legFailures.push(`${order.securityId}: ${error instanceof Error ? error.message : String(error)}`);
       }
