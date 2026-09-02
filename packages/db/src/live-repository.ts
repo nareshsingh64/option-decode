@@ -2780,36 +2780,37 @@ export async function getLiveSummary(
 }
 
 /**
- * Overlay a live price onto a reconciled position and recompute its unrealised
- * P&L.
+ * Overlay a live PRICE onto a reconciled position. Nothing else.
  *
- * The reconciler refreshes positions from Dhan every 20 seconds; this makes the
- * MARK as fresh as the tick feed, without a broker call per refresh. Dhan's own
- * unrealised figure is kept whenever no live tick is available, so a quiet
- * contract or a cold cache degrades to the slower number rather than to a blank.
- *
- * Sign matters: netQty is negative for a short, so (last - cost) * netQty is
- * correct in both directions without a special case.
+ * The reconciler refreshes positions from Dhan every 20 seconds; this keeps the
+ * displayed mark as fresh as the tick feed without a broker call per refresh.
+ * The P&L that travels with it stays Dhan's.
  */
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
 function applyLiveMark(position: Record<string, unknown>, markFor?: LiveMarkLookup): Record<string, unknown> {
   if (!markFor) return position;
   const last = markFor(String(position.securityId ?? ""));
   if (last === undefined || !Number.isFinite(last)) return position;
 
   const netQty = Number(position.netQty ?? 0);
-  const cost = Number(position.avgCostPrice ?? 0);
   if (!netQty) return position;
 
-  return {
-    ...position,
-    lastPrice: last,
-    unrealizedPnl: round2((last - cost) * netQty),
-    markSource: "LIVE_FEED"
-  };
+  // ONLY the price. unrealizedPnl is Dhan's own unrealizedProfit, written by
+  // the reconcile sweep, and it must survive to the screen unchanged - the
+  // number a trader checks against their broker has to BE the broker's number.
+  //
+  // This used to recompute it as (last - cost) * netQty from our own feed. The
+  // arithmetic was right and matched Dhan's to the paisa given the same
+  // inputs; the mark was not the same input. Measured 2026-09-02 on the open
+  // NIFTY 24100 short, sampled together: our feed said 51.50 where Dhan valued
+  // at 50.70, so we showed Rs 221 against their Rs 273. Our ticks arrive on a
+  // ~25s capture cadence and are a last-traded price; Dhan values continuously
+  // and not necessarily off the same print.
+  //
+  // The cost is that P&L now refreshes on the 20s reconcile rather than every
+  // second, and is no longer exactly (displayed LTP - cost) * qty. That is the
+  // right trade: a P&L that ticks faster but disagrees with the broker is
+  // worse than one that lags slightly and agrees.
+  return { ...position, lastPrice: last, markSource: "LIVE_FEED" };
 }
 
 // ------------------------------------------------------------------
