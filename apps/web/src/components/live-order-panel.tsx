@@ -174,7 +174,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
         <span className="text-xs uppercase text-slate-500">Realised today</span>
         <span className={`text-lg font-semibold ${realised < 0 ? "text-red-700" : "text-emerald-700"}`}>
           {realised < 0 ? "-" : "+"}
-          {rupees(Math.abs(realised))}
+          {rupees2(Math.abs(realised))}
         </span>
       </div>
 
@@ -214,9 +214,9 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
                     ) : null}
                   </td>
                   <td className="text-slate-600">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
-                  <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
+                  <td className="text-right">{rupees2(position.avgCostPrice as number)}</td>
                   <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
-                    {rupees(realisedRow)}
+                    {rupees2(realisedRow)}
                   </td>
                   <td className="whitespace-nowrap text-right text-xs text-slate-500">
                     {istStamp(position.openedAt)}
@@ -267,6 +267,16 @@ const rupees = (value: number | null | undefined): string =>
   value === null || value === undefined || Number.isNaN(value)
     ? "--"
     : `₹${Math.round(value).toLocaleString("en-IN")}`;
+
+// Prices and P&L keep their paise. Rounding to whole rupees made these
+// unreconcilable against the broker: a 562.25 position read 562, and an average
+// cost of 54.90 read 55, which is a different strike's worth of difference when
+// you are checking a fill. Funds and margin keep the whole-rupee form above -
+// they are five- and six-figure numbers where paise are noise.
+const rupees2 = (value: number | null | undefined): string =>
+  value === null || value === undefined || Number.isNaN(value)
+    ? "--"
+    : `₹${value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSymbol?: string; expiryLabel?: string }) {
   const [summary, setSummary] = useState<LiveSummary | null>(null);
@@ -1266,12 +1276,12 @@ function OpenPositions({
         <span className="text-xs uppercase text-slate-500">
           Net P&amp;L today
           <span className="ml-2 normal-case text-slate-400">
-            open {rupees(openPnl)} + realised {rupees(realisedToday)}
+            open {rupees2(openPnl)} + realised {rupees2(realisedToday)}
           </span>
         </span>
         <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
           {net < 0 ? "-" : "+"}
-          {rupees(Math.abs(net))}
+          {rupees2(Math.abs(net))}
         </span>
       </div>
 
@@ -1374,7 +1384,7 @@ function OpenPositions({
                   </td>
                   <td className="whitespace-nowrap text-xs text-slate-500">{istStamp(position.openedAt)}</td>
                   <td className="text-right">{Math.abs(qty)}</td>
-                  <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
+                  <td className="text-right">{rupees2(position.avgCostPrice as number)}</td>
                   <td
                     className={`text-right tabular-nums font-medium ${
                       dir === "up" ? "text-emerald-700" : dir === "down" ? "text-red-700" : "text-slate-700"
@@ -1415,13 +1425,13 @@ function OpenPositions({
                     }`}
                     title={
                       Number(position.realizedPnl ?? 0)
-                        ? `Unrealised ${rupees(position.unrealizedPnl as number)} + realised ${rupees(
+                        ? `Unrealised ${rupees2(position.unrealizedPnl as number)} + realised ${rupees2(
                             position.realizedPnl as number
                           )} on this contract today. Dhan splits these against the day's blended average price, so neither half matches your fill on its own - the total does.`
                         : "Live profit or loss at the current mark."
                     }
                   >
-                    {rupees(positionPnl(position))}
+                    {rupees2(positionPnl(position))}
                   </td>
                   <td className="text-right">
                     {position.stopPrice ? (
@@ -1586,12 +1596,12 @@ function RecentOrders({
                 {String(order.orderType) === "MARKET" ? (
                   <span className="text-slate-500">MKT</span>
                 ) : (
-                  rupees(order.price as number)
+                  rupees2(order.price as number)
                 )}
               </td>
               <td>
                 {String(order.filledQty ?? 0)}/{String(order.quantity ?? 0)}
-                {order.avgFillPrice ? ` @ ${rupees(order.avgFillPrice as number)}` : ""}
+                {order.avgFillPrice ? ` @ ${rupees2(order.avgFillPrice as number)}` : ""}
               </td>
               <td>
                 {/* UNKNOWN is shown in red on purpose. It means we do not know
