@@ -1,10 +1,15 @@
 // Seller exit rules, as pure functions.
 //
-// ONE definition, so the simulator and the live engine cannot drift. Two copies
-// of a stop rule that are supposed to agree is the class of bug this repo keeps
-// single definitions to avoid - and it matters more here than anywhere else,
-// because the whole argument for trusting a live stop is that it behaves the
-// way the simulated one did.
+// ONE definition for the LIVE engine. The simulator still carries its own copy
+// in sim-repository.ts, because the extraction described in
+// docs/live-order-module.md S8.2 was never finished.
+//
+// Those two numbers now deliberately DIFFER, and must not be "consolidated".
+// Live is 1 day (see DTE_GAMMA_THRESHOLD_DAYS below). The simulator's 7 does
+// double duty: a monthly-horizon gamma exit AND the expiry-week physical
+// delivery ramp for stock options, which begins at E-4 and would be missed
+// entirely by a one-day window. Same name, two meanings, and collapsing them
+// would silently disable delivery-risk handling.
 //
 // Nothing here touches a database, a broker or a clock it was not given. That
 // is deliberate: a rule that decides whether to close a real position must be
@@ -21,8 +26,30 @@ export function profitTargetPct(structure: string): number {
 /** Close when the cost to buy the structure back reaches this multiple of the credit. */
 export const HARD_STOP_MULTIPLE = 3;
 
-/** Days to expiry at which gamma risk outweighs the remaining theta. */
-export const DTE_GAMMA_THRESHOLD_DAYS = 7;
+/**
+ * Days to expiry at which gamma risk outweighs the remaining theta.
+ *
+ * ONE, and that is a correction rather than a tuning choice. It was 7, and 7
+ * made weekly selling impossible: NIFTY weeklies expire every Tuesday, so the
+ * near expiry is ALWAYS within seven days, and the engine closed every weekly
+ * position on the first 20-second sweep after it opened. Measured on
+ * 2026-09-02 - a 24100 CE sold at 51.80 at 11:49:51 was bought back at 52.15
+ * at 11:50:20, thirty seconds later, six days from expiry, for a Rs 22.75 loss
+ * the trader never chose.
+ *
+ * The rule means "you have HELD this into the gamma window", but it is
+ * evaluated against any position sitting inside the window, so at 7 days it
+ * read as "you may not enter the window at all". One day preserves the intent
+ * - do not carry gamma risk into expiry - while leaving the week tradeable,
+ * which is what this app is actually for. The app only holds current and next
+ * week's chain data, so a threshold that excluded the near weekly excluded
+ * most of what it can price.
+ *
+ * Note the entry-versus-drift confusion is narrowed by this, not resolved: a
+ * position opened WITH one day to expiry is still closed on the next sweep.
+ * Firing only when openedAt precedes the window is the real fix.
+ */
+export const DTE_GAMMA_THRESHOLD_DAYS = 1;
 
 /**
  * Fallback stop when delta is unusable.

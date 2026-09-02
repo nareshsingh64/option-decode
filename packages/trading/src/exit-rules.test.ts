@@ -88,9 +88,31 @@ test("profit is taken before a stop is considered", () => {
   assert.equal(decision?.rule, "PROFIT_TARGET");
 });
 
-test("the gamma window fires inside 7 days, not outside", () => {
+test("the gamma window fires inside the threshold, not outside", () => {
   assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS + 1 })), null);
   assert.equal(evaluateExit(spread({ daysToExpiry: DTE_GAMMA_THRESHOLD_DAYS }))?.rule, "DTE_GAMMA");
+});
+
+test("a fresh weekly position is NOT closed on sight", () => {
+  // The regression this threshold exists to prevent. At 7 days the near NIFTY
+  // weekly - which expires every Tuesday and is therefore never more than a
+  // week out - was auto-closed on the first sweep after it opened. On
+  // 2026-09-02 a 24100 CE sold at 51.80 was bought back at 52.15 thirty
+  // seconds later, six days from expiry.
+  //
+  // Pinned to literal day counts on purpose. Writing these in terms of the
+  // constant would make the test agree with whatever the constant says, which
+  // is exactly how the original went unnoticed.
+  for (const daysToExpiry of [6, 5, 4, 3, 2]) {
+    assert.equal(
+      evaluateExit(spread({ daysToExpiry })),
+      null,
+      `${daysToExpiry} DTE is a normal weekly holding and must not be auto-closed`
+    );
+  }
+  // Still protected where it matters: the day before expiry, and expiry day.
+  assert.equal(evaluateExit(spread({ daysToExpiry: 1 }))?.rule, "DTE_GAMMA");
+  assert.equal(evaluateExit(spread({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
 });
 
 test("expiry day is its own rule, not merely the gamma window", () => {
@@ -190,7 +212,9 @@ test("expiry rules still apply to a bought option", () => {
   // directions - a long left to expire worthless is the same mistake as a short
   // left to be assigned.
   assert.equal(evaluateExit(longCall({ daysToExpiry: 0 }))?.rule, "EXPIRY_TODAY");
-  assert.equal(evaluateExit(longCall({ daysToExpiry: 3 }))?.rule, "DTE_GAMMA");
+  assert.equal(evaluateExit(longCall({ daysToExpiry: 1 }))?.rule, "DTE_GAMMA");
+  // ...and a bought weekly with days left is left alone, same as a sold one.
+  assert.equal(evaluateExit(longCall({ daysToExpiry: 3 })), null);
 });
 
 test("an empty or zero-quantity position is never actioned", () => {

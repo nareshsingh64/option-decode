@@ -1018,6 +1018,22 @@ Paper Trade Pro's rules, verbatim from `sim-repository.ts`:
 | `EXPIRY_ITM` | short leg ITM at expiry | settle |
 | `DELIVERY_RISK` | stock option, short leg ITM inside expiry week | flag (margin ramps 1.5×) |
 
+**`DTE_GAMMA` differs between paper and live, deliberately (2026-09-02).** Live
+is **1 day** (`DTE_GAMMA_THRESHOLD_DAYS` in `packages/trading/src/exit-rules.ts`);
+the table above is the simulator, which is still 7.
+
+Seven was unusable live. NIFTY weeklies expire every Tuesday, so the near expiry
+is never more than seven days out, and the engine closed every weekly position
+on the first 20-second sweep after it opened — a 24100 CE sold at 51.80 was
+bought back at 52.15 thirty seconds later, six days from expiry. The app also
+only holds current and next week's chain, so a seven-day exclusion ruled out
+most of what it can price.
+
+**Do not "consolidate" the two numbers.** The simulator's 7 does double duty: a
+monthly-horizon gamma exit *and* the expiry-week physical delivery ramp for
+stock options, which starts at E-4. A one-day window would miss the ramp
+entirely and silently disable delivery-risk handling.
+
 **Extract these into `packages/trading/src/exit-rules.ts`** as pure functions
 over `(legs, marks, credit, expiry, horizon, exchange) → ExitDecision | null`,
 called by both `sim-repository.ts` and the live engine. Two copies of a stop
