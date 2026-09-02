@@ -1063,6 +1063,19 @@ model LivePosition {
   stopPrice    Decimal?           @db.Decimal(12, 2)
   stopSetAt    DateTime?
 
+  // WHY this position was closed, written when a close is INITIATED rather than
+  // when it completes. The close itself is only ever DETECTED - reconciliation
+  // sees netQty go to 0 at the broker - so by the time the row flips to CLOSED
+  // the reason is long out of scope. Recording it up front is the only way it
+  // survives.
+  //
+  // Null on a closed row therefore means "nobody here closed it": the trader
+  // squared off in the Dhan app, or it settled at expiry. Reconciliation
+  // stamps EXTERNAL in that case rather than leaving it blank, so an empty
+  // reason never has to be interpreted.
+  exitReason   String?            @db.VarChar(32)
+  exitDetail   String?            @db.VarChar(255)
+
   status       LivePositionStatus @default(OPEN)
   openedAt     DateTime           @default(now())
   closedAt     DateTime?

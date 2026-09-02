@@ -1452,11 +1452,12 @@ export async function cancelLiveOrder(user: AuthUserDto, orderId: string, client
 export async function squareOffLivePosition(
   user: AuthUserDto,
   positionId: string,
-  input: { limitPrice?: number } = {},
+  input: { limitPrice?: number; exitReason?: string; exitDetail?: string } = {},
   client: PrismaClient = prisma
 ) {
   const account = await requireTradableAccount(user, client, true);
-  return squareOffForAccount(account.id, user.id, positionId, input, client);
+  // A square-off with no stated reason came from a person clicking Exit.
+  return squareOffForAccount(account.id, user.id, positionId, { exitReason: "MANUAL", ...input }, client);
 }
 
 /**
@@ -1475,7 +1476,7 @@ async function squareOffForAccount(
   accountId: string,
   userId: string,
   positionId: string,
-  input: { limitPrice?: number } = {},
+  input: { limitPrice?: number; exitReason?: string; exitDetail?: string } = {},
   client: PrismaClient = prisma
 ) {
   const account = await client.liveAccount.findUnique({ where: { id: accountId } });
@@ -1492,6 +1493,18 @@ async function squareOffForAccount(
   const netQty = position.netQty;
   if (!netQty) {
     throw new LiveOrderRejectedError("That position is already flat.");
+  }
+
+  // Stamp WHY before sending anything. The close is only ever DETECTED later,
+  // by reconciliation noticing netQty hit 0 at the broker, and by then this
+  // call is long gone - so recording the reason up front is the only way it
+  // survives to the closed row. Written even if the order then fails: the row
+  // stays OPEN in that case and the next close overwrites it.
+  if (input.exitReason) {
+    await client.livePosition.update({
+      where: { id: position.id },
+      data: { exitReason: input.exitReason.slice(0, 32), exitDetail: input.exitDetail?.slice(0, 255) ?? null }
+    });
   }
 
   // Opposite side, absolute quantity. netQty is negative for a short, so a
@@ -1624,7 +1637,12 @@ export async function panicCloseLiveAccount(
   for (const position of positions) {
     if (!position.netQty) continue;
     try {
-      await squareOffLivePosition(user, position.id, {}, client);
+      await squareOffLivePosition(
+        user,
+        position.id,
+        { exitReason: "PANIC", exitDetail: "Panic close: every open position squared off at market." },
+        client
+      );
       result.positionsSquaredOff += 1;
     } catch (error) {
       result.failures.push(`square off ${position.tradingSymbol ?? position.securityId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1722,6 +1740,16 @@ export async function reconcileLiveAccount(
         }
       });
       if (closed.count) {
+        // Nothing here asked for this close, so it happened elsewhere - squared
+        // off in the Dhan app, or settled at expiry. Stamped rather than left
+        // null so an empty reason never has to be interpreted by a reader.
+        await client.livePosition.updateMany({
+          where: { accountId: account.id, securityId: position.securityId, status: "CLOSED", exitReason: null },
+          data: {
+            exitReason: "EXTERNAL",
+            exitDetail: "Closed at the broker, not by this app - squared off in Dhan or settled at expiry."
+          }
+        });
         result.positionsClosed += closed.count;
       }
       seen.add(position.securityId);
@@ -1796,7 +1824,16 @@ export async function reconcileLiveAccount(
     if (seen.has(position.securityId)) continue;
     await client.livePosition.update({
       where: { id: position.id },
-      data: { status: "CLOSED", closedAt: new Date(), reconciledAt: new Date() }
+      data: {
+        status: "CLOSED",
+        closedAt: new Date(),
+        reconciledAt: new Date(),
+        // Open locally, absent at the broker. Same reasoning as above: say so
+        // rather than leaving the reason blank.
+        exitReason: position.exitReason ?? "EXTERNAL",
+        exitDetail:
+          position.exitDetail ?? "Open locally but the broker no longer reports it - closed elsewhere."
+      }
     });
     result.positionsClosed += 1;
     result.drift.push(`Position ${position.securityId} was open locally but the broker does not report it - marked closed.`);
@@ -2016,7 +2053,13 @@ async function runPositionStops(
 
     const detail = `Stop at ${stop} breached: ${isShort ? "short" : "long"} premium is ${last}.`;
     try {
-      await squareOffForAccount(position.accountId, account.userId, position.id, {}, client);
+      await squareOffForAccount(
+        position.accountId,
+        account.userId,
+        position.id,
+        { exitReason: "STOP", exitDetail: detail },
+        client
+      );
       // Cleared on success so a partial fill that leaves the position open does
       // not re-arm against a level already acted on.
       await client.livePosition.update({
@@ -2249,8 +2292,15 @@ export async function runLiveExitEngine(
           group.accountId,
           account.userId,
           openPosition.id,
-          // A LIMIT close is priced at the leg's current mark. MARKET sends none.
-          orderType === "LIMIT" ? { limitPrice: markFor(order.securityId) } : {},
+          {
+            // A LIMIT close is priced at the leg's current mark. MARKET sends none.
+            ...(orderType === "LIMIT" ? { limitPrice: markFor(order.securityId) } : {}),
+            // The rule that fired, and the sentence explaining it, so a closed
+            // position can answer "why did the system do this" without anyone
+            // reading a log.
+            exitReason: decision.rule,
+            exitDetail: decision.detail
+          },
           client
         );
         closedLegs += 1;

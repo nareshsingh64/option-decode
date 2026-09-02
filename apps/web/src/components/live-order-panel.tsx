@@ -143,6 +143,22 @@ const STRUCTURES: Record<string, LegTemplate[]> = {
   ]
 };
 
+// Plain-English names for what is stored as a rule id. The raw value is kept
+// in the tooltip so a support question can be answered with the exact string
+// that is in the database, not a prettified version of it.
+const EXIT_REASON_LABELS: Record<string, string> = {
+  MANUAL: "Closed by you",
+  PANIC: "Panic close",
+  STOP: "Your stop was hit",
+  EXTERNAL: "Closed outside this app",
+  PROFIT_TARGET: "Profit target",
+  HARD_STOP_3X: "Hard stop (3x credit)",
+  DTE_GAMMA: "Gamma window",
+  DELTA_2X: "Short leg delta doubled",
+  PREMIUM_2X: "Short leg premium doubled",
+  EXPIRY_TODAY: "Expiry day"
+};
+
 function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> }) {
   if (!positions.length) {
     return <p className="text-sm text-slate-500">Nothing closed today.</p>;
@@ -180,9 +196,22 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
             {positions.map((position) => {
               const closedAt = position.closedAt ? new Date(String(position.closedAt)) : null;
               const realisedRow = Number(position.realizedPnl ?? 0);
+              const reason = position.exitReason ? String(position.exitReason) : null;
+              const detail = position.exitDetail ? String(position.exitDetail) : null;
+              // The full sentence on hover, the label under the contract. A
+              // tooltip alone would hide the fact that a reason exists at all,
+              // and nobody hovers over something that looks inert.
+              const hover = reason ? (detail ? `${reason} - ${detail}` : reason) : "No exit reason was recorded.";
               return (
                 <tr key={String(position.id)} className="border-t border-slate-100">
-                  <td className="py-1">{String(position.tradingSymbol ?? position.securityId)}</td>
+                  <td className="py-1" title={hover}>
+                    <span className="cursor-help underline decoration-dotted underline-offset-2">
+                      {String(position.tradingSymbol ?? position.securityId)}
+                    </span>
+                    {reason ? (
+                      <span className="mt-0.5 block text-xs text-slate-500">{EXIT_REASON_LABELS[reason] ?? reason}</span>
+                    ) : null}
+                  </td>
                   <td className="text-slate-600">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
                   <td className="text-right">{rupees(position.avgCostPrice as number)}</td>
                   <td className={`text-right font-medium ${realisedRow < 0 ? "text-red-700" : "text-emerald-700"}`}>
