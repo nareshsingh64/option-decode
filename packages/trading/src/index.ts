@@ -5,6 +5,7 @@ export {
   closeOrderTypeFor,
   costToClose,
   orderCloseSequence,
+  orderOpenSequence,
   evaluateExit,
   profitTargetPct
 } from "./exit-rules.js";

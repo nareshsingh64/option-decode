@@ -225,7 +225,11 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [placeResult, setPlaceResult] = useState<string | null>(null);
+  // Carries a tone as well as text. A basket whose short legs were withheld
+  // because the hedge did not fill is NOT a success, and reporting it in the
+  // same green box as a clean placement is how a half-placed structure gets
+  // missed.
+  const [placeResult, setPlaceResult] = useState<{ text: string; ok: boolean } | null>(null);
   // Counts the confirm window down so the button cannot be pressed against a
   // preview whose prices have moved.
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -373,10 +377,12 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       const body = await response.json();
       if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
       const failures: string[] = body.failures ?? [];
-      setPlaceResult(
-        `Panic: cancelled ${body.ordersCancelled}, squared off ${body.positionsSquaredOff}.` +
-          (failures.length ? ` ${failures.length} failed - see below.` : "")
-      );
+      setPlaceResult({
+        text:
+          `Panic: cancelled ${body.ordersCancelled}, squared off ${body.positionsSquaredOff}.` +
+          (failures.length ? ` ${failures.length} failed - see below.` : ""),
+        ok: failures.length === 0
+      });
       // Failures are surfaced, never swallowed: a partial panic is exactly the
       // situation where the trader must know which legs are still open.
       if (failures.length) setPreviewError(failures.join(" | "));
@@ -400,7 +406,12 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.message ?? `HTTP ${response.status}`);
-      setPlaceResult(`Placed ${body.orders?.length ?? 0} order(s). Group ${String(body.groupId ?? "").slice(0, 8)}.`);
+      const placed = `Placed ${body.orders?.length ?? 0} order(s). Group ${String(body.groupId ?? "").slice(0, 8)}.`;
+      setPlaceResult(
+        body.abortedReason
+          ? { text: `${placed} ${String(body.abortedReason)}`, ok: false }
+          : { text: placed, ok: true }
+      );
       setPreview(null);
       await refresh();
     } catch (err) {
@@ -508,7 +519,17 @@ export function LiveOrderPanel({ underlyingSymbol, expiryLabel }: { underlyingSy
           preview exists it is a ten-second decision, and it must not be
           possible to navigate away from it by accident. */}
       {previewError ? <p className="rounded bg-red-50 p-2 text-sm text-red-800">{previewError}</p> : null}
-      {placeResult ? <p className="rounded bg-emerald-50 p-2 text-sm text-emerald-900">{placeResult}</p> : null}
+      {placeResult ? (
+        <p
+          className={
+            placeResult.ok
+              ? "rounded bg-emerald-50 p-2 text-sm text-emerald-900"
+              : "rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900"
+          }
+        >
+          {placeResult.text}
+        </p>
+      ) : null}
 
       {preview ? (
         <div className="space-y-2 rounded border-2 border-amber-400 bg-amber-50 p-3">

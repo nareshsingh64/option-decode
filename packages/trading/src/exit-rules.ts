@@ -115,6 +115,27 @@ export function orderCloseSequence<T extends { side: "BUY" | "SELL" }>(legs: T[]
   return [...legs].sort((a, b) => (a.side === "SELL" ? 0 : 1) - (b.side === "SELL" ? 0 : 1));
 }
 
+/**
+ * The order legs must be OPENED in, safest first.
+ *
+ * BUY legs before SELL ones - the exact mirror of orderCloseSequence, and for
+ * the same reason. Selling first and then failing to buy the wing leaves the
+ * account NAKED SHORT: unbounded risk on a structure that was meant to be
+ * defined-risk, and a margin requirement measured on this account at
+ * Rs 1,39,063 naked against Rs 1,03,458 as a spread. Buying first and then
+ * failing to sell leaves a long option - bounded loss, and the premium is the
+ * worst case.
+ *
+ * Put another way: whichever leg fails, the account should be left holding the
+ * safer half. On entry the hedge is the safer half; on exit it is the short.
+ *
+ * A naked structure has no BUY leg, so this is a no-op for it - there is no
+ * hedge to establish and nothing to wait for.
+ */
+export function orderOpenSequence<T extends { side: "BUY" | "SELL" }>(legs: T[]): T[] {
+  return [...legs].sort((a, b) => (a.side === "BUY" ? 0 : 1) - (b.side === "BUY" ? 0 : 1));
+}
+
 export interface ExitLegState {
   side: "BUY" | "SELL";
   /** Per-unit premium received (SELL) or paid (BUY) at entry. */

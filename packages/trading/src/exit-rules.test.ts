@@ -5,6 +5,7 @@ import {
   DTE_GAMMA_THRESHOLD_DAYS,
   closeOrderTypeFor,
   orderCloseSequence,
+  orderOpenSequence,
   HARD_STOP_MULTIPLE,
   costToClose,
   evaluateExit,
@@ -263,4 +264,32 @@ test("sequencing does not mutate the caller's array", () => {
   const legs = [{ side: "BUY" as const }, { side: "SELL" as const }];
   orderCloseSequence(legs);
   assert.equal(legs[0].side, "BUY", "the input order must be untouched");
+});
+
+test("entry opens BUY legs first, the mirror of the close sequence", () => {
+  // Whichever leg fails, the account must be left holding the safer half. On
+  // entry that is the hedge; a sold leg with no wing is unbounded risk.
+  const legs = [
+    { side: "SELL" as const, tag: "short" },
+    { side: "BUY" as const, tag: "wing" }
+  ];
+  assert.deepEqual(orderOpenSequence(legs).map((l) => l.tag), ["wing", "short"]);
+  // ...and closing is the exact reverse, so the short goes first there.
+  assert.deepEqual(orderCloseSequence(legs).map((l) => l.tag), ["short", "wing"]);
+});
+
+test("a naked structure is unaffected by the open sequence", () => {
+  const naked = [{ side: "SELL" as const, tag: "only" }];
+  assert.deepEqual(orderOpenSequence(naked).map((l) => l.tag), ["only"]);
+});
+
+test("the open sequence is stable among legs of the same side", () => {
+  // Two wings must not be reordered relative to each other - a condor's legs
+  // are priced as a set and swapping them changes which contract is bought.
+  const twoWings = [
+    { side: "BUY" as const, tag: "far" },
+    { side: "BUY" as const, tag: "near" },
+    { side: "SELL" as const, tag: "short" }
+  ];
+  assert.deepEqual(orderOpenSequence(twoWings).map((l) => l.tag), ["far", "near", "short"]);
 });

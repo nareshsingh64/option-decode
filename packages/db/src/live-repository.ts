@@ -36,7 +36,7 @@ import {
   type DhanMarginLegInput
 } from "@option-decode/dhan";
 import { getFallbackLotSize, toBrokerQuantity, type OptionType } from "@option-decode/types";
-import { closeOrderTypeFor, evaluateExit, orderCloseSequence, type ExitLegState } from "@option-decode/trading";
+import { closeOrderTypeFor, evaluateExit, orderCloseSequence, orderOpenSequence, type ExitLegState } from "@option-decode/trading";
 
 import type { AuthUserDto } from "./auth-repository.js";
 import {
@@ -1047,6 +1047,68 @@ export async function previewLiveOrder(
 export interface LivePlacementResult {
   groupId: string;
   orders: Array<{ id: string; correlationId: string; brokerOrderId?: string; status: string; message?: string }>;
+  /**
+   * Set when the basket was deliberately left incomplete - almost always a
+   * hedge leg that did not fill, so its short legs were never sent. The orders
+   * that DID go out are still listed above; this says why the rest did not,
+   * and the caller must show it rather than reporting a clean placement.
+   */
+  abortedReason?: string;
+}
+
+// How long a hedge leg has to FILL before the short legs it protects are
+// abandoned. Fifteen seconds is long against a marketable limit on a liquid
+// option and short against a trader waiting on a confirmation.
+const HEDGE_FILL_TIMEOUT_MS = 15_000;
+const HEDGE_FILL_POLL_MS = 1_000;
+
+/**
+ * Block until every hedge leg has actually TRADED.
+ *
+ * ACCEPTED IS NOT ENOUGH, and that distinction is the whole point of waiting.
+ * An order Dhan has acknowledged but not filled hedges nothing - selling
+ * against it would leave the account naked with a resting buy order that may
+ * never fill, which is precisely the state the sequencing exists to prevent.
+ *
+ * A PARTIAL fill is treated as not filled. Half a wing against a full short is
+ * still naked on the remainder, and quietly accepting it would hide that.
+ */
+async function waitForHedgeFills(
+  brokerOrderIds: string[],
+  dhan: DhanClient
+): Promise<{ ok: boolean; detail: string }> {
+  const deadline = Date.now() + HEDGE_FILL_TIMEOUT_MS;
+  const pending = new Set(brokerOrderIds);
+  let lastStatus = "no reply yet";
+
+  while (pending.size > 0) {
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        detail: `the hedge did not fill within ${Math.round(HEDGE_FILL_TIMEOUT_MS / 1000)}s (last seen ${lastStatus})`
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, HEDGE_FILL_POLL_MS));
+
+    for (const brokerOrderId of [...pending]) {
+      let observed: DhanBrokerOrder | undefined;
+      try {
+        observed = await dhan.getOrderById(brokerOrderId, "live:order:hedge-fill");
+      } catch {
+        // A failed probe is not a failed hedge. Keep polling until the
+        // deadline rather than abandoning a wing that may be filling.
+        continue;
+      }
+      const status = mapBrokerStatus(observed?.orderStatus);
+      lastStatus = status;
+      if (status === "TRADED") {
+        pending.delete(brokerOrderId);
+      } else if (status === "REJECTED" || status === "CANCELLED") {
+        return { ok: false, detail: `the hedge order came back ${status}` };
+      }
+    }
+  }
+  return { ok: true, detail: "hedge filled" };
 }
 
 export async function placeLiveOrder(
@@ -1083,7 +1145,39 @@ export async function placeLiveOrder(
 
   const results: LivePlacementResult["orders"] = [];
 
-  for (const leg of ticket.legs) {
+  // HEDGE FIRST, and prove it filled before selling against it.
+  //
+  // Whichever leg fails, the account should be left holding the safer half.
+  // Selling first and then failing to buy the wing leaves it NAKED SHORT -
+  // unbounded risk on a structure that was priced as defined-risk, and a
+  // margin requirement measured on this account at Rs 1,39,063 naked against
+  // Rs 1,03,458 as a spread. Buying first and failing to sell leaves a long
+  // option, whose worst case is the premium already paid.
+  //
+  // A naked structure has no BUY leg, so both the reordering and the wait are
+  // no-ops for it and it places exactly as before.
+  const sequenced = orderOpenSequence(ticket.legs);
+  const hedgeBrokerOrderIds: string[] = [];
+  let hedgesConfirmed = false;
+  let abortedReason: string | undefined;
+
+  for (const leg of sequenced) {
+    // The gate between the hedge and the risk. Runs once, immediately before
+    // the first SELL, and only when a hedge was actually placed.
+    if (leg.side === "SELL" && hedgeBrokerOrderIds.length > 0 && !hedgesConfirmed) {
+      const outcome = await waitForHedgeFills(hedgeBrokerOrderIds, dhan);
+      if (!outcome.ok) {
+        // Deliberately NOT cancelling the resting hedge. A long option is a
+        // bounded, benign thing to hold, the trader may still want it, and
+        // cancelling on their behalf is a second unrequested action layered on
+        // a failure they have not seen yet. It is visible in the orders tab
+        // and one click from cancellation there.
+        abortedReason = `Short leg(s) not sent: ${outcome.detail}. The hedge order is still working - cancel it from the Orders tab if you no longer want it.`;
+        break;
+      }
+      hedgesConfirmed = true;
+    }
+
     // Persist BEFORE sending. The correlationId must exist locally first or a
     // timeout leaves an order we cannot even look for.
     const correlationId = randomUUID().replace(/-/g, "").slice(0, 24);
@@ -1146,6 +1240,12 @@ export async function placeLiveOrder(
       });
       await recordOrderEvent(row.id, "API_RESPONSE", placed.orderStatus ?? "PLACED", placed as unknown as Record<string, unknown>, client);
       results.push({ id: row.id, correlationId, brokerOrderId: placed.orderId, status: mapBrokerStatus(placed.orderStatus) });
+      // Only a hedge with a broker id can be waited on. One accepted without
+      // an id cannot be polled, so it must not be counted as a hedge to wait
+      // for - that would block the short legs until the timeout every time.
+      if (leg.side === "BUY" && placed.orderId) {
+        hedgeBrokerOrderIds.push(placed.orderId);
+      }
     } catch (error) {
       // Establish what the failure MEANS before reacting to it - the same
       // discipline the RenewToken 5xx handling uses, and the reason these two
@@ -1193,11 +1293,16 @@ export async function placeLiveOrder(
 
       // A failed leg means the basket is incomplete. Stop rather than placing
       // the remaining legs into a structure that is no longer the one priced.
+      // Say so explicitly: the results list carries this leg's REJECTED or
+      // UNKNOWN status, but nothing in it explains why the legs AFTER it are
+      // simply absent, and "Placed 1 order(s)" on its own reads like success.
+      abortedReason =
+        `${leg.side} ${leg.optionType} ${leg.strikePrice} did not go through, so the remaining leg(s) were not sent: ${message}`;
       break;
     }
   }
 
-  return { groupId, orders: results };
+  return { groupId, orders: results, abortedReason };
 }
 
 /**
