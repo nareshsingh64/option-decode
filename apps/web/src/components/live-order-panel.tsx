@@ -205,12 +205,12 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
               const hover = reason ? (detail ? `${reason} - ${detail}` : reason) : "No exit reason was recorded.";
               return (
                 <tr key={String(position.id)} className="border-t border-slate-100">
-                  <td className="py-1" title={hover}>
+                  <td className="whitespace-nowrap py-1" title={hover}>
                     <span className="cursor-help underline decoration-dotted underline-offset-2">
                       {String(position.tradingSymbol ?? position.securityId)}
                     </span>
                     {reason ? (
-                      <span className="mt-0.5 block text-xs text-slate-500">{EXIT_REASON_LABELS[reason] ?? reason}</span>
+                      <span className="ml-2 text-xs text-slate-500">{EXIT_REASON_LABELS[reason] ?? reason}</span>
                     ) : null}
                   </td>
                   <td className="text-slate-600">{position.expiryLabel ? String(position.expiryLabel) : "--"}</td>
