@@ -1216,10 +1216,15 @@ function OpenPositions({
   // Today's realised is included, so this is the day's P&L rather than only the
   // open book's. Closing a losing leg otherwise made the number jump upwards,
   // which is exactly backwards from what happened.
-  const openPnl = positions.reduce(
-    (sum, p) => sum + Number(p.unrealizedPnl ?? 0) + Number(p.realizedPnl ?? 0),
-    0
-  );
+  // UNREALISED ONLY. An open position has realised nothing - that is what open
+  // means - and adding Dhan's realizedPnl here double-counted, because that
+  // field is the day's realised P&L for the CONTRACT, not for this position.
+  // Sell a contract, close it, sell it again, and the closed row carries the
+  // round trip in `realisedToday` while the new open row carries the same
+  // money again. Measured 2026-09-02 on NIFTY 24100 CE: the closed row held
+  // -22.75 and the freshly opened row reported 178.75 for trades already
+  // counted.
+  const openPnl = positions.reduce((sum, p) => sum + Number(p.unrealizedPnl ?? 0), 0);
   const realisedToday = closedToday.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
   // Neither engine coverage nor a stop. Surfaced as a banner as well as a column
   // because the failure it prevents - believing a naked short is watched when it
@@ -1244,7 +1249,7 @@ function OpenPositions({
         <span className="text-xs uppercase text-slate-500">
           Net P&amp;L today
           <span className="ml-2 normal-case text-slate-400">
-            open {rupees(openPnl)} + closed {rupees(realisedToday)}
+            unrealised {rupees(openPnl)} + realised {rupees(realisedToday)}
           </span>
         </span>
         <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
@@ -1270,8 +1275,6 @@ function OpenPositions({
               <th className="text-right">Delta</th>
               <th className="text-right">Stop</th>
               <th className="text-right">Unrealised</th>
-              <th className="text-right">Realised</th>
-              <th className="text-right">Net</th>
               <th />
             </tr>
           </thead>
@@ -1282,7 +1285,6 @@ function OpenPositions({
               // cannot disagree with the quantity beside it.
               const qty = Number(position.netQty ?? 0);
               const isShort = qty < 0;
-              const rowNet = Number(position.unrealizedPnl ?? 0) + Number(position.realizedPnl ?? 0);
 
               const id = String(position.id);
               const ltp = position.lastPrice === null || position.lastPrice === undefined ? null : Number(position.lastPrice);
@@ -1378,12 +1380,12 @@ function OpenPositions({
                       (Number(position.delta) * (qty < 0 ? -1 : 1)).toFixed(3)
                     )}
                   </td>
-                  <td className={`text-right ${Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"}`}>
+                  <td
+                    className={`text-right font-medium ${
+                      Number(position.unrealizedPnl ?? 0) < 0 ? "text-red-700" : "text-emerald-700"
+                    }`}
+                  >
                     {rupees(position.unrealizedPnl as number)}
-                  </td>
-                  <td className="text-right">{rupees(position.realizedPnl as number)}</td>
-                  <td className={`text-right font-medium ${rowNet < 0 ? "text-red-700" : "text-emerald-700"}`}>
-                    {rupees(rowNet)}
                   </td>
                   <td className="text-right">
                     {position.stopPrice ? (
