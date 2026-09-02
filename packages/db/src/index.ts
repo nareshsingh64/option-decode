@@ -78,6 +78,7 @@ export {
   LiveTradingDisabledError,
   cancelLiveOrder,
   computeLiveMarginView,
+  newestOpeningGroupBySecurityId,
   getBrokerCredentialStatus,
   getLiveSummary,
   invalidateLiveClient,

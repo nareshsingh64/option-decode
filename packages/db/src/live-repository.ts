@@ -795,6 +795,35 @@ async function existingBookMargin(userId: string, dhan: DhanClient): Promise<num
   return amount;
 }
 
+/**
+ * The group that most recently OPENED each contract.
+ *
+ * A contract can be sold, closed, and sold again the same day. When it is, the
+ * OLD group's leg still matches an open position if you only compare
+ * securityIds - so a settled group gets re-evaluated against a position it did
+ * not open, using the entry price of a trade that is already closed. Measured
+ * 2026-09-02: NIFTY 24100 CE was sold at 51.80 and closed at 06:20, then sold
+ * again at 58.00 at 07:34. Both groups then looked live on the same open
+ * position, giving two competing sets of triggers - a profit target at 29.00
+ * from the real fill and 25.90 from the dead one.
+ *
+ * Keying on the newest opening trade per contract settles it: the position
+ * currently open on a contract was opened by the most recent trade on it.
+ *
+ * `ordersNewestFirst` must be ordered by placedAt DESC. Orders with no groupId
+ * are closing orders and never open anything, so they are skipped.
+ */
+export function newestOpeningGroupBySecurityId(
+  ordersNewestFirst: Array<{ securityId: string; groupId: string | null }>
+): Map<string, string> {
+  const newest = new Map<string, string>();
+  for (const order of ordersNewestFirst) {
+    if (!order.groupId) continue;
+    if (!newest.has(order.securityId)) newest.set(order.securityId, order.groupId);
+  }
+  return newest;
+}
+
 export async function computeLiveMarginView(
   user: AuthUserDto,
   ticket: LiveTicketInput,
@@ -2181,12 +2210,21 @@ export async function runLiveExitEngine(
   }
 
   const openSecurityIds = new Set(positions.map((p) => p.securityId));
+  // `filled` is already ordered placedAt DESC, which is what this relies on.
+  const newestGroupFor = newestOpeningGroupBySecurityId(filled);
 
   for (const [groupId, group] of byGroup) {
-    // Every leg of the structure must still be open. A partially closed group
-    // is no longer the structure the credit was computed for, and applying a
-    // whole-structure rule to half of it would be arithmetic on a fiction.
-    const stillOpen = group.orders.filter((order) => openSecurityIds.has(order.securityId));
+    // Every leg of the structure must still be open, AND this group must be the
+    // one that opened it. The second half is not redundant: re-trading a
+    // contract closed earlier the same day leaves the old group matching the
+    // new position by securityId alone.
+    //
+    // A partially closed group is no longer the structure the credit was
+    // computed for, and applying a whole-structure rule to half of it would be
+    // arithmetic on a fiction.
+    const stillOpen = group.orders.filter(
+      (order) => openSecurityIds.has(order.securityId) && newestGroupFor.get(order.securityId) === groupId
+    );
     if (!stillOpen.length || stillOpen.length !== group.orders.length) {
       sweep.groupsSkipped += 1;
       continue;
