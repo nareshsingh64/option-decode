@@ -618,12 +618,26 @@ export async function listLiveChainStrikes(
   });
 }
 
+// How far a trader's limit may sit from the last traded price, either way. A
+// limit is inherently safe at the exchange - a marketable one fills at the
+// better prevailing price rather than at the silly number - so this is not
+// protecting the fill. It catches a misplaced decimal before it reaches the
+// broker AND before it corrupts the margin preview, which is priced off this
+// number. Generous on purpose: 5x admits any realistic resting order.
+const MAX_LIMIT_PRICE_MULTIPLE = 5;
+
 /**
- * Fill in securityId and price for legs the caller specified only by strike.
+ * Fill in securityId, and price for legs that did not name one.
  *
  * Refuses rather than guessing. A leg whose contract cannot be named, or which
  * fails the liquidity gate, stops the whole ticket - the alternative is placing
  * a real order against a contract we could not price.
+ *
+ * A caller-supplied `price` is the trader's LIMIT and is kept. Only a leg that
+ * omits one is filled from the chain's last traded price. Until 2026-09-02 the
+ * lookup overwrote the price unconditionally unless the caller had ALSO sent a
+ * securityId - which the browser never does by design - so every limit order
+ * went out at the last print with no way to choose a level.
  */
 async function resolveTicketLegs(
   ticket: LiveTicketInput,
@@ -648,7 +662,28 @@ async function resolveTicketLegs(
         `${leg.optionType} ${leg.strikePrice} is not tradeable: ${match.reason}.`
       );
     }
-    return { ...leg, securityId: match.securityId, price: match.lastPrice };
+    // The trader's limit survives; only an absent price falls back to the last
+    // print. Guarded against a decimal-point slip: a limit far from the market
+    // is not dangerous in itself - the exchange fills a marketable limit at the
+    // better prevailing price - but it silently corrupts the margin preview,
+    // which is computed from this number.
+    if (leg.price !== undefined) {
+      if (!Number.isFinite(leg.price) || leg.price <= 0) {
+        throw new LiveOrderRejectedError(
+          `${leg.optionType} ${leg.strikePrice}: a limit price must be a positive premium.`
+        );
+      }
+      if (match.lastPrice > 0) {
+        const high = match.lastPrice * MAX_LIMIT_PRICE_MULTIPLE;
+        const low = match.lastPrice / MAX_LIMIT_PRICE_MULTIPLE;
+        if (leg.price > high || leg.price < low) {
+          throw new LiveOrderRejectedError(
+            `${leg.optionType} ${leg.strikePrice}: a limit of ${leg.price} is more than ${MAX_LIMIT_PRICE_MULTIPLE}x away from the last traded price of ${match.lastPrice}. Check the decimal point.`
+          );
+        }
+      }
+    }
+    return { ...leg, securityId: match.securityId, price: leg.price ?? match.lastPrice };
   });
 
   return { ...ticket, legs };

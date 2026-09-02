@@ -629,6 +629,11 @@ function TicketBuilder({
   // does not promise a tight one on the rest.
   const [orderType, setOrderType] = useState<"LIMIT" | "MARKET">("LIMIT");
   const [strikes, setStrikes] = useState<Record<number, number | "">>({});
+  // The LIMIT price per leg, seeded from the chain when a strike is picked and
+  // editable from then on. Seeding rather than defaulting matters: the trader
+  // sees the market before choosing a level, instead of typing into an empty
+  // box or discovering afterwards that the last print was used.
+  const [prices, setPrices] = useState<Record<number, number | "">>({});
   const [chain, setChain] = useState<ChainStrike[]>([]);
   const [chainError, setChainError] = useState<string | null>(null);
 
@@ -664,21 +669,34 @@ function TicketBuilder({
 
   // Changing structure invalidates the strikes: a bear call spread's picks are
   // meaningless as an iron condor's.
-  useEffect(() => setStrikes({}), [structure]);
+  useEffect(() => {
+    setStrikes({});
+    setPrices({});
+  }, [structure]);
 
   const optionsFor = (optionType: "CE" | "PE") =>
     chain.filter((row) => row.optionType === optionType).sort((a, b) => a.strikePrice - b.strikePrice);
 
-  const complete = template.length > 0 && template.every((_, index) => Number(strikes[index]) > 0);
+  const complete =
+    template.length > 0 &&
+    template.every(
+      (_, index) =>
+        Number(strikes[index]) > 0 && (orderType === "MARKET" || Number(prices[index]) > 0)
+    );
 
   const submit = () => {
     const legs = template.map((leg, index) => ({
       side: leg.side,
       optionType: leg.optionType,
-      strikePrice: Number(strikes[index])
+      strikePrice: Number(strikes[index]),
+      // Sent only for a LIMIT. A market order has no price to honour, and
+      // sending one would put a number in the margin preview that no fill will
+      // ever match. securityId stays absent - the server resolves the contract
+      // from the strike. See legSchema in apps/api/src/live-routes.ts.
+      ...(orderType === "LIMIT" && Number(prices[index]) > 0
+        ? { price: Number(prices[index]) }
+        : {})
     }));
-    // securityId and price are deliberately absent - the server resolves the
-    // contract from the strike. See legSchema in apps/api/src/live-routes.ts.
     void onPreview({ underlyingSymbol, expiryLabel, structure, lots, legs, orderType });
   };
 
@@ -706,7 +724,7 @@ function TicketBuilder({
             onChange={(event) => setOrderType(event.target.value as "LIMIT" | "MARKET")}
             className="mt-1 block rounded border border-slate-300 px-2 py-1 text-sm"
           >
-            <option value="LIMIT">Limit (at last traded)</option>
+            <option value="LIMIT">Limit</option>
             <option value="MARKET">Market</option>
           </select>
         </label>
@@ -735,9 +753,16 @@ function TicketBuilder({
             </span>
             <select
               value={strikes[index] ?? ""}
-              onChange={(event) =>
-                setStrikes((prev) => ({ ...prev, [index]: event.target.value ? Number(event.target.value) : "" }))
-              }
+              onChange={(event) => {
+                const strike = event.target.value ? Number(event.target.value) : "";
+                setStrikes((prev) => ({ ...prev, [index]: strike }));
+                // Seed this leg's limit from the chain. Re-seeded on every
+                // strike change rather than only the first: a price left over
+                // from the previous strike is worse than no price, because it
+                // looks deliberate.
+                const row = strike === "" ? undefined : optionsFor(leg.optionType).find((r) => r.strikePrice === strike);
+                setPrices((prev) => ({ ...prev, [index]: row?.lastPrice ?? "" }));
+              }}
               className="mt-1 block w-full rounded border border-slate-300 px-2 py-1 text-sm"
             >
               <option value="">Select strike…</option>
@@ -751,6 +776,46 @@ function TicketBuilder({
                 </option>
               ))}
             </select>
+            {orderType === "LIMIT" ? (
+              <span className="mt-1 flex items-center gap-1">
+                <span className="text-slate-500">₹</span>
+                <input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  inputMode="decimal"
+                  value={prices[index] ?? ""}
+                  disabled={!(Number(strikes[index]) > 0)}
+                  onChange={(event) =>
+                    setPrices((prev) => ({
+                      ...prev,
+                      [index]: event.target.value === "" ? "" : Number(event.target.value)
+                    }))
+                  }
+                  placeholder="limit"
+                  className="block w-24 rounded border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-100"
+                />
+                {(() => {
+                  // Show the market alongside, so a hand-typed limit can be
+                  // judged against it without leaving the ticket.
+                  const strike = Number(strikes[index]);
+                  const row = strike > 0 ? optionsFor(leg.optionType).find((r) => r.strikePrice === strike) : undefined;
+                  if (!row) return null;
+                  const typed = Number(prices[index]);
+                  const away = typed > 0 && row.lastPrice > 0
+                    ? ((typed - row.lastPrice) / row.lastPrice) * 100
+                    : null;
+                  return (
+                    <span className="text-slate-500">
+                      LTP ₹{row.lastPrice}
+                      {away !== null && Math.abs(away) >= 0.5
+                        ? ` · ${away > 0 ? "+" : ""}${away.toFixed(1)}%`
+                        : ""}
+                    </span>
+                  );
+                })()}
+              </span>
+            ) : null}
           </label>
         ))}
       </div>
@@ -777,7 +842,7 @@ function TicketBuilder({
         confirmation expires after 10 seconds.
         {orderType === "MARKET"
           ? " A market order fills at whatever the book offers - the margin below is priced off the last traded price, not your fill."
-          : " A limit order is placed at each leg's last traded price, and may not fill."}
+          : " Each leg is placed at the limit you set - seeded from the last traded price, and yours to change. It may not fill."}
       </p>
     </div>
   );
