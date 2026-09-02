@@ -1249,7 +1249,7 @@ function OpenPositions({
         <span className="text-xs uppercase text-slate-500">
           Net P&amp;L today
           <span className="ml-2 normal-case text-slate-400">
-            unrealised {rupees(openPnl)} + realised {rupees(realisedToday)}
+            open {rupees(openPnl)} + realised {rupees(realisedToday)}
           </span>
         </span>
         <span className={`text-lg font-semibold ${net < 0 ? "text-red-700" : "text-emerald-700"}`}>
@@ -1274,7 +1274,12 @@ function OpenPositions({
               <th className="text-right">LTP</th>
               <th className="text-right">Delta</th>
               <th className="text-right">Stop</th>
-              <th className="text-right">Unrealised</th>
+              <th
+                className="text-right"
+                title="Live profit or loss at the current mark. It stays unrealised until the position is squared off, at which point it moves to the closed tab as Realised."
+              >
+                Current P/L
+              </th>
               <th />
             </tr>
           </thead>
