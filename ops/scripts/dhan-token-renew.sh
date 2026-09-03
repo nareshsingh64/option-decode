@@ -364,9 +364,44 @@ this would say MANUAL ACTION REQUIRED instead."
     exit 0
   fi
 
-  # Old token no longer authenticates after a 5xx: the renewal DID happen and
-  # the reply was lost. This is the genuinely bad case.
-  die "MANUAL ACTION REQUIRED - RenewToken returned HTTP $CODE and the previous token no longer authenticates (/v2/fundlimit gave $STILL_ALIVE). The renewal almost certainly succeeded server-side and its response was lost, so the new token exists but was never received. Regenerate at web.dhan.co > My Profile > Access DhanHQ APIs. Body: $(echo "$BODY" | head -c 500)"
+  # The probe did not return 200. That is TWO different situations and they must
+  # not share a branch - which they did until 2026-09-03, when RenewToken gave
+  # 502, this probe gave 502 too, and the run reported MANUAL ACTION REQUIRED
+  # about a token that was still perfectly alive. Checked by hand eleven minutes
+  # later: /v2/fundlimit returned 200 and the token had 14.9h left. A false
+  # MANUAL ACTION REQUIRED is expensive - it is the one alert that says "go and
+  # regenerate by hand right now".
+  case "$STILL_ALIVE" in
+    4*)
+      # A 4xx is real news: Dhan looked at the old token and refused it. It was
+      # alive at preflight minutes ago, so the renewal DID happen server-side
+      # and its reply was lost. The new token exists and nobody received it.
+      die "MANUAL ACTION REQUIRED - RenewToken returned HTTP $CODE and the previous token is now REJECTED (/v2/fundlimit gave $STILL_ALIVE). The renewal almost certainly succeeded server-side and its response was lost, so the new token exists but was never received. Regenerate at web.dhan.co > My Profile > Access DhanHQ APIs. Body: $(echo "$BODY" | head -c 500)"
+      ;;
+  esac
+
+  # Anything else - 5xx, or 000 for a timeout - means the PROBE failed, not the
+  # token. Dhan is simply unreachable and we have learned nothing about the
+  # credential. Assuming the worst here is what produced the false alarm.
+  log "RenewToken HTTP $CODE and the probe was inconclusive (/v2/fundlimit gave $STILL_ALIVE) - Dhan appears to be down, token state unknown"
+  if [ "$attempt" -lt "$RENEW_ATTEMPTS" ]; then
+    log "retrying in $((attempt * 10))s"
+    sleep $((attempt * 10))
+    continue
+  fi
+  notify "NO ACTION NEEDED" "Dhan was unreachable for this run: /v2/RenewToken gave HTTP $CODE and the follow-up check gave $STILL_ALIVE, so neither call reached a working server.
+
+NOTHING NEEDS DOING NOW. The token was valid at the start of this run and there
+is no evidence it was consumed - the renewal call did not get a real answer.
+
+  Token life at start of run : ${HOURS_LEFT}h
+  Dhan client                : ...${CLIENT_ID: -4}
+
+The next scheduled run re-checks the token before doing anything, and if it HAS
+been consumed that run will say MANUAL ACTION REQUIRED with certainty rather
+than guessing from an unreachable server."
+  log "exiting cleanly - Dhan unreachable, token state unconfirmed but unharmed as far as we can tell"
+  exit 0
 done
 
 [ "$CODE" = "200" ] || die "RenewToken HTTP $CODE - existing token left in place, no harm done. Body: $(echo "$BODY" | head -c 500)"
