@@ -1828,8 +1828,17 @@ export async function reconcileLiveAccount(
       optionType: opener?.optionType ?? known?.optionType ?? parsed.optionType ?? null,
       strikePrice: opener?.strikePrice ?? known?.strikePrice ?? parsed.strikePrice ?? null
     };
+    // findFirst + update/create rather than upsert. The compound unique this
+    // used to key on is gone - it forbade a second CLOSED row per contract,
+    // which made a re-traded contract impossible to close. The database still
+    // guarantees one OPEN row per contract via the generated openSlot column,
+    // so a race here can only ever lose to that constraint, never duplicate.
+    const existingOpen = await client.livePosition.findFirst({
+      where: { accountId: account.id, securityId: position.securityId, status: "OPEN" },
+      select: { id: true }
+    });
     await client.livePosition.upsert({
-      where: { accountId_securityId_status: { accountId: account.id, securityId: position.securityId, status: "OPEN" } },
+      where: { id: existingOpen?.id ?? `create-${account.id}-${position.securityId}` },
       create: {
         accountId: account.id,
         securityId: position.securityId,

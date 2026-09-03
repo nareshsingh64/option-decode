@@ -90,7 +90,15 @@ export async function startLiveReconcileScheduler(redisConnection: {
       // live 24 hours - but it means that user's panel is stale and they are
       // not being told by anything else yet.
       for (const line of sweep.errors) {
-        console.warn("Live reconcile could not reach the broker", { detail: line });
+        // NOT necessarily the broker. This swallowed a Prisma unique-constraint
+        // violation on 2026-09-03 and reported it as an unreachable broker,
+        // which is why an aborted sweep looked like an upstream blip for
+        // hours. Name the two cases apart.
+        const brokerish = /fetch|ETIMEDOUT|ECONNRESET|ENOTFOUND|socket|HTTP 5\d\d|timeout/i.test(line);
+        console.warn(
+          brokerish ? "Live reconcile could not reach the broker" : "Live reconcile FAILED (not a broker problem)",
+          { detail: line }
+        );
       }
 
       // Exit rules run AFTER reconciliation, on the same tick, so they are

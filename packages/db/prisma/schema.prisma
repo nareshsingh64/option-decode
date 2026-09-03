@@ -1083,7 +1083,22 @@ model LivePosition {
 
   account LiveAccount @relation(fields: [accountId], references: [id])
 
-  @@unique([accountId, securityId, status])
+  // NOT a Prisma @@unique any more. The DB enforces "at most one OPEN position
+  // per contract per account" through a generated column, openSlot, which is
+  // the securityId while OPEN and NULL once CLOSED - and MySQL allows any
+  // number of NULLs in a unique index. See the 20260903_* migration.
+  //
+  // The old @@unique([accountId, securityId, status]) also allowed only ONE
+  // CLOSED row per contract, forever. Sell a contract, close it, sell it again,
+  // close it again, and the second close violated the constraint. On
+  // 2026-09-03 that threw inside reconcileLiveAccount's updateMany, aborting
+  // the whole sweep for the account: the position stayed OPEN in the app while
+  // Dhan reported it flat, and nothing reconciled at all until it was fixed.
+  //
+  // Prisma is deliberately not told about openSlot. It is generated, so it can
+  // never be written, and nothing here needs to read it - the guarantee is the
+  // database's to keep.
+  @@index([accountId, securityId, status])
   @@index([accountId, status])
 }
 
