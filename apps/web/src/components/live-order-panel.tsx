@@ -146,6 +146,27 @@ const STRUCTURES: Record<string, LegTemplate[]> = {
 // Plain-English names for what is stored as a rule id. The raw value is kept
 // in the tooltip so a support question can be answered with the exact string
 // that is in the database, not a prettified version of it.
+// Dhan's realizedPnl is CUMULATIVE per contract per day, and each close
+// snapshots the running total at that moment. So a contract closed twice in one
+// day leaves two rows whose figures overlap - the later one already contains
+// the earlier. Summing them double-counts, and until the LivePosition unique
+// key was relaxed on 2026-09-03 a second closed row could not exist, so nothing
+// ever hit it.
+//
+// The last close of a contract holds that contract's whole day, so keep only
+// that row per securityId.
+function latestClosePerContract(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const best = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const key = String(row.securityId ?? row.id);
+    const prev = best.get(key);
+    const at = new Date(String(row.closedAt ?? 0)).getTime();
+    const prevAt = prev ? new Date(String(prev.closedAt ?? 0)).getTime() : -Infinity;
+    if (!prev || at >= prevAt) best.set(key, row);
+  }
+  return [...best.values()];
+}
+
 const EXIT_REASON_LABELS: Record<string, string> = {
   MANUAL: "Closed by you",
   PANIC: "Panic close",
@@ -166,7 +187,7 @@ function ClosedToday({ positions }: { positions: Array<Record<string, unknown>> 
 
   // Realised only. An unrealised figure on a closed position is meaningless -
   // there is nothing left to mark.
-  const realised = positions.reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
+  const realised = latestClosePerContract(positions).reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
 
   return (
     <div className="space-y-2">
@@ -1250,7 +1271,7 @@ function OpenPositions({
   // its closed row here as well is the double-count: the 24100's -22.75 closed
   // row is the same money as part of the 178.75 on its open row.
   const openSecurityIds = new Set(positions.map((p) => String(p.securityId)));
-  const realisedToday = closedToday
+  const realisedToday = latestClosePerContract(closedToday)
     .filter((p) => !openSecurityIds.has(String(p.securityId)))
     .reduce((sum, p) => sum + Number(p.realizedPnl ?? 0), 0);
   // Neither engine coverage nor a stop. Surfaced as a banner as well as a column

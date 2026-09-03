@@ -1770,6 +1770,18 @@ export async function reconcileLiveAccount(
     // figure we last happened to see - usually zero. So a flat row updates the
     // realised P&L and closes the position, rather than being ignored.
     if (position.netQty === 0) {
+      // Capture WHICH rows are being closed before closing them. updateMany
+      // returns a count, not ids, and the EXTERNAL stamp below has to apply to
+      // exactly these rows - not to every closed row this contract has ever
+      // had. Now that a contract can hold several CLOSED rows, an unscoped
+      // stamp would relabel an earlier trade's close with this one's reason.
+      const closingIds = (
+        await client.livePosition.findMany({
+          where: { accountId: account.id, securityId: position.securityId, status: "OPEN" },
+          select: { id: true }
+        })
+      ).map((row) => row.id);
+
       const closed = await client.livePosition.updateMany({
         where: { accountId: account.id, securityId: position.securityId, status: "OPEN" },
         data: {
@@ -1790,7 +1802,7 @@ export async function reconcileLiveAccount(
         // off in the Dhan app, or settled at expiry. Stamped rather than left
         // null so an empty reason never has to be interpreted by a reader.
         await client.livePosition.updateMany({
-          where: { accountId: account.id, securityId: position.securityId, status: "CLOSED", exitReason: null },
+          where: { id: { in: closingIds }, exitReason: null },
           data: {
             exitReason: "EXTERNAL",
             exitDetail: "Closed at the broker, not by this app - squared off in Dhan or settled at expiry."
